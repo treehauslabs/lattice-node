@@ -79,7 +79,7 @@
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
         "branch" : "master",
-        "revision" : "4470d41b1e7dae4afd56a12df99869067121131a"
+        "revision" : "7031c3ab839d7d6e31690acab263fe97d1f0e42f"
       }
     },
     {
@@ -211,10 +211,10 @@
     {
       "identity" : "uint256",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/hyugit/UInt256.git",
+      "location" : "https://github.com/treehauslabs/UInt256.git",
       "state" : {
-        "branch" : "master",
-        "revision" : "a5cd5756244550da79721986ef303cfad3987c75"
+        "revision" : "beb054dea3e0d18b21cad07619907a9dad093d8e",
+        "version" : "1.0.0"
       }
     }
   ],
