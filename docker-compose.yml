@@ -1,0 +1,39 @@
+services:
+  bootstrap-1:
+    build: .
+    container_name: lattice-bootstrap-1
+    ports:
+      - "4001:4001"
+    volumes:
+      - bootstrap-1-data:/home/lattice/.lattice
+    command: ["--mine", "Nexus", "--port", "4001", "--data-dir", "/home/lattice/.lattice"]
+    restart: unless-stopped
+
+  bootstrap-2:
+    build: .
+    container_name: lattice-bootstrap-2
+    ports:
+      - "4002:4002"
+    volumes:
+      - bootstrap-2-data:/home/lattice/.lattice
+    command: ["--mine", "Nexus", "--port", "4002", "--data-dir", "/home/lattice/.lattice"]
+    restart: unless-stopped
+    depends_on:
+      - bootstrap-1
+
+  bootstrap-3:
+    build: .
+    container_name: lattice-bootstrap-3
+    ports:
+      - "4003:4003"
+    volumes:
+      - bootstrap-3-data:/home/lattice/.lattice
+    command: ["--mine", "Nexus", "--port", "4003", "--data-dir", "/home/lattice/.lattice"]
+    restart: unless-stopped
+    depends_on:
+      - bootstrap-1
+
+volumes:
+  bootstrap-1-data:
+  bootstrap-2-data:
+  bootstrap-3-data:

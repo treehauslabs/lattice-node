@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  test-macos:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -20,11 +20,24 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-
+          key: spm-macos-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-macos-
 
-      - name: Resolve dependencies
-        run: swift package resolve
+      - name: Build
+        run: swift build -c release
+
+      - name: Run tests
+        run: swift test
+
+      - name: Verify executable runs
+        run: swift run LatticeNode --help
+
+  test-linux:
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Build
         run: swift build -c release

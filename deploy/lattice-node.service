@@ -1,0 +1,23 @@
+[Unit]
+Description=Lattice Node - Multi-chain blockchain node with merged mining
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lattice
+Group=lattice
+ExecStart=/usr/local/bin/lattice-node --mine Nexus --port 4001 --data-dir /var/lib/lattice
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+WorkingDirectory=/var/lib/lattice
+StateDirectory=lattice
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lattice-node
+
+[Install]
+WantedBy=multi-user.target

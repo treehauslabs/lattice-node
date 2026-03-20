@@ -47,6 +47,7 @@ Chain state is persisted to disk every 100 blocks and on graceful shutdown. On r
 | `--data-dir <path>` | `~/.lattice` | Storage directory |
 | `--peer <pubKey@host:port>` | none | Bootstrap peer (repeatable) |
 | `--mine <chain>` | none | Start mining chain on boot (repeatable) |
+| `--subscribe <path>` | Nexus | Subscribe to chain path, e.g. `Nexus/Payments` (repeatable) |
 | `--no-discovery` | enabled | Disable mDNS local discovery |
 
 ## Interactive Commands
@@ -58,6 +59,9 @@ Chain state is persisted to disk every 100 blocks and on graceful shutdown. On r
 | `mine list` | Show which chains are being mined |
 | `status` | Chain heights, tips, mining status, mempool counts |
 | `chains` | List registered chain directories |
+| `subscribe <path>` | Subscribe to a chain path (e.g. `Nexus/Payments`) |
+| `unsubscribe <path>` | Unsubscribe from a chain path |
+| `subscriptions` | List subscribed chain paths |
 | `peers` | Connected peer count |
 | `quit` | Graceful shutdown with state persistence |
 
@@ -78,6 +82,74 @@ LatticeNode (CLI)
        │    └─ Mempool
        ├─ MinerLoop per mining chain
        └─ ChainStatePersister per chain
+```
+
+## Deployment
+
+### Docker (recommended)
+
+```bash
+# Build and run a single miner
+docker build -t lattice-node .
+docker run -d --name lattice-miner \
+  -p 4001:4001 \
+  -v lattice-data:/home/lattice/.lattice \
+  lattice-node
+
+# Run 3 bootstrap miners
+docker compose up -d
+```
+
+The Docker image uses a multi-stage build: Swift 6 compiles a static binary, which runs on a minimal Ubuntu 22.04 runtime image.
+
+### Bare metal (Linux)
+
+```bash
+# Install Swift 6 (https://swift.org/install)
+git clone https://github.com/treehauslabs/lattice-node.git
+cd lattice-node
+swift build -c release
+sudo cp .build/release/LatticeNode /usr/local/bin/lattice-node
+
+# Create service user and data directory
+sudo useradd -r -s /bin/false lattice
+sudo mkdir -p /var/lib/lattice
+sudo chown lattice:lattice /var/lib/lattice
+
+# Install and start systemd service
+sudo cp deploy/lattice-node.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable lattice-node
+sudo systemctl start lattice-node
+
+# Check logs
+journalctl -u lattice-node -f
+```
+
+### Bootstrap network
+
+Run 2-3 nodes on different servers. Once the first node starts, note its public key (printed at boot). Connect additional nodes:
+
+```bash
+# Node 2 connects to Node 1
+lattice-node --mine Nexus --port 4001 \
+  --peer <node1-pubkey>@<node1-ip>:4001
+
+# Node 3 connects to both
+lattice-node --mine Nexus --port 4001 \
+  --peer <node1-pubkey>@<node1-ip>:4001 \
+  --peer <node2-pubkey>@<node2-ip>:4001
+```
+
+### Chain subscriptions
+
+Subscribe to specific chains in the hierarchy:
+
+```bash
+# Mine nexus and participate in Payments chain
+lattice-node --mine Nexus \
+  --subscribe Nexus/Payments \
+  --subscribe Nexus/Payments/US
 ```
 
 ## Dependencies
