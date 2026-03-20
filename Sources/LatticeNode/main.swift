@@ -41,6 +41,9 @@ struct NodeArgs {
     var diskGB: Double = 1.0
     var mempoolMB: Double = 64.0
     var miningBatch: UInt64 = 10_000
+    var autosize: Bool = false
+    var maxMemoryGB: Double? = nil
+    var maxDiskGB: Double? = nil
     var enableDiscovery: Bool = true
     var showHelp: Bool = false
 }
@@ -85,6 +88,14 @@ func parseArgs() -> NodeArgs {
         case "--mining-batch":
             i += 1
             if i < argv.count, let v = UInt64(argv[i]) { args.miningBatch = v }
+        case "--autosize":
+            args.autosize = true
+        case "--max-memory":
+            i += 1
+            if i < argv.count, let v = Double(argv[i]) { args.maxMemoryGB = v }
+        case "--max-disk":
+            i += 1
+            if i < argv.count, let v = Double(argv[i]) { args.maxDiskGB = v }
         case "--no-discovery":
             args.enableDiscovery = false
         case "--help", "-h":
@@ -123,6 +134,9 @@ func printUsage() {
       --disk <GB>                Disk for CAS storage (default: 1.0)
       --mempool <MB>             Mempool memory (default: 64)
       --mining-batch <N>         Nonces per batch (default: 10000)
+      --autosize                 Auto-detect system resources (recommended)
+      --max-memory <GB>          Cap for autosize memory (optional)
+      --max-disk <GB>            Cap for autosize disk (optional)
 
     SIZING GUIDE:
       2GB RAM / 40GB disk VPS   --memory 0.5  --disk 20
@@ -325,17 +339,33 @@ Task {
         }
         print()
 
-        let resources = NodeResourceConfig(
-            memoryBudgetGB: args.memoryGB,
-            diskBudgetGB: args.diskGB,
-            mempoolBudgetMB: args.mempoolMB,
-            miningBatchSize: args.miningBatch
-        )
+        let resources: NodeResourceConfig
+        if args.autosize {
+            resources = NodeResourceConfig.autosize(
+                dataDir: args.dataDir,
+                maxMemoryGB: args.maxMemoryGB,
+                maxDiskGB: args.maxDiskGB
+            )
+            print("  Autosize:    ON")
+        } else {
+            resources = NodeResourceConfig(
+                memoryBudgetGB: args.memoryGB,
+                diskBudgetGB: args.diskGB,
+                mempoolBudgetMB: args.mempoolMB,
+                miningBatchSize: args.miningBatch
+            )
+        }
 
-        print("  Memory:      \(String(format: "%.2f", args.memoryGB)) GB")
-        print("  Disk:        \(String(format: "%.2f", args.diskGB)) GB")
-        print("  Mempool:     \(String(format: "%.0f", args.mempoolMB)) MB")
-        print("  Mine batch:  \(args.miningBatch)")
+        // Update nodeArgs for status display
+        nodeArgs.memoryGB = resources.memoryBudgetGB
+        nodeArgs.diskGB = resources.diskBudgetGB
+        nodeArgs.mempoolMB = resources.mempoolBudgetMB
+        nodeArgs.miningBatch = resources.miningBatchSize
+
+        print("  Memory:      \(String(format: "%.2f", resources.memoryBudgetGB)) GB")
+        print("  Disk:        \(String(format: "%.2f", resources.diskBudgetGB)) GB")
+        print("  Mempool:     \(String(format: "%.0f", resources.mempoolBudgetMB)) MB")
+        print("  Mine batch:  \(resources.miningBatchSize)")
 
         let nodeConfig = LatticeNodeConfig(
             publicKey: identity.publicKey,

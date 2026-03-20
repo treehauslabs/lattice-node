@@ -24,4 +24,4 @@ VOLUME /home/lattice/.lattice
 EXPOSE 4001
 
 ENTRYPOINT ["lattice-node"]
-CMD ["--mine", "Nexus", "--data-dir", "/home/lattice/.lattice"]
+CMD ["--mine", "Nexus", "--autosize", "--data-dir", "/home/lattice/.lattice"]
