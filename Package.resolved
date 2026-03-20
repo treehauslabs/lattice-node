@@ -20,6 +20,15 @@
       }
     },
     {
+      "identity" : "acornmemoryworker",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/treehauslabs/AcornMemoryWorker.git",
+      "state" : {
+        "branch" : "master",
+        "revision" : "783c9e2afb9751d75cecc26fb52b915a82f9b5d3"
+      }
+    },
+    {
       "identity" : "arraytrie",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/ArrayTrie.git",
@@ -70,7 +79,7 @@
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
         "branch" : "master",
-        "revision" : "6f7794cedb7910f7b13608d99e8ac36196547d3d"
+        "revision" : "99fde77b5576e4a36f8163b1a2bcbc3be1618505"
       }
     },
     {

@@ -37,6 +37,10 @@ struct NodeArgs {
         t.set(["Nexus"], value: true)
         return t
     }()
+    var memoryGB: Double = 0.25
+    var diskGB: Double = 1.0
+    var mempoolMB: Double = 64.0
+    var miningBatch: UInt64 = 10_000
     var enableDiscovery: Bool = true
     var showHelp: Bool = false
 }
@@ -69,6 +73,18 @@ func parseArgs() -> NodeArgs {
                 let path = argv[i].split(separator: "/").map(String.init)
                 args.subscribedChains.set(path, value: true)
             }
+        case "--memory":
+            i += 1
+            if i < argv.count, let v = Double(argv[i]) { args.memoryGB = v }
+        case "--disk":
+            i += 1
+            if i < argv.count, let v = Double(argv[i]) { args.diskGB = v }
+        case "--mempool":
+            i += 1
+            if i < argv.count, let v = Double(argv[i]) { args.mempoolMB = v }
+        case "--mining-batch":
+            i += 1
+            if i < argv.count, let v = UInt64(argv[i]) { args.miningBatch = v }
         case "--no-discovery":
             args.enableDiscovery = false
         case "--help", "-h":
@@ -103,6 +119,10 @@ func printUsage() {
       --peer <pubKey@host:port>  Bootstrap peer (repeatable)
       --mine <chain>             Mine chain on boot (default: Nexus if no arg; repeatable)
       --subscribe <path>         Subscribe to chain path (e.g. Nexus/Payments; repeatable)
+      --memory <GB>              Memory budget for CAS cache (default: 0.25)
+      --disk <GB>                Disk budget for CAS storage (default: 1.0)
+      --mempool <MB>             Mempool memory budget (default: 64)
+      --mining-batch <N>         Nonces per mining batch (default: 10000)
       --no-discovery             Disable mDNS local peer discovery
       --help, -h                 Show this help
 
@@ -285,6 +305,18 @@ Task {
         }
         print()
 
+        let resources = NodeResourceConfig(
+            memoryBudgetGB: args.memoryGB,
+            diskBudgetGB: args.diskGB,
+            mempoolBudgetMB: args.mempoolMB,
+            miningBatchSize: args.miningBatch
+        )
+
+        print("  Memory:      \(String(format: "%.2f", args.memoryGB)) GB")
+        print("  Disk:        \(String(format: "%.2f", args.diskGB)) GB")
+        print("  Mempool:     \(String(format: "%.0f", args.mempoolMB)) MB")
+        print("  Mine batch:  \(args.miningBatch)")
+
         let nodeConfig = LatticeNodeConfig(
             publicKey: identity.publicKey,
             privateKey: identity.privateKey,
@@ -293,7 +325,8 @@ Task {
             storagePath: args.dataDir,
             enableLocalDiscovery: args.enableDiscovery,
             persistInterval: 100,
-            subscribedChains: subscriptions
+            subscribedChains: subscriptions,
+            resources: resources
         )
 
         let node = try await LatticeNode(config: nodeConfig, genesisConfig: NexusGenesis.config)
