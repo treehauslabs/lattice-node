@@ -119,10 +119,17 @@ func printUsage() {
       --peer <pubKey@host:port>  Bootstrap peer (repeatable)
       --mine <chain>             Mine chain on boot (default: Nexus if no arg; repeatable)
       --subscribe <path>         Subscribe to chain path (e.g. Nexus/Payments; repeatable)
-      --memory <GB>              Memory budget for CAS cache (default: 0.25)
-      --disk <GB>                Disk budget for CAS storage (default: 1.0)
-      --mempool <MB>             Mempool memory budget (default: 64)
-      --mining-batch <N>         Nonces per mining batch (default: 10000)
+      --memory <GB>              Memory for CAS cache (default: 0.25)
+      --disk <GB>                Disk for CAS storage (default: 1.0)
+      --mempool <MB>             Mempool memory (default: 64)
+      --mining-batch <N>         Nonces per batch (default: 10000)
+
+    SIZING GUIDE:
+      2GB RAM / 40GB disk VPS   --memory 0.5  --disk 20
+      4GB RAM / 80GB disk VPS   --memory 1.0  --disk 40
+      8GB RAM / 160GB disk VPS  --memory 2.0  --disk 80
+      Memory: ~25% of system RAM. Disk: ~50% of system disk.
+      Budgets are shared across all subscribed chains.
       --no-discovery             Disable mDNS local peer discovery
       --help, -h                 Show this help
 
@@ -142,7 +149,13 @@ func printUsage() {
 
 // MARK: - Status Display
 
-func printStatus(_ statuses: [LatticeNode.ChainInfo]) {
+func printStatus(_ statuses: [LatticeNode.ChainInfo], resources: NodeArgs) {
+    print()
+    let chainCount = max(statuses.count, 1)
+    let memPerChain = resources.memoryGB / Double(chainCount)
+    let diskPerChain = resources.diskGB / Double(chainCount)
+    print("  Resources: \(fmt(resources.memoryGB)) GB memory / \(fmt(resources.diskGB)) GB disk across \(chainCount) chain(s)")
+    print("  Per-chain: \(fmt(memPerChain)) GB memory / \(fmt(diskPerChain)) GB disk / \(Int(resources.mempoolMB)/chainCount) MB mempool")
     print()
     print("  Chain               Height     Tip                    Mining   Mempool")
     print("  -----               ------     ---                    ------   -------")
@@ -156,9 +169,15 @@ func printStatus(_ statuses: [LatticeNode.ChainInfo]) {
     print()
 }
 
+private func fmt(_ gb: Double) -> String {
+    String(format: "%.2f", gb)
+}
+
 // MARK: - Command Handler
 
 nonisolated(unsafe) var subscriptions = ArrayTrie<Bool>()
+
+nonisolated(unsafe) var nodeArgs = NodeArgs()
 
 func handleCommand(_ line: String, node: LatticeNode, shutdown: @Sendable @escaping () -> Void) async {
     let parts = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -194,7 +213,7 @@ func handleCommand(_ line: String, node: LatticeNode, shutdown: @Sendable @escap
 
     case "status":
         let statuses = await node.chainStatus()
-        printStatus(statuses)
+        printStatus(statuses, resources: nodeArgs)
 
     case "chains":
         let dirs = await node.allDirectories()
@@ -276,6 +295,7 @@ func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, baseP
 // MARK: - Main
 
 let args = parseArgs()
+nodeArgs = args
 subscriptions = args.subscribedChains
 
 if args.showHelp {
