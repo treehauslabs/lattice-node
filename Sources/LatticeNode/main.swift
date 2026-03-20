@@ -2,6 +2,7 @@ import Lattice
 import Foundation
 import Ivy
 import UInt256
+import ArrayTrie
 
 // MARK: - Identity Persistence
 
@@ -31,6 +32,11 @@ struct NodeArgs {
     var dataDir: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lattice")
     var bootstrapPeers: [PeerEndpoint] = []
     var mineChains: Set<String> = []
+    var subscribedChains: ArrayTrie<Bool> = {
+        var t = ArrayTrie<Bool>()
+        t.set(["Nexus"], value: true)
+        return t
+    }()
     var enableDiscovery: Bool = true
     var showHelp: Bool = false
 }
@@ -56,6 +62,12 @@ func parseArgs() -> NodeArgs {
                 args.mineChains.insert(argv[i])
             } else {
                 args.mineChains.insert("Nexus")
+            }
+        case "--subscribe":
+            i += 1
+            if i < argv.count {
+                let path = argv[i].split(separator: "/").map(String.init)
+                args.subscribedChains.set(path, value: true)
             }
         case "--no-discovery":
             args.enableDiscovery = false
@@ -90,6 +102,7 @@ func printUsage() {
       --data-dir <path>          Storage directory (default: ~/.lattice)
       --peer <pubKey@host:port>  Bootstrap peer (repeatable)
       --mine <chain>             Mine chain on boot (default: Nexus if no arg; repeatable)
+      --subscribe <path>         Subscribe to chain path (e.g. Nexus/Payments; repeatable)
       --no-discovery             Disable mDNS local peer discovery
       --help, -h                 Show this help
 
@@ -97,6 +110,9 @@ func printUsage() {
       mine start [chain]         Start mining a chain (default: Nexus)
       mine stop [chain]          Stop mining a chain
       mine list                  Show which chains are being mined
+      subscribe <path>           Subscribe to a chain path (e.g. Nexus/Payments)
+      unsubscribe <path>         Unsubscribe from a chain path (cannot unsubscribe Nexus)
+      subscriptions              List subscribed chain paths
       status                     Show all chain heights, tips, mining, mempool
       chains                     List registered chain directories
       peers                      Show connected peer count
@@ -121,6 +137,8 @@ func printStatus(_ statuses: [LatticeNode.ChainInfo]) {
 }
 
 // MARK: - Command Handler
+
+nonisolated(unsafe) var subscriptions = ArrayTrie<Bool>()
 
 func handleCommand(_ line: String, node: LatticeNode, shutdown: @Sendable @escaping () -> Void) async {
     let parts = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -166,6 +184,36 @@ func handleCommand(_ line: String, node: LatticeNode, shutdown: @Sendable @escap
             print("  Known child chains: \(childDirs.sorted().joined(separator: ", "))")
         }
 
+    case "subscribe":
+        guard parts.count >= 2 else {
+            print("  Usage: subscribe <chain/path>")
+            return
+        }
+        let path = parts[1].split(separator: "/").map(String.init)
+        subscriptions.set(path, value: true)
+        print("  Subscribed to \(parts[1])")
+
+    case "unsubscribe":
+        guard parts.count >= 2 else {
+            print("  Usage: unsubscribe <chain/path>")
+            return
+        }
+        if parts[1] == "Nexus" {
+            print("  Cannot unsubscribe from Nexus")
+            return
+        }
+        let path = parts[1].split(separator: "/").map(String.init)
+        subscriptions = subscriptions.deleting(path: path)
+        print("  Unsubscribed from \(parts[1])")
+
+    case "subscriptions":
+        let all = subscriptions.allValues()
+        if all.isEmpty {
+            print("  No subscriptions")
+        } else {
+            print("  Subscribed chains: \(all.count) path(s)")
+        }
+
     case "peers":
         if let net = await node.network(for: "Nexus") {
             let count = await net.ivy.connectedPeers.count
@@ -208,6 +256,7 @@ func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, baseP
 // MARK: - Main
 
 let args = parseArgs()
+subscriptions = args.subscribedChains
 
 if args.showHelp {
     printUsage()
@@ -243,7 +292,8 @@ Task {
             bootstrapPeers: args.bootstrapPeers,
             storagePath: args.dataDir,
             enableLocalDiscovery: args.enableDiscovery,
-            persistInterval: 100
+            persistInterval: 100,
+            subscribedChains: subscriptions
         )
 
         let node = try await LatticeNode(config: nodeConfig, genesisConfig: NexusGenesis.config)
