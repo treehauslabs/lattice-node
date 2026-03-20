@@ -4,26 +4,20 @@ package_update: true
 
 packages:
   - docker.io
-  - docker-compose-v2
   - jq
 
 runcmd:
-  # Enable and start Docker
   - systemctl enable docker
   - systemctl start docker
 
-  # Create lattice user and data directory
-  - useradd -r -m -s /bin/false lattice
+  - useradd -r -m -s /bin/false lattice || true
   - mkdir -p /var/lib/lattice
   - chown lattice:lattice /var/lib/lattice
 
-  # Pull the node image
   - docker pull ${docker_image}
 
-  # Stop any existing container
   - docker rm -f lattice-miner 2>/dev/null || true
 
-  # Start the miner
   - |
     docker run -d \
       --name lattice-miner \
@@ -35,7 +29,6 @@ runcmd:
       --port ${p2p_port} \
       --data-dir /home/lattice/.lattice
 
-  # Write an update script for easy re-deployment
   - |
     cat > /usr/local/bin/lattice-update <<'SCRIPT'
     #!/bin/bash
@@ -52,20 +45,22 @@ runcmd:
       ${docker_image} \
       --mine Nexus \
       --port ${p2p_port} \
-      --data-dir /home/lattice/.lattice
+      --data-dir /home/lattice/.lattice \
+      "$@"
     echo "Done. Check: docker logs -f lattice-miner"
     SCRIPT
     chmod +x /usr/local/bin/lattice-update
 
-  # Write a status script
   - |
     cat > /usr/local/bin/lattice-status <<'SCRIPT'
     #!/bin/bash
     echo "=== Lattice Node Status ==="
     echo "Container:"
     docker ps --filter name=lattice-miner --format "  Status: {{.Status}}"
+    echo ""
     echo "Logs (last 20 lines):"
     docker logs --tail 20 lattice-miner 2>&1
+    echo ""
     echo "Data dir:"
     du -sh /var/lib/lattice
     SCRIPT

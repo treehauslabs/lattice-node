@@ -15,7 +15,7 @@ provider "hcloud" {
 # SSH key for node access
 resource "hcloud_ssh_key" "lattice" {
   name       = "lattice-deploy"
-  public_key = file(var.ssh_public_key_path)
+  public_key = file(pathexpand(var.ssh_public_key_path))
 }
 
 # Firewall: only SSH + P2P
@@ -58,7 +58,6 @@ resource "hcloud_server" "node" {
     docker_image = var.image
     p2p_port     = var.p2p_port
     node_name    = var.nodes[count.index].name
-    peer_ips     = [for i, n in var.nodes : hcloud_server.node[i].ipv4_address if i != count.index]
   })
 
   lifecycle {
@@ -88,4 +87,15 @@ output "peer_flags" {
     for i, node in hcloud_server.node :
     "--peer <pubkey>@${node.ipv4_address}:${var.p2p_port}"
   ]
+}
+
+output "connect_peers_script" {
+  description = "Run this after deploy to connect nodes to each other via lattice-update"
+  value = join("\n", [
+    for i, node in hcloud_server.node :
+    "ssh root@${node.ipv4_address} 'lattice-update ${join(" ", [
+      for j, peer in hcloud_server.node :
+      "--peer <pubkey>@${peer.ipv4_address}:${var.p2p_port}" if j != i
+    ])}'"
+  ])
 }
