@@ -23,5 +23,8 @@ USER lattice
 VOLUME /home/lattice/.lattice
 EXPOSE 4001
 
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD grep -q "status: OK" /home/lattice/.lattice/health || exit 1
+
 ENTRYPOINT ["lattice-node"]
 CMD ["--mine", "Nexus", "--autosize", "--data-dir", "/home/lattice/.lattice"]

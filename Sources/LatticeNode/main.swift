@@ -367,11 +367,20 @@ Task {
         print("  Mempool:     \(String(format: "%.0f", resources.mempoolBudgetMB)) MB")
         print("  Mine batch:  \(resources.miningBatchSize)")
 
+        // Merge user-specified peers with hardcoded bootstrap peers
+        var allPeers = args.bootstrapPeers
+        if allPeers.isEmpty {
+            allPeers = BootstrapPeers.nexus
+        }
+        if !allPeers.isEmpty {
+            print("  Bootstrap:   \(allPeers.count) peer(s)")
+        }
+
         let nodeConfig = LatticeNodeConfig(
             publicKey: identity.publicKey,
             privateKey: identity.privateKey,
             listenPort: args.port,
-            bootstrapPeers: args.bootstrapPeers,
+            bootstrapPeers: allPeers,
             storagePath: args.dataDir,
             enableLocalDiscovery: args.enableDiscovery,
             persistInterval: 100,
@@ -380,12 +389,29 @@ Task {
         )
 
         let node = try await LatticeNode(config: nodeConfig, genesisConfig: NexusGenesis.config)
+
+        // Verify genesis chain identity
+        let genesisResult = await node.genesisResult
+        let genesisValid = NexusGenesis.verifyGenesis(genesisResult)
+        if !genesisValid {
+            print("  FATAL: Genesis block hash mismatch!")
+            print("  Expected: \(NexusGenesis.expectedBlockHash)")
+            print("  Got:      \(genesisResult.blockHash)")
+            print("  This binary may be incompatible with the network.")
+            exit(1)
+        }
+        print("  Genesis:     verified (\(String(NexusGenesis.expectedBlockHash.prefix(20)))...)")
+
         try? await node.restoreChildChains()
         try await node.start()
 
         let genesisHeight = await node.lattice.nexus.chain.getHighestBlockIndex()
-        print("  Nexus chain height: \(genesisHeight)")
+        print("  Chain height: \(genesisHeight)")
         print()
+
+        // Start health check writer
+        let health = HealthCheck(dataDir: args.dataDir)
+        await health.start()
 
         for chain in args.mineChains {
             await node.startMining(directory: chain)
@@ -394,9 +420,20 @@ Task {
 
         startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: args.port)
 
+        // Periodic health updates
+        Task {
+            while !Task.isCancelled {
+                let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+                let peerCount = await node.network(for: "Nexus")?.ivy.connectedPeers.count ?? 0
+                await health.update(chainHeight: height, peerCount: peerCount)
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
+
         let shutdownHandler: @Sendable () -> Void = {
             Task {
                 print("\n  Shutting down...")
+                await health.stop()
                 await node.stop()
                 print("  State persisted. Goodbye.")
                 exit(0)
