@@ -352,10 +352,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         let header = HeaderImpl<Block>(node: block)
         guard let blockData = block.toData() else { return }
 
-        await network.storeBlock(cid: header.rawCID, data: blockData)
-        await network.pinTipBlock(cid: header.rawCID, data: blockData)
+        await network.publishBlock(cid: header.rawCID, data: blockData)
+        await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
         let _ = await lattice.processBlockHeader(header, fetcher: network.fetcher)
-        await network.broadcastBlock(cid: header.rawCID, data: blockData)
         await maybePersist(directory: directory)
     }
 
@@ -381,7 +380,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         await recordBlockTime(key: key, time: now)
 
         await network.storeBlock(cid: cid, data: data)
-        await network.pinTipBlock(cid: cid, data: data)
 
         tally.recordReceived(peer: peer, bytes: data.count)
 
@@ -402,6 +400,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
         if accepted {
             tally.recordSuccess(peer: peer)
+            await network.setChainTip(tipCID: cid, referencedCIDs: [])
         } else {
             tally.recordFailure(peer: peer)
         }
@@ -678,7 +677,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         guard let network = networks[directory] else { return }
         guard let bodyData = transaction.body.node?.toData() else { return }
         await network.fetcher.store(rawCid: transaction.body.rawCID, data: bodyData)
-        await network.broadcastBlock(cid: transaction.body.rawCID, data: bodyData)
+        await network.announceBlock(cid: transaction.body.rawCID)
     }
 
     // MARK: - Peer Persistence

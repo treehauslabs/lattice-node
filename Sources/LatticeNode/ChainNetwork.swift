@@ -20,10 +20,10 @@ public actor ChainNetwork: IvyDelegate {
     public let mempool: Mempool
     private let storage: any AcornCASWorker
     private let memoryWorker: MemoryCASWorker
+    public let verifiedStore: VerifiedDistanceStore
     private let resources: NodeResourceConfig
     public weak var delegate: ChainNetworkDelegate?
     private var subscribedChains: Set<String>
-    private var tipBlockData: (cid: String, data: Data)?
 
     public init(
         directory: String,
@@ -37,7 +37,6 @@ public actor ChainNetwork: IvyDelegate {
         self.resources = resources
         self.mempool = Mempool(maxSize: resources.mempoolSizePerChain(chainCount: chainCount))
 
-        // Memory: pure LFU cache (fast CDN, no distance bias)
         let memoryBytes = resources.memoryBytesPerChain(chainCount: chainCount)
         let memoryEntries = max(memoryBytes / 4096, 100)
         let memory = MemoryCASWorker(
@@ -46,20 +45,24 @@ public actor ChainNetwork: IvyDelegate {
         )
         self.memoryWorker = memory
 
-        // Disk: distance-based eviction (evict most distant content first)
         let diskBytes = resources.diskBytesPerChain(chainCount: chainCount)
-        let nodeHash = resources.nodeIdentityHash ?? Router.hash("default")
-        let disk = try DistanceCASWorker(
+        let disk = try DiskCASWorker(
             directory: storagePath.appendingPathComponent(directory),
-            nodeHash: nodeHash,
             maxBytes: diskBytes
         )
 
+        let verified = VerifiedDistanceStore(
+            inner: disk,
+            nodePublicKey: config.publicKey,
+            maxEntries: max(diskBytes / 4096, 1000)
+        )
+        self.verifiedStore = verified
+
         let ivy = Ivy(config: config)
-        let network = await ivy.worker()
+        let network = await ivy.reticulumWorker()
 
         let composite = await CompositeCASWorker(
-            workers: ["mem": memory, "disk": disk, "net": network],
+            workers: ["mem": memory, "disk": verified, "net": network],
             order: ["mem", "disk", "net"]
         )
 
@@ -71,20 +74,20 @@ public actor ChainNetwork: IvyDelegate {
     public func start() async throws {
         await ivy.setDelegate(self)
         try await ivy.start()
+
+        let chain = ChainDestination(chainDirectory: directory)
+        let reticulum = await ivy.reticulumWorker()
+        await reticulum.bindToChain(chain)
     }
 
     public func stop() async {
         await ivy.stop()
     }
 
-    // MARK: - Tip Block Pinning
+    // MARK: - Chain Tip Management
 
-    public func pinTipBlock(cid: String, data: Data) {
-        tipBlockData = (cid: cid, data: data)
-    }
-
-    public func getTipBlockData() -> (cid: String, data: Data)? {
-        tipBlockData
+    public func setChainTip(tipCID: String, referencedCIDs: [String]) async {
+        await verifiedStore.setChainTip(chain: directory, tipCID: tipCID, referencedCIDs: referencedCIDs)
     }
 
     // MARK: - Chain Subscription
@@ -107,13 +110,13 @@ public actor ChainNetwork: IvyDelegate {
 
     // MARK: - Block Operations
 
-    public func announceBlock(cid: String) async {
-        await ivy.announceBlock(cid: cid)
+    public func publishBlock(cid: String, data: Data, referencedCIDs: [String] = []) async {
+        await verifiedStore.storePinned(cid: ContentIdentifier(rawValue: cid), data: data)
+        await ivy.publishBlock(cid: cid, data: data)
     }
 
-    public func broadcastBlock(cid: String, data: Data) async {
-        await fetcher.store(rawCid: cid, data: data)
-        await ivy.broadcastBlock(cid: cid, data: data)
+    public func announceBlock(cid: String) async {
+        await ivy.announceBlock(cid: cid)
     }
 
     public func storeBlock(cid: String, data: Data) async {
