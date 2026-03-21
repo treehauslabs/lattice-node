@@ -1,5 +1,6 @@
 import XCTest
 @testable import Lattice
+@testable import LatticeNode
 import UInt256
 import cashew
 import Acorn
@@ -20,7 +21,7 @@ private func fetcher() -> AcornFetcher { AcornFetcher(worker: E2EWorker()) }
 private func testSpec(_ dir: String = "Nexus", premine: UInt64 = 0) -> ChainSpec {
     ChainSpec(directory: dir, maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
               maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialRewardExponent: 10, difficultyAdjustmentWindow: 5)
+              initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
 }
 
 private func sign(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {

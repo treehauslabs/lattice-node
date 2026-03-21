@@ -1,5 +1,6 @@
 import XCTest
 import Lattice
+@testable import LatticeNode
 import UInt256
 import cashew
 import Acorn
@@ -49,11 +50,13 @@ final class LatticeNodeTests: XCTestCase {
         let childSpec = ChainSpec(directory: "Payments", maxNumberOfTransactionsPerBlock: 100,
                                   maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                                   premine: 0, targetBlockTime: 1_000,
-                                  initialRewardExponent: 10, difficultyAdjustmentWindow: 5)
+                                  initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, timestamp: 0, difficulty: UInt256(1000), fetcher: fetcher
         )
-        await level.registerChildChain(directory: "Payments", genesisBlock: childGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        await level.restoreChildChain(directory: "Payments", level: childLevel)
 
         let dirs = await level.childDirectories()
         XCTAssertEqual(dirs, ["Payments"])
@@ -67,7 +70,7 @@ final class LatticeNodeTests: XCTestCase {
         let childSpec = ChainSpec(directory: "Data", maxNumberOfTransactionsPerBlock: 100,
                                   maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                                   premine: 0, targetBlockTime: 1_000,
-                                  initialRewardExponent: 10, difficultyAdjustmentWindow: 5)
+                                  initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, timestamp: 0, difficulty: UInt256(1000), fetcher: fetcher
         )
@@ -87,10 +90,12 @@ final class LatticeNodeTests: XCTestCase {
         let childSpec = ChainSpec(directory: "X", maxNumberOfTransactionsPerBlock: 100,
                                   maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                                   premine: 0, targetBlockTime: 1_000,
-                                  initialRewardExponent: 10, difficultyAdjustmentWindow: 5)
+                                  initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
         let g = try await BlockBuilder.buildGenesis(spec: childSpec, timestamp: 0, difficulty: UInt256(1000), fetcher: fetcher)
-        await level.registerChildChain(directory: "X", genesisBlock: g)
-        await level.registerChildChain(directory: "X", genesisBlock: g)
+        let xChain = ChainState.fromGenesis(block: g)
+        let xLevel = ChainLevel(chain: xChain, children: [:])
+        await level.restoreChildChain(directory: "X", level: xLevel)
+        await level.restoreChildChain(directory: "X", level: xLevel)
 
         let dirs = await level.childDirectories()
         XCTAssertEqual(dirs.count, 1)
@@ -116,7 +121,7 @@ final class LatticeNodeTests: XCTestCase {
         let spec = ChainSpec(directory: "Nexus", maxNumberOfTransactionsPerBlock: 100,
                              maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                              premine: 0, targetBlockTime: 1_000,
-                             initialRewardExponent: 10, difficultyAdjustmentWindow: 5)
+                             initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
@@ -150,7 +155,7 @@ final class LatticeNodeTests: XCTestCase {
         let spec = ChainSpec(directory: "Nexus", maxNumberOfTransactionsPerBlock: 100,
                              maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                              premine: 0, targetBlockTime: 1_000,
-                             initialRewardExponent: 10, difficultyAdjustmentWindow: 5)
+                             initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
@@ -188,7 +193,7 @@ final class LatticeNodeTests: XCTestCase {
         let spec = ChainSpec(directory: "Nexus", maxNumberOfTransactionsPerBlock: 100,
                              maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                              premine: 0, targetBlockTime: 1_000,
-                             initialRewardExponent: 10, difficultyAdjustmentWindow: 5)
+                             initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
@@ -216,11 +221,11 @@ final class LatticeNodeTests: XCTestCase {
         let nexusSpec = ChainSpec(directory: "Nexus", maxNumberOfTransactionsPerBlock: 100,
                                   maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                                   premine: 0, targetBlockTime: 1_000,
-                                  initialRewardExponent: 10, difficultyAdjustmentWindow: 5)
+                                  initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
         let childSpec = ChainSpec(directory: "Child", maxNumberOfTransactionsPerBlock: 100,
                                   maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                                   premine: 0, targetBlockTime: 1_000,
-                                  initialRewardExponent: 10, difficultyAdjustmentWindow: 5)
+                                  initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
 
         let nexusGenesis = try await BlockBuilder.buildGenesis(
             spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher

@@ -1,11 +1,30 @@
 import XCTest
 @testable import Lattice
+@testable import LatticeNode
 @testable import UInt256
 import cashew
 import Acorn
 import Tally
 import Ivy
 import Crypto
+
+private func difficultyHashPrefix(_ block: Block) -> Data {
+    var prefix = ""
+    if let previousBlockCID = block.previousBlock?.rawCID {
+        prefix += previousBlockCID
+    }
+    prefix += block.transactions.rawCID
+    prefix += block.difficulty.toHexString()
+    prefix += block.nextDifficulty.toHexString()
+    prefix += block.spec.rawCID
+    prefix += block.parentHomestead.rawCID
+    prefix += block.homestead.rawCID
+    prefix += block.frontier.rawCID
+    prefix += block.childBlocks.rawCID
+    prefix += String(block.index)
+    prefix += String(block.timestamp)
+    return Data(prefix.utf8)
+}
 
 private struct TestFetcher: Fetcher {
     func fetch(rawCid: String) async throws -> Data {
@@ -40,8 +59,8 @@ final class BlockHashPrefixTests: XCTestCase {
             difficulty: UInt256(1000), nonce: 0, fetcher: f
         )
 
-        let prefix1 = block.getDifficultyHashPrefix()
-        let prefix2 = block.getDifficultyHashPrefix()
+        let prefix1 = difficultyHashPrefix(block)
+        let prefix2 = difficultyHashPrefix(block)
         XCTAssertEqual(prefix1, prefix2)
         XCTAssertFalse(prefix1.isEmpty)
     }
@@ -61,7 +80,7 @@ final class BlockHashPrefixTests: XCTestCase {
             )
             let expected = block.getDifficultyHash()
 
-            var input = block.getDifficultyHashPrefix()
+            var input = difficultyHashPrefix(block)
             input.append(contentsOf: String(nonce).utf8)
             let computed = UInt256.hash(input)
 
@@ -81,7 +100,7 @@ final class BlockHashPrefixTests: XCTestCase {
             difficulty: UInt256(1000), nonce: 0, fetcher: f
         )
 
-        let prefix = block.getDifficultyHashPrefix()
+        let prefix = difficultyHashPrefix(block)
         var input0 = prefix
         input0.append(contentsOf: "0".utf8)
         var input1 = prefix
@@ -99,7 +118,7 @@ final class BlockHashPrefixTests: XCTestCase {
         )
 
         let expected = genesis.getDifficultyHash()
-        var input = genesis.getDifficultyHashPrefix()
+        var input = difficultyHashPrefix(genesis)
         input.append(contentsOf: "0".utf8)
         let computed = UInt256.hash(input)
 
@@ -278,7 +297,7 @@ final class MiningChallengeIntegrationTests: XCTestCase {
             difficulty: UInt256(1000), nonce: 0, fetcher: f
         )
 
-        let hashPrefix = block.getDifficultyHashPrefix()
+        let hashPrefix = difficultyHashPrefix(block)
         var targetBytes = Data(count: 32)
         let target = block.difficulty
         for i in 0..<4 {
@@ -323,7 +342,7 @@ final class MiningChallengeIntegrationTests: XCTestCase {
             difficulty: UInt256(UInt64.max), nonce: 0, fetcher: f
         )
 
-        let hashPrefix = block.getDifficultyHashPrefix()
+        let hashPrefix = difficultyHashPrefix(block)
         var targetBytes = Data(count: 32)
         let target = UInt256(UInt64.max)
         for i in 0..<4 {
