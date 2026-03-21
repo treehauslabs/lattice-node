@@ -91,6 +91,8 @@ public actor MinerLoop {
                     continue
                 }
 
+                let previousBlockHash = HeaderImpl<Block>(node: previousBlock).rawCID
+
                 var transactions = await mempool.selectTransactions(
                     maxCount: max(0, Int(spec.maxNumberOfTransactionsPerBlock) - 1)
                 )
@@ -116,24 +118,27 @@ public actor MinerLoop {
                     fetcher: fetcher
                 )
 
+                let hashPrefix = difficultyHashPrefix(template)
+                let targetDifficulty = previousBlock.nextDifficulty
                 let batchSize = self.batchSize
                 var nonce: UInt64 = 0
 
                 while mining && !Task.isCancelled {
-                    let tipChanged = await hasTipChanged(previousHash: HeaderImpl<Block>(node: previousBlock).rawCID)
-                    if tipChanged { break }
+                    let currentTip = await chainState.getMainChainTip()
+                    if currentTip != previousBlockHash { break }
 
-                    if let mined = BlockBuilder.mine(
-                        block: withNonce(template, startNonce: nonce),
-                        targetDifficulty: previousBlock.nextDifficulty,
-                        maxAttempts: batchSize
+                    if let foundNonce = mineBatch(
+                        prefix: hashPrefix,
+                        targetDifficulty: targetDifficulty,
+                        startNonce: nonce,
+                        count: batchSize
                     ) {
-                        let hash = HeaderImpl<Block>(node: mined).rawCID
+                        let mined = withNonce(template, startNonce: foundNonce)
 
                         let confirmedCIDs = Set(transactions.map { $0.body.rawCID })
                         await mempool.removeAll(txCIDs: confirmedCIDs)
 
-                        await delegate?.minerDidProduceBlock(mined, hash: hash)
+                        await delegate?.minerDidProduceBlock(mined, hash: HeaderImpl<Block>(node: mined).rawCID)
                         break
                     }
 
@@ -144,6 +149,42 @@ public actor MinerLoop {
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
+    }
+
+    private func difficultyHashPrefix(_ block: Block) -> String {
+        var prefix = ""
+        if let previousBlockCID = block.previousBlock?.rawCID {
+            prefix += previousBlockCID
+        }
+        prefix += block.transactions.rawCID
+        prefix += block.difficulty.toHexString()
+        prefix += block.nextDifficulty.toHexString()
+        prefix += block.spec.rawCID
+        prefix += block.parentHomestead.rawCID
+        prefix += block.homestead.rawCID
+        prefix += block.frontier.rawCID
+        prefix += block.childBlocks.rawCID
+        prefix += String(block.index)
+        prefix += String(block.timestamp)
+        return prefix
+    }
+
+    private func mineBatch(
+        prefix: String,
+        targetDifficulty: UInt256,
+        startNonce: UInt64,
+        count: UInt64
+    ) -> UInt64? {
+        let end = startNonce &+ count
+        var nonce = startNonce
+        while nonce < end {
+            let hash = UInt256.hash(prefix + String(nonce))
+            if targetDifficulty >= hash {
+                return nonce
+            }
+            nonce &+= 1
+        }
+        return nil
     }
 
     // MARK: - Coinbase Transaction
@@ -251,11 +292,6 @@ public actor MinerLoop {
         let tipHash = await chainState.getMainChainTip()
         let tipData = try await fetcher.fetch(rawCid: tipHash)
         return Block(data: tipData)
-    }
-
-    private func hasTipChanged(previousHash: String) async -> Bool {
-        let currentTip = await chainState.getMainChainTip()
-        return currentTip != previousHash
     }
 
     private func withNonce(_ block: Block, startNonce: UInt64) -> Block {

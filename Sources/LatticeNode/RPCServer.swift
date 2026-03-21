@@ -9,6 +9,7 @@ public final class RPCServer: @unchecked Sendable {
     private let port: UInt16
     private var listener: NWListener?
     private let queue: DispatchQueue
+    private let rateLimiter = RateLimiter(maxRequestsPerSecond: 50, windowSeconds: 1.0)
 
     public init(node: LatticeNode, port: UInt16 = 8080) {
         self.node = node
@@ -38,11 +39,26 @@ public final class RPCServer: @unchecked Sendable {
 
     private func handleConnection(_ conn: NWConnection) {
         conn.start(queue: queue)
+
+        let remoteIP: String
+        if let endpoint = conn.currentPath?.remoteEndpoint,
+           case .hostPort(let host, _) = endpoint {
+            remoteIP = "\(host)"
+        } else {
+            remoteIP = "unknown"
+        }
+
         conn.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] data, _, isComplete, error in
             guard let self, let data, error == nil else {
                 conn.cancel()
                 return
             }
+
+            if !self.rateLimiter.allow(remoteIP) {
+                self.sendResponse(conn, status: 429, body: self.jsonError("Rate limit exceeded"))
+                return
+            }
+
             guard let raw = String(data: data, encoding: .utf8) else {
                 self.sendResponse(conn, status: 400, body: self.jsonError("Invalid request encoding"))
                 return
@@ -97,6 +113,7 @@ public final class RPCServer: @unchecked Sendable {
         case 200: "OK"
         case 400: "Bad Request"
         case 404: "Not Found"
+        case 429: "Too Many Requests"
         case 500: "Internal Server Error"
         default: "Error"
         }
@@ -174,6 +191,15 @@ public final class RPCServer: @unchecked Sendable {
         }
         if method == "GET" && segments.count == 3 && segments[1] == "wallet" && segments[2] == "create" {
             return handleCreateWallet()
+        }
+        if method == "POST" && segments.count == 3 && segments[1] == "wallet" && segments[2] == "sign" {
+            return handleSignTransaction(body: body)
+        }
+        if method == "GET" && segments.count == 3 && segments[1] == "proof" {
+            return await handleBalanceProof(address: segments[2])
+        }
+        if method == "GET" && segments.count == 2 && segments[1] == "peers" {
+            return await handleGetPeers()
         }
         return (404, jsonError("Not found"))
     }
@@ -333,13 +359,19 @@ public final class RPCServer: @unchecked Sendable {
         let txBody = HeaderImpl<TransactionBody>(rawCID: submission.bodyCID)
         let tx = Transaction(signatures: submission.signatures, body: txBody)
         let directory = node.genesisConfig.spec.directory
-        let added = await node.submitTransaction(directory: directory, transaction: tx)
+        let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
 
         struct TxResponse: Encodable {
             let accepted: Bool
             let txCID: String
+            let error: String?
         }
-        return (200, jsonEncode(TxResponse(accepted: added, txCID: submission.bodyCID)))
+        switch result {
+        case .success:
+            return (200, jsonEncode(TxResponse(accepted: true, txCID: submission.bodyCID, error: nil)))
+        case .failure(let reason):
+            return (400, jsonEncode(TxResponse(accepted: false, txCID: submission.bodyCID, error: reason)))
+        }
     }
 
     // MARK: - Mempool
@@ -366,14 +398,78 @@ public final class RPCServer: @unchecked Sendable {
         struct WalletResponse: Encodable {
             let address: String
             let publicKeyHex: String
-            let privateKeyHex: String
         }
         let response = WalletResponse(
             address: wallet.address,
-            publicKeyHex: wallet.publicKeyHex,
-            privateKeyHex: wallet.privateKeyHex
+            publicKeyHex: wallet.publicKeyHex
         )
         return (200, jsonEncode(response))
+    }
+
+    // MARK: - Client-Side Signing
+
+    private func handleSignTransaction(body: String?) -> (Int, Data) {
+        guard let body, let bodyData = body.data(using: .utf8) else {
+            return (400, jsonError("Missing request body"))
+        }
+
+        struct SignRequest: Decodable {
+            let privateKeyHex: String
+            let bodyCID: String
+        }
+
+        guard let req = try? JSONDecoder().decode(SignRequest.self, from: bodyData) else {
+            return (400, jsonError("Expected: {privateKeyHex, bodyCID}"))
+        }
+
+        guard let wallet = Wallet.fromPrivateKey(req.privateKeyHex) else {
+            return (400, jsonError("Invalid private key"))
+        }
+
+        guard let signature = wallet.sign(message: req.bodyCID) else {
+            return (500, jsonError("Signing failed"))
+        }
+
+        struct SignResponse: Encodable {
+            let signature: String
+            let publicKeyHex: String
+            let address: String
+        }
+        return (200, jsonEncode(SignResponse(
+            signature: signature,
+            publicKeyHex: wallet.publicKeyHex,
+            address: wallet.address
+        )))
+    }
+
+    // MARK: - Merkle Proof
+
+    private func handleBalanceProof(address: String) async -> (Int, Data) {
+        do {
+            guard let proof = try await node.getBalanceProof(address: address) else {
+                return (500, jsonError("Proof generation failed"))
+            }
+            return (200, proof)
+        } catch {
+            return (500, jsonError("Failed to generate proof: \(error)"))
+        }
+    }
+
+    // MARK: - Peers
+
+    private func handleGetPeers() async -> (Int, Data) {
+        let peers = await node.connectedPeerEndpoints()
+        struct PeerResponse: Encodable {
+            let count: Int
+            let peers: [PeerEntry]
+        }
+        struct PeerEntry: Encodable {
+            let publicKey: String
+            let host: String
+            let port: UInt16
+        }
+        let entries = peers.map { PeerEntry(publicKey: String($0.publicKey.prefix(16)) + "...", host: $0.host, port: $0.port) }
+        return (200, jsonEncode(PeerResponse(count: peers.count, peers: entries)))
     }
 
     // MARK: - DEX Orders
@@ -451,13 +547,19 @@ public final class RPCServer: @unchecked Sendable {
             }
 
             let directory = node.genesisConfig.spec.directory
-            let added = await node.submitTransaction(directory: directory, transaction: tx)
+            let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
 
             struct PlaceOrderResponse: Encodable {
                 let accepted: Bool
                 let orderId: String
+                let error: String?
             }
-            return (200, jsonEncode(PlaceOrderResponse(accepted: added, orderId: order.id)))
+            switch result {
+            case .success:
+                return (200, jsonEncode(PlaceOrderResponse(accepted: true, orderId: order.id, error: nil)))
+            case .failure(let reason):
+                return (400, jsonEncode(PlaceOrderResponse(accepted: false, orderId: order.id, error: reason)))
+            }
         } catch {
             return (500, jsonError("Failed to place order: \(error)"))
         }
@@ -466,4 +568,41 @@ public final class RPCServer: @unchecked Sendable {
 
 public enum RPCError: Error {
     case invalidPort
+}
+
+final class RateLimiter: @unchecked Sendable {
+    private let maxRequests: Int
+    private let windowSeconds: Double
+    private var requests: [String: [CFAbsoluteTime]] = [:]
+    private let lock = NSLock()
+
+    init(maxRequestsPerSecond: Int, windowSeconds: Double = 1.0) {
+        self.maxRequests = maxRequestsPerSecond
+        self.windowSeconds = windowSeconds
+    }
+
+    func allow(_ key: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let now = CFAbsoluteTimeGetCurrent()
+        let cutoff = now - windowSeconds
+        var times = requests[key, default: []]
+        times = times.filter { $0 > cutoff }
+
+        if times.count >= maxRequests {
+            requests[key] = times
+            return false
+        }
+
+        times.append(now)
+        requests[key] = times
+
+        if requests.count > 1000 {
+            let globalCutoff = now - windowSeconds * 10
+            requests = requests.filter { !$0.value.allSatisfy { $0 < globalCutoff } }
+        }
+
+        return true
+    }
 }

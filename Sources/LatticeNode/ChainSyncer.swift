@@ -11,6 +11,7 @@ public enum SyncStrategy: Sendable {
 public enum SyncError: Error, Sendable {
     case invalidBlock(UInt64)
     case invalidPoW(UInt64)
+    case invalidStateRoot(UInt64)
     case genesisMismatch
     case cancelled
     case emptyChain
@@ -113,10 +114,11 @@ public actor ChainSyncer {
     // MARK: - Snapshot Sync
     //
     // Walk backwards from peer tip for `depth` blocks only.
-    // Validates PoW on downloaded blocks but trusts the state root
-    // at the snapshot boundary. Much faster than full sync — the
-    // node can start operating immediately, fetching historical
-    // state lazily from peers as needed.
+    // Validates PoW on downloaded blocks and verifies the tip
+    // block's frontier state root by re-deriving it from the
+    // homestead + transactions. Much faster than full sync — the
+    // node can start operating quickly, fetching historical state
+    // lazily from peers as needed.
 
     public func syncSnapshot(
         peerTipCID: String,
@@ -127,6 +129,7 @@ public actor ChainSyncer {
         var collected: [(hash: String, index: UInt64, prevHash: String?)] = []
         var currentCID = peerTipCID
         var targetHeight: UInt64 = 0
+        var tipBlock: Block?
 
         while !cancelled {
             let data: Data
@@ -142,6 +145,7 @@ public actor ChainSyncer {
 
             if collected.isEmpty {
                 targetHeight = block.index
+                tipBlock = block
             }
 
             let diffHash = block.getDifficultyHash()
@@ -174,9 +178,30 @@ public actor ChainSyncer {
         if cancelled { throw SyncError.cancelled }
         guard !collected.isEmpty else { throw SyncError.emptyChain }
 
+        if let tip = tipBlock {
+            let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher)) ?? false
+            if !valid {
+                let fullValid = try await verifyTipFrontier(tip)
+                if !fullValid {
+                    throw SyncError.invalidStateRoot(tip.index)
+                }
+            }
+        }
+
         collected.reverse()
 
         return buildResult(from: collected)
+    }
+
+    private func verifyTipFrontier(_ block: Block) async throws -> Bool {
+        guard let transactionsNode = try? await block.transactions.resolveRecursive(fetcher: fetcher).node else {
+            return false
+        }
+        guard let txKeysAndValues = try? transactionsNode.allKeysAndValues() else {
+            return false
+        }
+        let bodies = txKeysAndValues.values.compactMap { $0.node?.body.node }
+        return try await block.validateFrontierState(transactionBodies: bodies, fetcher: fetcher)
     }
 
     // MARK: - Build Result

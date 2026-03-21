@@ -289,24 +289,37 @@ func handleCommand(_ line: String, node: LatticeNode, shutdown: @Sendable @escap
 
 // MARK: - Child Chain Discovery
 
+func deterministicPort(basePort: UInt16, directory: String) -> UInt16 {
+    let hash = directory.utf8.reduce(0) { ($0 &* 31) &+ UInt16($1) }
+    return basePort &+ 1 &+ (hash % 1000)
+}
+
 func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, basePort: UInt16) {
     Task {
-        var nextPort = basePort + 1
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(5))
             let childDirs = await node.lattice.nexus.childDirectories()
             for dir in childDirs {
                 if await node.network(for: dir) == nil {
+                    let port = deterministicPort(basePort: basePort, directory: dir)
                     let childConfig = IvyConfig(
                         publicKey: config.publicKey,
-                        listenPort: nextPort,
+                        listenPort: port,
                         enableLocalDiscovery: config.enableLocalDiscovery
                     )
                     try? await node.registerChainNetwork(directory: dir, config: childConfig)
-                    print("  [discovery] Registered child chain: \(dir) on port \(nextPort)")
-                    nextPort += 1
+                    print("  [discovery] Registered child chain: \(dir) on port \(port)")
                 }
             }
+        }
+    }
+}
+
+func startMempoolExpiryLoop(node: LatticeNode) {
+    Task {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(60))
+            await node.pruneExpiredTransactions()
         }
     }
 }
@@ -372,13 +385,19 @@ Task {
         print("  Mempool:     \(String(format: "%.0f", resources.mempoolBudgetMB)) MB")
         print("  Mine batch:  \(resources.miningBatchSize)")
 
-        // Merge user-specified peers with hardcoded bootstrap peers
+        // Merge user-specified peers with hardcoded and persisted peers
+        let peerStore = PeerStore(dataDir: args.dataDir)
         var allPeers = args.bootstrapPeers
         if allPeers.isEmpty {
             allPeers = BootstrapPeers.nexus
         }
+        let savedPeers = await peerStore.load()
+        let existingKeys = Set(allPeers.map { $0.publicKey })
+        for peer in savedPeers where !existingKeys.contains(peer.publicKey) {
+            allPeers.append(peer)
+        }
         if !allPeers.isEmpty {
-            print("  Bootstrap:   \(allPeers.count) peer(s)")
+            print("  Bootstrap:   \(allPeers.count) peer(s) (\(savedPeers.count) persisted)")
         }
 
         let nodeConfig = LatticeNodeConfig(
@@ -433,6 +452,7 @@ Task {
         }
 
         startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: args.port)
+        startMempoolExpiryLoop(node: node)
 
         // Periodic health updates
         Task {
@@ -449,8 +469,10 @@ Task {
                 print("\n  Shutting down...")
                 rpcServer?.stop()
                 await health.stop()
+                let peers = await node.connectedPeerEndpoints()
+                await peerStore.save(peers)
                 await node.stop()
-                print("  State persisted. Goodbye.")
+                print("  State persisted. \(peers.count) peer(s) saved. Goodbye.")
                 exit(0)
             }
         }

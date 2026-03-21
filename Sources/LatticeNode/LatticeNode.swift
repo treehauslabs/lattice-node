@@ -7,6 +7,7 @@ import Tally
 import cashew
 import UInt256
 import ArrayTrie
+import Crypto
 
 public struct LatticeNodeConfig: Sendable {
     public let publicKey: String
@@ -68,7 +69,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     private var persisters: [String: ChainStatePersister]
     private var blocksSinceLastPersist: [String: UInt64]
     private var recentPeerBlocks: [String: ContinuousClock.Instant]
+    private var recentPeerBlockOrder: [String]
     private var syncTask: Task<Void, Never>?
+    private var cachedOrders: (tip: String, orders: [Order])?
 
     // MARK: - Initialization
 
@@ -130,6 +133,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         self.persisters = [genesisConfig.spec.directory: persister]
         self.blocksSinceLastPersist = [:]
         self.recentPeerBlocks = [:]
+        self.recentPeerBlockOrder = []
     }
 
     // MARK: - Lifecycle
@@ -180,14 +184,21 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public var isSyncing: Bool { syncTask != nil }
 
     private func checkSyncNeeded(
-        peerBlockIndex: UInt64,
+        peerBlock: Block,
         peerTipCID: String,
         network: ChainNetwork
     ) async -> Bool {
         guard syncTask == nil else { return true }
         let localHeight = await lattice.nexus.chain.getHighestBlockIndex()
-        let gap = peerBlockIndex > localHeight ? peerBlockIndex - localHeight : 0
+        let gap = peerBlock.index > localHeight ? peerBlock.index - localHeight : 0
         guard gap > config.retentionDepth else { return false }
+
+        if let localSnapshot = await lattice.nexus.chain.tipSnapshot {
+            if peerBlock.difficulty <= localSnapshot.difficulty && peerBlock.index <= localHeight {
+                return false
+            }
+        }
+
         startSync(peerTipCID: peerTipCID, network: network)
         return true
     }
@@ -273,12 +284,65 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     // MARK: - Transaction Submission & Mempool Gossip
 
     public func submitTransaction(directory: String, transaction: Transaction) async -> Bool {
-        guard let network = networks[directory] else { return false }
+        switch await submitTransactionWithReason(directory: directory, transaction: transaction) {
+        case .success: return true
+        case .failure: return false
+        }
+    }
+
+    public enum TransactionSubmitResult: Sendable {
+        case success
+        case failure(String)
+    }
+
+    public func submitTransactionWithReason(directory: String, transaction: Transaction) async -> TransactionSubmitResult {
+        guard let network = networks[directory] else {
+            return .failure("Unknown chain: \(directory)")
+        }
+        let chain = directory == genesisConfig.spec.directory
+            ? await lattice.nexus.chain
+            : await lattice.nexus.children[directory]?.chain
+        if let chain {
+            let validator = TransactionValidator(fetcher: network.fetcher, chainState: chain)
+            let result = await validator.validate(transaction)
+            switch result {
+            case .failure(let error):
+                return .failure(describeValidationError(error))
+            case .success:
+                break
+            }
+        }
         let added = await network.submitTransaction(transaction)
         if added {
             await network.announceBlock(cid: transaction.body.rawCID)
+            return .success
         }
-        return added
+        return .failure("Transaction rejected by mempool")
+    }
+
+    private func describeValidationError(_ error: TransactionValidationError) -> String {
+        switch error {
+        case .missingBody:
+            return "Transaction body not resolved"
+        case .invalidSignatures:
+            return "Invalid signature(s)"
+        case .signerMismatch:
+            return "Signers do not match signatures"
+        case .duplicateAccountOwner(let owner):
+            return "Duplicate account action for owner: \(owner)"
+        case .balanceMismatch(let owner, let expected, let claimed):
+            return "Balance mismatch for \(owner): on-chain \(expected), claimed \(claimed)"
+        case .insufficientBalance(let owner, let balance, let required):
+            return "Insufficient balance for \(owner): has \(balance), needs \(required)"
+        case .noStateAvailable:
+            return "Chain state not available"
+        case .disallowedDeposit:
+            return "Deposit actions not allowed on nexus chain"
+        case .disallowedWithdrawal:
+            return "Withdrawal actions not allowed on nexus chain"
+        case .stateResolutionFailed:
+            return "Failed to resolve chain state"
+        }
     }
 
     // MARK: - Block Submission (from mining)
@@ -295,13 +359,17 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         await maybePersist(directory: directory)
     }
 
-    // MARK: - Block Reception (ChainNetworkDelegate) with Rate Limiting
+    // MARK: - Block Reception (ChainNetworkDelegate) with Rate Limiting & Reputation
 
     nonisolated public func chainNetwork(
         _ network: ChainNetwork,
         didReceiveBlock cid: String,
-        data: Data
+        data: Data,
+        from peer: PeerID
     ) async {
+        let tally = await network.ivy.tally
+        guard tally.shouldAllow(peer: peer) else { return }
+
         let now = ContinuousClock.Instant.now
         let key = cid
         if let lastSeen = await recentBlockTime(for: key) {
@@ -315,12 +383,15 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         await network.storeBlock(cid: cid, data: data)
         await network.pinTipBlock(cid: cid, data: data)
 
+        tally.recordReceived(peer: peer, bytes: data.count)
+
         if let block = Block(data: data) {
             if await checkSyncNeeded(
-                peerBlockIndex: block.index,
+                peerBlock: block,
                 peerTipCID: cid,
                 network: network
             ) {
+                tally.recordSuccess(peer: peer)
                 return
             }
         }
@@ -328,14 +399,23 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         let directory = await network.directory
         let header = HeaderImpl<Block>(rawCID: cid)
         let fetcher = await network.fetcher
-        let _ = await lattice.processBlockHeader(header, fetcher: fetcher)
+        let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
+        if accepted {
+            tally.recordSuccess(peer: peer)
+        } else {
+            tally.recordFailure(peer: peer)
+        }
         await maybePersist(directory: directory)
     }
 
     nonisolated public func chainNetwork(
         _ network: ChainNetwork,
-        didReceiveBlockAnnouncement cid: String
+        didReceiveBlockAnnouncement cid: String,
+        from peer: PeerID
     ) async {
+        let tally = await network.ivy.tally
+        guard tally.shouldAllow(peer: peer) else { return }
+
         let now = ContinuousClock.Instant.now
         if let lastSeen = await recentBlockTime(for: cid) {
             if now - lastSeen < .milliseconds(100) { return }
@@ -349,26 +429,37 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
         if let block = try? await header.resolve(fetcher: fetcher).node {
             if await checkSyncNeeded(
-                peerBlockIndex: block.index,
+                peerBlock: block,
                 peerTipCID: cid,
                 network: network
             ) {
+                tally.recordSuccess(peer: peer)
                 return
             }
         }
 
-        let _ = await lattice.processBlockHeader(header, fetcher: fetcher)
+        let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
+        if accepted {
+            tally.recordSuccess(peer: peer)
+        } else {
+            tally.recordFailure(peer: peer)
+        }
     }
 
     private func recentBlockTime(for key: String) -> ContinuousClock.Instant? {
         recentPeerBlocks[key]
     }
 
+    private static let maxRecentPeerBlocks = 4096
+
     private func recordBlockTime(key: String, time: ContinuousClock.Instant) {
+        if recentPeerBlocks[key] == nil {
+            recentPeerBlockOrder.append(key)
+        }
         recentPeerBlocks[key] = time
-        if recentPeerBlocks.count > 10_000 {
-            let cutoff = ContinuousClock.Instant.now - .seconds(60)
-            recentPeerBlocks = recentPeerBlocks.filter { $0.value > cutoff }
+        while recentPeerBlockOrder.count > Self.maxRecentPeerBlocks {
+            let oldest = recentPeerBlockOrder.removeFirst()
+            recentPeerBlocks.removeValue(forKey: oldest)
         }
     }
 
@@ -516,6 +607,11 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     }
 
     public func getOrders() async throws -> [Order] {
+        let tip = await lattice.nexus.chain.getMainChainTip()
+        if let cached = cachedOrders, cached.tip == tip {
+            return cached.orders
+        }
+
         let dir = genesisConfig.spec.directory
         guard let network = networks[dir] else { return [] }
         guard let snapshot = await lattice.nexus.chain.tipSnapshot else { return [] }
@@ -532,7 +628,74 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
                 orders.append(order)
             }
         }
+        cachedOrders = (tip: tip, orders: orders)
         return orders
+    }
+
+    // MARK: - Merkle Proof Generation
+
+    public func getBalanceProof(address: String, directory: String? = nil) async throws -> Data? {
+        let dir = directory ?? genesisConfig.spec.directory
+        guard let network = networks[dir] else { return nil }
+        let chain = dir == genesisConfig.spec.directory
+            ? await lattice.nexus.chain
+            : await lattice.nexus.children[dir]?.chain
+        guard let chain else { return nil }
+        guard let snapshot = await chain.tipSnapshot else { return nil }
+        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+        let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
+        guard let state = resolved.node else { return nil }
+        let proofPaths: [[String]: SparseMerkleProof] = [[address]: .existence]
+        let proof = try await state.accountState.proof(paths: proofPaths, fetcher: network.fetcher)
+        let balance: UInt64
+        if let dict = proof.node, let val = try? dict.get(key: address) {
+            balance = UInt64(String(describing: val)) ?? 0
+        } else {
+            balance = 0
+        }
+        struct BalanceProof: Encodable {
+            let address: String
+            let balance: UInt64
+            let stateRoot: String
+            let accountRoot: String
+            let blockHeight: UInt64
+            let blockHash: String
+        }
+        let result = BalanceProof(
+            address: address,
+            balance: balance,
+            stateRoot: snapshot.frontierCID,
+            accountRoot: state.accountState.rawCID,
+            blockHeight: snapshot.index,
+            blockHash: await chain.getMainChainTip()
+        )
+        return try JSONEncoder().encode(result)
+    }
+
+    // MARK: - Transaction Gossip
+
+    public func broadcastTransaction(directory: String, transaction: Transaction) async {
+        guard let network = networks[directory] else { return }
+        guard let bodyData = transaction.body.node?.toData() else { return }
+        await network.fetcher.store(rawCid: transaction.body.rawCID, data: bodyData)
+        await network.broadcastBlock(cid: transaction.body.rawCID, data: bodyData)
+    }
+
+    // MARK: - Peer Persistence
+
+    public func connectedPeerEndpoints() async -> [PeerEndpoint] {
+        let nexusDir = genesisConfig.spec.directory
+        guard let network = networks[nexusDir] else { return [] }
+        let entries = await network.ivy.router.allPeers()
+        return entries.map { $0.endpoint }
+    }
+
+    // MARK: - Mempool Maintenance
+
+    public func pruneExpiredTransactions(olderThan age: Duration = .seconds(600)) async {
+        for (_, network) in networks {
+            await network.mempool.pruneExpired(olderThan: age)
+        }
     }
 
     public func registerChainNetwork(

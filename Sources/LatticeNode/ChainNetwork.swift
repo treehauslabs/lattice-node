@@ -9,8 +9,8 @@ import cashew
 import UInt256
 
 public protocol ChainNetworkDelegate: AnyObject, Sendable {
-    func chainNetwork(_ network: ChainNetwork, didReceiveBlock cid: String, data: Data) async
-    func chainNetwork(_ network: ChainNetwork, didReceiveBlockAnnouncement cid: String) async
+    func chainNetwork(_ network: ChainNetwork, didReceiveBlock cid: String, data: Data, from peer: PeerID) async
+    func chainNetwork(_ network: ChainNetwork, didReceiveBlockAnnouncement cid: String, from peer: PeerID) async
 }
 
 public actor ChainNetwork: IvyDelegate {
@@ -140,11 +140,11 @@ public actor ChainNetwork: IvyDelegate {
     nonisolated public func ivy(_ ivy: Ivy, didDisconnect peer: PeerID) {}
 
     nonisolated public func ivy(_ ivy: Ivy, didReceiveBlockAnnouncement cid: String, from peer: PeerID) {
-        Task { await delegate?.chainNetwork(self, didReceiveBlockAnnouncement: cid) }
+        Task { await delegate?.chainNetwork(self, didReceiveBlockAnnouncement: cid, from: peer) }
     }
 
     nonisolated public func ivy(_ ivy: Ivy, didReceiveBlock cid: String, data: Data, from peer: PeerID) {
-        Task { await delegate?.chainNetwork(self, didReceiveBlock: cid, data: data) }
+        Task { await delegate?.chainNetwork(self, didReceiveBlock: cid, data: data, from: peer) }
     }
 }
 
