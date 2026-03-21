@@ -44,6 +44,7 @@ struct NodeArgs {
     var autosize: Bool = false
     var maxMemoryGB: Double? = nil
     var maxDiskGB: Double? = nil
+    var rpcPort: UInt16? = nil
     var enableDiscovery: Bool = true
     var showHelp: Bool = false
 }
@@ -96,6 +97,9 @@ func parseArgs() -> NodeArgs {
         case "--max-disk":
             i += 1
             if i < argv.count, let v = Double(argv[i]) { args.maxDiskGB = v }
+        case "--rpc-port":
+            i += 1
+            if i < argv.count, let p = UInt16(argv[i]) { args.rpcPort = p }
         case "--no-discovery":
             args.enableDiscovery = false
         case "--help", "-h":
@@ -137,6 +141,7 @@ func printUsage() {
       --autosize                 Auto-detect system resources (recommended)
       --max-memory <GB>          Cap for autosize memory (optional)
       --max-disk <GB>            Cap for autosize disk (optional)
+      --rpc-port <N>             Enable JSON RPC server on port (e.g. 8080)
 
     SIZING GUIDE:
       2GB RAM / 40GB disk VPS   --memory 0.5  --disk 20
@@ -391,7 +396,7 @@ Task {
         let node = try await LatticeNode(config: nodeConfig, genesisConfig: NexusGenesis.config)
 
         // Verify genesis chain identity
-        let genesisResult = await node.genesisResult
+        let genesisResult = node.genesisResult
         let genesisValid = NexusGenesis.verifyGenesis(genesisResult)
         if !genesisValid {
             print("  FATAL: Genesis block hash mismatch!")
@@ -413,6 +418,15 @@ Task {
         let health = HealthCheck(dataDir: args.dataDir)
         await health.start()
 
+        // Start RPC server if requested
+        var rpcServer: RPCServer? = nil
+        if let rpcPort = args.rpcPort {
+            let server = RPCServer(node: node, port: rpcPort)
+            try server.start()
+            rpcServer = server
+            print("  RPC server:  http://localhost:\(rpcPort)/api/chain/info")
+        }
+
         for chain in args.mineChains {
             await node.startMining(directory: chain)
             print("  Mining started on \(chain)")
@@ -430,9 +444,10 @@ Task {
             }
         }
 
-        let shutdownHandler: @Sendable () -> Void = {
+        let shutdownHandler: @Sendable () -> Void = { [rpcServer] in
             Task {
                 print("\n  Shutting down...")
+                rpcServer?.stop()
                 await health.stop()
                 await node.stop()
                 print("  State persisted. Goodbye.")
