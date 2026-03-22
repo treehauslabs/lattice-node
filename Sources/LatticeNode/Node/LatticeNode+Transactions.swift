@@ -67,6 +67,10 @@ extension LatticeNode {
             return "Nonce already used or expired: \(nonce)"
         case .nonceFromFuture(let nonce):
             return "Nonce too far in the future: \(nonce)"
+        case .balanceNotConserved(let debits, let credits, let fee):
+            return "Balance not conserved: debits \(debits) != credits \(credits) + fee \(fee)"
+        case .transactionTooLarge(let size, let max):
+            return "Transaction too large: \(size) bytes (max \(max))"
         }
     }
 

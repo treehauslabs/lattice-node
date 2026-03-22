@@ -5,6 +5,7 @@ import UInt256
 
 public let MINIMUM_TRANSACTION_FEE: UInt64 = 1
 public let MAX_NONCE_DRIFT: UInt64 = 600
+public let MAX_TRANSACTION_SIZE: Int = 102_400
 
 public enum TransactionValidationError: Error, Sendable {
     case missingBody
@@ -19,6 +20,8 @@ public enum TransactionValidationError: Error, Sendable {
     case feeTooLow(actual: UInt64, minimum: UInt64)
     case nonceAlreadyUsed(nonce: UInt64)
     case nonceFromFuture(nonce: UInt64)
+    case balanceNotConserved(totalDebits: UInt64, totalCredits: UInt64, fee: UInt64)
+    case transactionTooLarge(size: Int, max: Int)
 }
 
 public struct TransactionValidator: Sendable {
@@ -35,6 +38,10 @@ public struct TransactionValidator: Sendable {
     public func validate(_ transaction: Transaction) async -> Result<Void, TransactionValidationError> {
         guard let body = transaction.body.node else {
             return .failure(.missingBody)
+        }
+
+        if let bodyData = body.toData(), bodyData.count > MAX_TRANSACTION_SIZE {
+            return .failure(.transactionTooLarge(size: bodyData.count, max: MAX_TRANSACTION_SIZE))
         }
 
         if transaction.signatures.isEmpty {
@@ -140,6 +147,25 @@ public struct TransactionValidator: Sendable {
                         required: totalNeeded
                     ))
                 }
+            }
+        }
+
+        if !isCoinbase && !body.accountActions.isEmpty {
+            var totalDebits: UInt64 = 0
+            var totalCredits: UInt64 = 0
+            for action in body.accountActions {
+                if action.newBalance < action.oldBalance {
+                    totalDebits += action.oldBalance - action.newBalance
+                } else if action.newBalance > action.oldBalance {
+                    totalCredits += action.newBalance - action.oldBalance
+                }
+            }
+            if totalDebits != totalCredits + body.fee {
+                return .failure(.balanceNotConserved(
+                    totalDebits: totalDebits,
+                    totalCredits: totalCredits,
+                    fee: body.fee
+                ))
             }
         }
 
