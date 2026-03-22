@@ -21,6 +21,7 @@ public actor ChainNetwork: IvyDelegate {
     private let storage: any AcornCASWorker
     private let memoryWorker: MemoryCASWorker
     public let verifiedStore: VerifiedDistanceStore
+    public let protectionPolicy: BlockchainProtectionPolicy
     private let resources: NodeResourceConfig
     public weak var delegate: ChainNetworkDelegate?
     private var subscribedChains: Set<String>
@@ -51,10 +52,13 @@ public actor ChainNetwork: IvyDelegate {
             maxBytes: diskBytes
         )
 
+        let policy = BlockchainProtectionPolicy()
+        self.protectionPolicy = policy
         let verified = VerifiedDistanceStore(
             inner: disk,
             nodePublicKey: config.publicKey,
-            maxEntries: max(diskBytes / 4096, 1000)
+            maxEntries: max(diskBytes / 4096, 1000),
+            protectionPolicy: policy
         )
         self.verifiedStore = verified
 
@@ -74,10 +78,6 @@ public actor ChainNetwork: IvyDelegate {
     public func start() async throws {
         await ivy.setDelegate(self)
         try await ivy.start()
-
-        let chain = ChainDestination(chainDirectory: directory)
-        let reticulum = await ivy.reticulumWorker()
-        await reticulum.bindToChain(chain)
     }
 
     public func stop() async {
@@ -87,7 +87,7 @@ public actor ChainNetwork: IvyDelegate {
     // MARK: - Chain Tip Management
 
     public func setChainTip(tipCID: String, referencedCIDs: [String]) async {
-        await verifiedStore.setChainTip(chain: directory, tipCID: tipCID, referencedCIDs: referencedCIDs)
+        await protectionPolicy.setChainTip(chain: directory, tipCID: tipCID, referencedCIDs: referencedCIDs)
     }
 
     // MARK: - Chain Subscription
@@ -110,8 +110,9 @@ public actor ChainNetwork: IvyDelegate {
 
     // MARK: - Block Operations
 
-    public func publishBlock(cid: String, data: Data, referencedCIDs: [String] = []) async {
-        await verifiedStore.storePinned(cid: ContentIdentifier(rawValue: cid), data: data)
+    public func publishBlock(cid: String, data: Data) async {
+        await protectionPolicy.pin(cid)
+        await verifiedStore.storeVerified(cid: ContentIdentifier(rawValue: cid), data: data)
         await ivy.publishBlock(cid: cid, data: data)
     }
 
