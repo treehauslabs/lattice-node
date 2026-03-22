@@ -1,390 +1,193 @@
 import Lattice
 import Foundation
-import NIOCore
-import NIOPosix
+import Hummingbird
+import HTTPTypes
 import cashew
 import UInt256
 
-public final class RPCServer: Sendable {
-    private let node: LatticeNode
-    private let port: UInt16
-    private let allowedOrigin: String
-    private let group: MultiThreadedEventLoopGroup
-    nonisolated(unsafe) private var channel: Channel?
+public struct RPCServer: Sendable {
+    private let app: Application<RouterResponder<BasicRequestContext>>
 
     public init(node: LatticeNode, port: UInt16 = 8080, allowedOrigin: String = "http://127.0.0.1") {
-        self.node = node
-        self.port = port
-        self.allowedOrigin = allowedOrigin
-        self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
+        let router = RPCRoutes.build(node: node)
+        router.add(middleware: CORSMiddleware(allowedOrigin: allowedOrigin))
+        self.app = Application(router: router, configuration: .init(address: .hostname("0.0.0.0", port: Int(port))))
     }
 
-    public func start() throws {
-        let node = self.node
-        let allowedOrigin = self.allowedOrigin
-        let bootstrap = ServerBootstrap(group: group)
-            .serverChannelOption(.backlog, value: 256)
-            .childChannelInitializer { channel in
-                channel.pipeline.addHandler(RPCHandler(node: node, allowedOrigin: allowedOrigin))
-            }
-            .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
-
-        channel = try bootstrap.bind(host: "0.0.0.0", port: Int(port)).wait()
-    }
-
-    public func stop() {
-        try? channel?.close().wait()
-        try? group.syncShutdownGracefully()
+    public func run() async throws {
+        try await app.run()
     }
 }
 
-public enum RPCError: Error {
-    case invalidPort
-}
+// MARK: - CORS Middleware
 
-// MARK: - Raw ByteBuffer Handler
+struct CORSMiddleware<Context: RequestContext>: RouterMiddleware {
+    let allowedOrigin: String
 
-private final class RPCHandler: ChannelInboundHandler, @unchecked Sendable {
-    typealias InboundIn = ByteBuffer
-    typealias OutboundOut = ByteBuffer
-
-    private let node: LatticeNode
-    private let allowedOrigin: String
-    private var accumulated = Data()
-
-    init(node: LatticeNode, allowedOrigin: String) {
-        self.node = node
-        self.allowedOrigin = allowedOrigin
-    }
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        var buf = unwrapInboundIn(data)
-        if let bytes = buf.readBytes(length: buf.readableBytes) {
-            accumulated.append(contentsOf: bytes)
+    func handle(_ request: Request, context: Context, next: (Request, Context) async throws -> Response) async throws -> Response {
+        if request.method == .options {
+            var headers = HTTPFields()
+            headers.append(HTTPField(name: .init("Access-Control-Allow-Origin")!, value: allowedOrigin))
+            headers.append(HTTPField(name: .init("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
+            headers.append(HTTPField(name: .init("Access-Control-Allow-Headers")!, value: "Content-Type"))
+            return Response(status: .noContent, headers: headers)
         }
-
-        guard let raw = String(data: accumulated, encoding: .utf8),
-              raw.contains("\r\n\r\n") else {
-            return
-        }
-
-        let requestData = accumulated
-        accumulated = Data()
-
-        let parsed = HTTPParser.parse(raw)
-        let origin = allowedOrigin
-
-        if parsed.method == "OPTIONS" {
-            writeRaw(context: context, data: HTTPParser.corsPreflightResponse(origin: origin))
-            return
-        }
-
-        let channel = context.channel
-        let eventLoop = channel.eventLoop
-        let capturedNode = node
-        Task { @Sendable in
-            let (status, body) = await RPCRouter.route(
-                node: capturedNode, method: parsed.method, path: parsed.path, body: parsed.body
-            )
-            let responseData = HTTPParser.buildResponse(status: status, body: body, origin: origin)
-            eventLoop.execute {
-                var outBuf = channel.allocator.buffer(capacity: responseData.count)
-                outBuf.writeBytes(responseData)
-                channel.writeAndFlush(outBuf, promise: nil)
-                channel.close(promise: nil)
-            }
-        }
-    }
-
-    private func writeRaw(context: ChannelHandlerContext, data: Data) {
-        var buf = context.channel.allocator.buffer(capacity: data.count)
-        buf.writeBytes(data)
-        context.writeAndFlush(wrapOutboundOut(buf), promise: nil)
-        context.close(promise: nil)
-    }
-
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        context.close(promise: nil)
+        var response = try await next(request, context)
+        response.headers.append(HTTPField(name: .init("Access-Control-Allow-Origin")!, value: allowedOrigin))
+        response.headers.append(HTTPField(name: .init("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
+        response.headers.append(HTTPField(name: .init("Access-Control-Allow-Headers")!, value: "Content-Type"))
+        return response
     }
 }
 
-// MARK: - HTTP Parser
+// MARK: - Routes
 
-private enum HTTPParser {
-    struct Request {
-        let method: String
-        let path: String
-        let body: String?
+enum RPCRoutes {
+    static func build(node: LatticeNode) -> Router<BasicRequestContext> {
+        let router = Router()
+        let api = router.group("api")
+
+        api.get("chain/info") { _, _ in try await chainInfo(node: node) }
+        api.get("chain/spec") { _, _ in try await chainSpec(node: node) }
+        api.get("balance/{address}") { _, ctx in try await getBalance(node: node, address: ctx.parameters.require("address")) }
+        api.get("block/latest") { _, _ in try await latestBlock(node: node) }
+        api.get("block/{id}") { _, ctx in try await getBlock(node: node, id: ctx.parameters.require("id")) }
+        api.post("transaction") { req, _ in try await submitTransaction(node: node, request: req) }
+        api.get("mempool") { _, _ in try await mempool(node: node) }
+        api.get("orders") { _, _ in try await getOrders(node: node) }
+        api.post("orders") { req, _ in try await placeOrder(node: node, request: req) }
+        api.get("proof/{address}") { _, ctx in try await balanceProof(node: node, address: ctx.parameters.require("address")) }
+        api.get("peers") { _, _ in try await getPeers(node: node) }
+
+        return router
     }
 
-    static func parse(_ raw: String) -> Request {
-        let lines = raw.components(separatedBy: "\r\n")
-        guard let requestLine = lines.first else {
-            return Request(method: "GET", path: "/", body: nil)
-        }
-        let parts = requestLine.split(separator: " ", maxSplits: 2)
-        guard parts.count >= 2 else {
-            return Request(method: "GET", path: "/", body: nil)
-        }
-        var body: String? = nil
-        if let idx = lines.firstIndex(of: "") {
-            let rest = lines[(idx + 1)...].joined(separator: "\r\n")
-            if !rest.isEmpty { body = rest }
-        }
-        return Request(method: String(parts[0]), path: String(parts[1]), body: body)
-    }
+    // MARK: - JSON Helpers
 
-    static func buildResponse(status: Int, body: Data, origin: String) -> Data {
-        let statusText: String = switch status {
-        case 200: "OK"
-        case 400: "Bad Request"
-        case 404: "Not Found"
-        case 429: "Too Many Requests"
-        case 500: "Internal Server Error"
-        default: "Error"
-        }
-        var header = "HTTP/1.1 \(status) \(statusText)\r\n"
-        header += "Content-Type: application/json\r\n"
-        header += "Content-Length: \(body.count)\r\n"
-        header += "Access-Control-Allow-Origin: \(origin)\r\n"
-        header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-        header += "Access-Control-Allow-Headers: Content-Type\r\n"
-        header += "\r\n"
-        var responseData = Data(header.utf8)
-        responseData.append(body)
-        return responseData
-    }
-
-    static func corsPreflightResponse(origin: String) -> Data {
-        var header = "HTTP/1.1 204 No Content\r\n"
-        header += "Access-Control-Allow-Origin: \(origin)\r\n"
-        header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-        header += "Access-Control-Allow-Headers: Content-Type\r\n"
-        header += "Content-Length: 0\r\n"
-        header += "\r\n"
-        return Data(header.utf8)
-    }
-}
-
-// MARK: - Router
-
-enum RPCRouter {
-
-    static func route(node: LatticeNode, method: String, path: String, body: String?) async -> (Int, Data) {
-        let segments = path.split(separator: "/").map(String.init)
-        guard segments.count >= 2, segments[0] == "api" else {
-            return (404, jsonError("Not found"))
-        }
-
-        let route = Array(segments.dropFirst())
-
-        if method == "GET" && route == ["chain", "info"] { return await handleChainInfo(node: node) }
-        if method == "GET" && route == ["chain", "spec"] { return await handleChainSpec(node: node) }
-        if method == "GET" && route.count == 2 && route[0] == "balance" { return await handleGetBalance(node: node, address: route[1]) }
-        if method == "GET" && route == ["block", "latest"] { return await handleLatestBlock(node: node) }
-        if method == "GET" && route.count == 2 && route[0] == "block" { return await handleGetBlock(node: node, id: route[1]) }
-        if method == "POST" && route == ["transaction"] { return await handleSubmitTransaction(node: node, body: body) }
-        if method == "GET" && route == ["mempool"] { return await handleMempool(node: node) }
-        if method == "GET" && route == ["orders"] { return await handleGetOrders(node: node) }
-        if method == "POST" && route == ["orders"] { return await handlePlaceOrder(node: node, body: body) }
-        if method == "GET" && route.count == 2 && route[0] == "proof" { return await handleBalanceProof(node: node, address: route[1]) }
-        if method == "GET" && route == ["peers"] { return await handleGetPeers(node: node) }
-        return (404, jsonError("Not found"))
-    }
-
-    static func jsonError(_ message: String) -> Data {
-        let escaped = message.replacingOccurrences(of: "\"", with: "\\\"")
-        return Data("{\"error\":\"\(escaped)\"}".utf8)
-    }
-
-    static func jsonEncode<T: Encodable>(_ value: T) -> Data {
+    static func json<T: Encodable>(_ value: T, status: HTTPResponse.Status = .ok) -> Response {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return (try? encoder.encode(value)) ?? Data("{}".utf8)
+        let data = (try? encoder.encode(value)) ?? Data("{}".utf8)
+        var headers = HTTPFields()
+        headers.append(HTTPField(name: .contentType, value: "application/json"))
+        return Response(status: status, headers: headers, body: .init(byteBuffer: .init(data: data)))
     }
 
-    // MARK: - Handlers
+    static func jsonError(_ message: String, status: HTTPResponse.Status = .badRequest) -> Response {
+        struct E: Encodable { let error: String }
+        return json(E(error: message), status: status)
+    }
 
-    static func handleChainInfo(node: LatticeNode) async -> (Int, Data) {
+    // MARK: - Chain
+
+    static func chainInfo(node: LatticeNode) async throws -> Response {
         let statuses = await node.chainStatus()
-        struct ChainInfoResponse: Encodable { let chains: [ChainEntry]; let genesisHash: String }
-        struct ChainEntry: Encodable {
-            let directory: String; let height: UInt64; let tip: String
-            let mining: Bool; let mempoolCount: Int; let syncing: Bool
-        }
-        let chains = statuses.map { s in
-            ChainEntry(directory: s.directory, height: s.height, tip: s.tip,
-                       mining: s.mining, mempoolCount: s.mempoolCount, syncing: s.syncing)
-        }
-        return (200, jsonEncode(ChainInfoResponse(chains: chains, genesisHash: node.genesisResult.blockHash)))
+        struct R: Encodable { let chains: [C]; let genesisHash: String }
+        struct C: Encodable { let directory: String; let height: UInt64; let tip: String; let mining: Bool; let mempoolCount: Int; let syncing: Bool }
+        let chains = statuses.map { C(directory: $0.directory, height: $0.height, tip: $0.tip, mining: $0.mining, mempoolCount: $0.mempoolCount, syncing: $0.syncing) }
+        return json(R(chains: chains, genesisHash: node.genesisResult.blockHash))
     }
 
-    static func handleChainSpec(node: LatticeNode) async -> (Int, Data) {
-        let spec = node.genesisConfig.spec
-        struct R: Encodable {
-            let directory: String; let targetBlockTime: UInt64; let initialReward: UInt64
-            let halvingInterval: UInt64; let maxTransactionsPerBlock: UInt64
-            let maxStateGrowth: Int; let maxBlockSize: Int; let premine: UInt64; let premineAmount: UInt64
-        }
-        return (200, jsonEncode(R(
-            directory: spec.directory, targetBlockTime: spec.targetBlockTime,
-            initialReward: spec.initialReward, halvingInterval: spec.halvingInterval,
-            maxTransactionsPerBlock: spec.maxNumberOfTransactionsPerBlock,
-            maxStateGrowth: spec.maxStateGrowth, maxBlockSize: spec.maxBlockSize,
-            premine: spec.premine, premineAmount: spec.premineAmount()
-        )))
+    static func chainSpec(node: LatticeNode) async throws -> Response {
+        let s = node.genesisConfig.spec
+        struct R: Encodable { let directory: String; let targetBlockTime: UInt64; let initialReward: UInt64; let halvingInterval: UInt64; let maxTransactionsPerBlock: UInt64; let maxStateGrowth: Int; let maxBlockSize: Int; let premine: UInt64; let premineAmount: UInt64 }
+        return json(R(directory: s.directory, targetBlockTime: s.targetBlockTime, initialReward: s.initialReward, halvingInterval: s.halvingInterval, maxTransactionsPerBlock: s.maxNumberOfTransactionsPerBlock, maxStateGrowth: s.maxStateGrowth, maxBlockSize: s.maxBlockSize, premine: s.premine, premineAmount: s.premineAmount()))
     }
 
-    static func handleGetBalance(node: LatticeNode, address: String) async -> (Int, Data) {
-        do {
-            let balance = try await node.getBalance(address: address)
-            struct R: Encodable { let address: String; let balance: UInt64 }
-            return (200, jsonEncode(R(address: address, balance: balance)))
-        } catch {
-            return (500, jsonError("Failed to query balance: \(error)"))
-        }
+    // MARK: - Balance & Blocks
+
+    static func getBalance(node: LatticeNode, address: String) async throws -> Response {
+        let balance = try await node.getBalance(address: address)
+        struct R: Encodable { let address: String; let balance: UInt64 }
+        return json(R(address: address, balance: balance))
     }
 
-    static func handleLatestBlock(node: LatticeNode) async -> (Int, Data) {
+    static func latestBlock(node: LatticeNode) async throws -> Response {
         let tip = await node.lattice.nexus.chain.getMainChainTip()
-        let snapshot = await node.lattice.nexus.chain.tipSnapshot
+        let s = await node.lattice.nexus.chain.tipSnapshot
         struct R: Encodable { let hash: String; let index: UInt64?; let timestamp: Int64?; let difficulty: String? }
-        return (200, jsonEncode(R(
-            hash: tip, index: snapshot?.index,
-            timestamp: snapshot?.timestamp, difficulty: snapshot?.difficulty.toHexString()
-        )))
+        return json(R(hash: tip, index: s?.index, timestamp: s?.timestamp, difficulty: s?.difficulty.toHexString()))
     }
 
-    static func handleGetBlock(node: LatticeNode, id: String) async -> (Int, Data) {
-        var blockHash = id
-        if let index = UInt64(id) {
-            guard let hash = await node.getBlockHash(atIndex: index) else {
-                return (404, jsonError("Block not found at index \(index)"))
-            }
-            blockHash = hash
-        }
-        do {
-            guard let block = try await node.getBlock(hash: blockHash) else {
-                return (404, jsonError("Block not found"))
-            }
-            struct R: Encodable {
-                let hash: String; let index: UInt64; let timestamp: Int64
-                let previousBlock: String?; let difficulty: String; let nonce: UInt64
-                let transactionsCID: String; let homesteadCID: String; let frontierCID: String
-            }
-            return (200, jsonEncode(R(
-                hash: blockHash, index: block.index, timestamp: block.timestamp,
-                previousBlock: block.previousBlock?.rawCID,
-                difficulty: block.difficulty.toHexString(), nonce: block.nonce,
-                transactionsCID: block.transactions.rawCID,
-                homesteadCID: block.homestead.rawCID, frontierCID: block.frontier.rawCID
-            )))
-        } catch {
-            return (500, jsonError("Failed to fetch block: \(error)"))
-        }
+    static func getBlock(node: LatticeNode, id: String) async throws -> Response {
+        var h = id
+        if let i = UInt64(id) { guard let found = await node.getBlockHash(atIndex: i) else { return jsonError("Block not found at index \(i)", status: .notFound) }; h = found }
+        guard let b = try await node.getBlock(hash: h) else { return jsonError("Block not found", status: .notFound) }
+        struct R: Encodable { let hash: String; let index: UInt64; let timestamp: Int64; let previousBlock: String?; let difficulty: String; let nonce: UInt64; let transactionsCID: String; let homesteadCID: String; let frontierCID: String }
+        return json(R(hash: h, index: b.index, timestamp: b.timestamp, previousBlock: b.previousBlock?.rawCID, difficulty: b.difficulty.toHexString(), nonce: b.nonce, transactionsCID: b.transactions.rawCID, homesteadCID: b.homestead.rawCID, frontierCID: b.frontier.rawCID))
     }
 
-    static func handleSubmitTransaction(node: LatticeNode, body: String?) async -> (Int, Data) {
-        guard let body, let bodyData = body.data(using: .utf8) else {
-            return (400, jsonError("Missing request body"))
-        }
+    // MARK: - Transactions
+
+    static func submitTransaction(node: LatticeNode, request: Request) async throws -> Response {
         struct Sub: Decodable { let signatures: [String: String]; let bodyCID: String; let bodyData: String? }
-        guard let submission = try? JSONDecoder().decode(Sub.self, from: bodyData) else {
-            return (400, jsonError("Invalid transaction format. Expected: {signatures, bodyCID, bodyData}"))
+        guard let sub = try? await JSONDecoder().decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
+            return jsonError("Invalid transaction format. Expected: {signatures, bodyCID, bodyData}")
         }
-        let directory = node.genesisConfig.spec.directory
-        guard let network = await node.network(for: directory) else {
-            return (500, jsonError("Network not available"))
+        let dir = node.genesisConfig.spec.directory
+        guard let net = await node.network(for: dir) else { return jsonError("Network not available", status: .internalServerError) }
+        if let hex = sub.bodyData, let raw = Data(hex: hex) { await net.fetcher.store(rawCid: sub.bodyCID, data: raw) }
+        guard let body = try? await HeaderImpl<TransactionBody>(rawCID: sub.bodyCID).resolve(fetcher: net.fetcher).node else {
+            return jsonError("Transaction body not found. Provide bodyData or ensure bodyCID is in the CAS.")
         }
-        if let bodyHex = submission.bodyData, let rawBody = Data(hex: bodyHex) {
-            await network.fetcher.store(rawCid: submission.bodyCID, data: rawBody)
-        }
-        let txBody = HeaderImpl<TransactionBody>(rawCID: submission.bodyCID)
-        let resolved = try? await txBody.resolve(fetcher: network.fetcher)
-        guard let resolvedBody = resolved?.node else {
-            return (400, jsonError("Transaction body not found. Provide bodyData or ensure bodyCID is in the CAS."))
-        }
-        let tx = Transaction(signatures: submission.signatures, body: HeaderImpl<TransactionBody>(node: resolvedBody))
-        let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
+        let tx = Transaction(signatures: sub.signatures, body: HeaderImpl<TransactionBody>(node: body))
+        let result = await node.submitTransactionWithReason(directory: dir, transaction: tx)
         struct R: Encodable { let accepted: Bool; let txCID: String; let error: String? }
         switch result {
-        case .success: return (200, jsonEncode(R(accepted: true, txCID: submission.bodyCID, error: nil)))
-        case .failure(let reason): return (400, jsonEncode(R(accepted: false, txCID: submission.bodyCID, error: reason)))
+        case .success: return json(R(accepted: true, txCID: sub.bodyCID, error: nil))
+        case .failure(let r): return json(R(accepted: false, txCID: sub.bodyCID, error: r), status: .badRequest)
         }
     }
 
-    static func handleMempool(node: LatticeNode) async -> (Int, Data) {
-        let directory = node.genesisConfig.spec.directory
-        guard let network = await node.network(for: directory) else {
-            return (500, jsonError("Network not available"))
-        }
+    // MARK: - Mempool, Proof, Peers
+
+    static func mempool(node: LatticeNode) async throws -> Response {
+        let dir = node.genesisConfig.spec.directory
+        guard let net = await node.network(for: dir) else { return jsonError("Network not available", status: .internalServerError) }
         struct R: Encodable { let count: Int; let totalFees: UInt64 }
-        return (200, jsonEncode(R(count: await network.mempool.count, totalFees: await network.mempool.totalFees())))
+        return json(R(count: await net.mempool.count, totalFees: await net.mempool.totalFees()))
     }
 
-    static func handleBalanceProof(node: LatticeNode, address: String) async -> (Int, Data) {
-        do {
-            guard let proof = try await node.getBalanceProof(address: address) else {
-                return (500, jsonError("Proof generation failed"))
-            }
-            return (200, proof)
-        } catch {
-            return (500, jsonError("Failed to generate proof: \(error)"))
-        }
+    static func balanceProof(node: LatticeNode, address: String) async throws -> Response {
+        guard let proof = try await node.getBalanceProof(address: address) else { return jsonError("Proof generation failed", status: .internalServerError) }
+        var headers = HTTPFields()
+        headers.append(HTTPField(name: .contentType, value: "application/json"))
+        return Response(status: .ok, headers: headers, body: .init(byteBuffer: .init(data: proof)))
     }
 
-    static func handleGetPeers(node: LatticeNode) async -> (Int, Data) {
+    static func getPeers(node: LatticeNode) async throws -> Response {
         let peers = await node.connectedPeerEndpoints()
-        struct PeerEntry: Encodable { let publicKey: String; let host: String; let port: UInt16 }
-        struct R: Encodable { let count: Int; let peers: [PeerEntry] }
-        let entries = peers.map { PeerEntry(publicKey: String($0.publicKey.prefix(16)) + "...", host: $0.host, port: $0.port) }
-        return (200, jsonEncode(R(count: peers.count, peers: entries)))
+        struct P: Encodable { let publicKey: String; let host: String; let port: UInt16 }
+        struct R: Encodable { let count: Int; let peers: [P] }
+        return json(R(count: peers.count, peers: peers.map { P(publicKey: String($0.publicKey.prefix(16)) + "...", host: $0.host, port: $0.port) }))
     }
 
-    static func handleGetOrders(node: LatticeNode) async -> (Int, Data) {
-        do {
-            let orders = try await node.getOrders()
-            struct Entry: Encodable {
-                let id: String; let owner: String; let side: String
-                let price: UInt64; let amount: UInt64; let filled: UInt64; let remaining: UInt64
-            }
-            struct R: Encodable { let orders: [Entry] }
-            let entries = orders.map { o in
-                Entry(id: o.id, owner: o.owner, side: o.side.rawValue,
-                      price: o.price, amount: o.amount, filled: o.filled, remaining: o.remaining)
-            }
-            return (200, jsonEncode(R(orders: entries)))
-        } catch {
-            return (500, jsonError("Failed to query orders: \(error)"))
-        }
+    // MARK: - Orders
+
+    static func getOrders(node: LatticeNode) async throws -> Response {
+        let orders = try await node.getOrders()
+        struct E: Encodable { let id: String; let owner: String; let side: String; let price: UInt64; let amount: UInt64; let filled: UInt64; let remaining: UInt64 }
+        struct R: Encodable { let orders: [E] }
+        return json(R(orders: orders.map { E(id: $0.id, owner: $0.owner, side: $0.side.rawValue, price: $0.price, amount: $0.amount, filled: $0.filled, remaining: $0.remaining) }))
     }
 
-    static func handlePlaceOrder(node: LatticeNode, body: String?) async -> (Int, Data) {
-        guard let body, let bodyData = body.data(using: .utf8) else {
-            return (400, jsonError("Missing request body"))
-        }
+    static func placeOrder(node: LatticeNode, request: Request) async throws -> Response {
         struct Sub: Decodable { let signatures: [String: String]; let bodyCID: String; let bodyData: String? }
-        guard let submission = try? JSONDecoder().decode(Sub.self, from: bodyData) else {
-            return (400, jsonError("Invalid order format. Expected: {signatures, bodyCID, bodyData}"))
+        guard let sub = try? await JSONDecoder().decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
+            return jsonError("Invalid order format. Expected: {signatures, bodyCID, bodyData}")
         }
-        let directory = node.genesisConfig.spec.directory
-        guard let network = await node.network(for: directory) else {
-            return (500, jsonError("Network not available"))
+        let dir = node.genesisConfig.spec.directory
+        guard let net = await node.network(for: dir) else { return jsonError("Network not available", status: .internalServerError) }
+        if let hex = sub.bodyData, let raw = Data(hex: hex) { await net.fetcher.store(rawCid: sub.bodyCID, data: raw) }
+        guard let body = try? await HeaderImpl<TransactionBody>(rawCID: sub.bodyCID).resolve(fetcher: net.fetcher).node else {
+            return jsonError("Transaction body not found. Provide bodyData.")
         }
-        if let bodyHex = submission.bodyData, let rawBody = Data(hex: bodyHex) {
-            await network.fetcher.store(rawCid: submission.bodyCID, data: rawBody)
-        }
-        let txBody = HeaderImpl<TransactionBody>(rawCID: submission.bodyCID)
-        let resolved = try? await txBody.resolve(fetcher: network.fetcher)
-        guard let resolvedBody = resolved?.node else {
-            return (400, jsonError("Transaction body not found. Provide bodyData."))
-        }
-        let tx = Transaction(signatures: submission.signatures, body: HeaderImpl<TransactionBody>(node: resolvedBody))
-        let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
+        let tx = Transaction(signatures: sub.signatures, body: HeaderImpl<TransactionBody>(node: body))
+        let result = await node.submitTransactionWithReason(directory: dir, transaction: tx)
         struct R: Encodable { let accepted: Bool; let txCID: String; let error: String? }
         switch result {
-        case .success: return (200, jsonEncode(R(accepted: true, txCID: submission.bodyCID, error: nil)))
-        case .failure(let reason): return (400, jsonEncode(R(accepted: false, txCID: submission.bodyCID, error: reason)))
+        case .success: return json(R(accepted: true, txCID: sub.bodyCID, error: nil))
+        case .failure(let r): return json(R(accepted: false, txCID: sub.bodyCID, error: r), status: .badRequest)
         }
     }
 }

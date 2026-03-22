@@ -89,11 +89,10 @@ struct LatticeNodeApp {
         let health = HealthCheck(dataDir: args.dataDir)
         await health.start()
 
-        var rpcServer: RPCServer? = nil
+        var rpcTask: Task<Void, any Error>? = nil
         if let rpcPort = args.rpcPort {
             let server = RPCServer(node: node, port: rpcPort, allowedOrigin: args.rpcAllowedOrigin)
-            try server.start()
-            rpcServer = server
+            rpcTask = Task { try await server.run() }
             print("  RPC server:  http://localhost:\(rpcPort)/api/chain/info")
         }
 
@@ -141,7 +140,7 @@ struct LatticeNodeApp {
 
         print("\n  Shutting down...")
         healthTask.cancel()
-        rpcServer?.stop()
+        rpcTask?.cancel()
         await health.stop()
         let peers = await node.connectedPeerEndpoints()
         await peerStore.save(peers)
