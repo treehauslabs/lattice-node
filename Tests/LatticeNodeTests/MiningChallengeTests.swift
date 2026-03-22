@@ -4,8 +4,8 @@ import XCTest
 @testable import UInt256
 import cashew
 import Acorn
-import Tally
-import Ivy
+@testable import Tally
+@testable import Ivy
 import Crypto
 
 private func difficultyHashPrefix(_ block: Block) -> Data {
