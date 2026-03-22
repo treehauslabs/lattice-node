@@ -4,9 +4,90 @@ import XCTest
 @testable import UInt256
 import cashew
 import Acorn
-@testable import Tally
-@testable import Ivy
+import Tally
+import Ivy
 import Crypto
+
+// MARK: - Mining Challenge Types (not yet in a Tally release)
+
+struct MiningChallenge: Sendable {
+    let hashPrefix: Data
+    let blockTargetDifficulty: Data
+    let noncePrefix: Data
+    let issuedAt: ContinuousClock.Instant
+    let expiresAfter: Duration
+
+    init(hashPrefix: Data, blockTargetDifficulty: Data, noncePrefix: Data, expiresAfter: Duration = .seconds(30)) {
+        self.hashPrefix = hashPrefix
+        self.blockTargetDifficulty = blockTargetDifficulty
+        self.noncePrefix = noncePrefix
+        self.issuedAt = .now
+        self.expiresAfter = expiresAfter
+    }
+
+    var isExpired: Bool { issuedAt.duration(to: .now) >= expiresAfter }
+
+    func verify(solution: MiningChallengeSolution) -> MiningChallengeResult {
+        guard !isExpired else { return .expired }
+        let nonceBytes = withUnsafeBytes(of: solution.nonce.bigEndian) { Data($0) }
+        for i in 0..<min(noncePrefix.count, nonceBytes.count) {
+            if nonceBytes[i] != noncePrefix[i] { return .invalid }
+        }
+        var input = hashPrefix
+        input.append(contentsOf: String(solution.nonce).utf8)
+        let hash = Data(SHA256.hash(data: input))
+        guard hash == solution.hash else { return .invalid }
+        let hardness = hash.reduce(into: 0) { bits, byte in
+            guard byte == 0 else { bits += byte.leadingZeroBitCount; return }
+            bits += 8
+        }
+        return .workDone(hardness: hardness)
+    }
+}
+
+struct MiningChallengeSolution: Sendable {
+    let nonce: UInt64
+    let hash: Data
+    let blockNonce: UInt64?
+    init(nonce: UInt64, hash: Data, blockNonce: UInt64? = nil) {
+        self.nonce = nonce; self.hash = hash; self.blockNonce = blockNonce
+    }
+}
+
+enum MiningChallengeResult: Sendable {
+    case expired, invalid, workDone(hardness: Int), blockFound(nonce: UInt64, hardness: Int)
+}
+
+struct MiningChallengeSolver: Sendable {
+    func solve(_ challenge: MiningChallenge) -> MiningChallengeSolution {
+        var bestNonce = buildStart(challenge.noncePrefix)
+        var bestHash = Data(repeating: 0xFF, count: 32)
+        let (start, end) = nonceRange(challenge.noncePrefix)
+        var nonce = start
+        while nonce < end {
+            var input = challenge.hashPrefix
+            input.append(contentsOf: String(nonce).utf8)
+            let h = Data(SHA256.hash(data: input))
+            if h.lexicographicallyPrecedes(bestHash) { bestHash = h; bestNonce = nonce }
+            nonce &+= 1
+            if nonce == 0 { break }
+        }
+        return MiningChallengeSolution(nonce: bestNonce, hash: bestHash)
+    }
+    private func buildStart(_ prefix: Data) -> UInt64 {
+        var bytes = [UInt8](repeating: 0, count: 8)
+        for i in 0..<min(prefix.count, 8) { bytes[i] = prefix[i] }
+        return bytes.withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
+    }
+    private func nonceRange(_ prefix: Data) -> (UInt64, UInt64) {
+        let start = buildStart(prefix)
+        let suffixBits = (8 - min(prefix.count, 8)) * 8
+        if suffixBits == 0 { return (start, start &+ 1) }
+        if suffixBits >= 64 { return (0, UInt64.max) }
+        let end = start &+ (1 << suffixBits)
+        return (start, end == 0 ? UInt64.max : end)
+    }
+}
 
 private func difficultyHashPrefix(_ block: Block) -> Data {
     var prefix = ""
