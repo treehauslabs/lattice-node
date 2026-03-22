@@ -10,8 +10,6 @@ public final class RPCServer: @unchecked Sendable {
     private let allowedOrigin: String
     private var listener: NWListener?
     private let queue: DispatchQueue
-    private let rateLimiter = RateLimiter(maxRequestsPerSecond: 50, windowSeconds: 1.0)
-
     public init(node: LatticeNode, port: UInt16 = 8080, allowedOrigin: String = "http://127.0.0.1") {
         self.node = node
         self.port = port
@@ -53,11 +51,6 @@ public final class RPCServer: @unchecked Sendable {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] data, _, isComplete, error in
             guard let self, let data, error == nil else {
                 conn.cancel()
-                return
-            }
-
-            if !self.rateLimiter.allow(remoteIP) {
-                self.sendResponse(conn, status: 429, body: self.jsonError("Rate limit exceeded"))
                 return
             }
 
@@ -346,15 +339,29 @@ public final class RPCServer: @unchecked Sendable {
         struct TxSubmission: Decodable {
             let signatures: [String: String]
             let bodyCID: String
+            let bodyData: String?
         }
 
         guard let submission = try? JSONDecoder().decode(TxSubmission.self, from: bodyData) else {
-            return (400, jsonError("Invalid transaction format. Expected: {signatures, bodyCID}"))
+            return (400, jsonError("Invalid transaction format. Expected: {signatures, bodyCID, bodyData}"))
+        }
+
+        let directory = node.genesisConfig.spec.directory
+        guard let network = await node.network(for: directory) else {
+            return (500, jsonError("Network not available"))
+        }
+
+        if let bodyHex = submission.bodyData, let rawBody = Data(hex: bodyHex) {
+            await network.fetcher.store(rawCid: submission.bodyCID, data: rawBody)
         }
 
         let txBody = HeaderImpl<TransactionBody>(rawCID: submission.bodyCID)
-        let tx = Transaction(signatures: submission.signatures, body: txBody)
-        let directory = node.genesisConfig.spec.directory
+        let resolved = try? await txBody.resolve(fetcher: network.fetcher)
+        guard let resolvedBody = resolved?.node else {
+            return (400, jsonError("Transaction body not found. Provide bodyData (hex-encoded serialized TransactionBody) or ensure bodyCID is already in the CAS."))
+        }
+
+        let tx = Transaction(signatures: submission.signatures, body: HeaderImpl<TransactionBody>(node: resolvedBody))
         let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
 
         struct TxResponse: Encodable {
@@ -455,15 +462,29 @@ public final class RPCServer: @unchecked Sendable {
         struct OrderSubmission: Decodable {
             let signatures: [String: String]
             let bodyCID: String
+            let bodyData: String?
         }
 
         guard let submission = try? JSONDecoder().decode(OrderSubmission.self, from: bodyData) else {
-            return (400, jsonError("Invalid order format. Expected: {signatures, bodyCID} (sign client-side)"))
+            return (400, jsonError("Invalid order format. Expected: {signatures, bodyCID, bodyData} (sign client-side)"))
+        }
+
+        let directory = node.genesisConfig.spec.directory
+        guard let network = await node.network(for: directory) else {
+            return (500, jsonError("Network not available"))
+        }
+
+        if let bodyHex = submission.bodyData, let rawBody = Data(hex: bodyHex) {
+            await network.fetcher.store(rawCid: submission.bodyCID, data: rawBody)
         }
 
         let txBody = HeaderImpl<TransactionBody>(rawCID: submission.bodyCID)
-        let tx = Transaction(signatures: submission.signatures, body: txBody)
-        let directory = node.genesisConfig.spec.directory
+        let resolved = try? await txBody.resolve(fetcher: network.fetcher)
+        guard let resolvedBody = resolved?.node else {
+            return (400, jsonError("Transaction body not found. Provide bodyData (hex-encoded serialized TransactionBody)."))
+        }
+
+        let tx = Transaction(signatures: submission.signatures, body: HeaderImpl<TransactionBody>(node: resolvedBody))
         let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
 
         struct PlaceOrderResponse: Encodable {
@@ -482,41 +503,4 @@ public final class RPCServer: @unchecked Sendable {
 
 public enum RPCError: Error {
     case invalidPort
-}
-
-final class RateLimiter: @unchecked Sendable {
-    private let maxRequests: Int
-    private let windowSeconds: Double
-    private var requests: [String: [CFAbsoluteTime]] = [:]
-    private let lock = NSLock()
-
-    init(maxRequestsPerSecond: Int, windowSeconds: Double = 1.0) {
-        self.maxRequests = maxRequestsPerSecond
-        self.windowSeconds = windowSeconds
-    }
-
-    func allow(_ key: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        let now = CFAbsoluteTimeGetCurrent()
-        let cutoff = now - windowSeconds
-        var times = requests[key, default: []]
-        times = times.filter { $0 > cutoff }
-
-        if times.count >= maxRequests {
-            requests[key] = times
-            return false
-        }
-
-        times.append(now)
-        requests[key] = times
-
-        if requests.count > 1000 {
-            let globalCutoff = now - windowSeconds * 10
-            requests = requests.filter { !$0.value.allSatisfy { $0 < globalCutoff } }
-        }
-
-        return true
-    }
 }
