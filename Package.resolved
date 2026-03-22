@@ -1,5 +1,5 @@
 {
-  "originHash" : "682759a7efe39759e79c07a2a4db3b3b08e5e7a07c340e486bc5c84f0fb54743",
+  "originHash" : "1d4110d8d89c5ec798df50e743dbad5a249d032905cf68ecfe1c1e5c2aa27a09",
   "pins" : [
     {
       "identity" : "acorn",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/cashew.git",
       "state" : {
-        "revision" : "393a130bafcaf38550730ee44d594dfb2da44d59",
-        "version" : "1.1.0"
+        "revision" : "cd72fdf8d6a12c082df31ca377592a42add0544c",
+        "version" : "1.2.0"
       }
     },
     {
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
-        "revision" : "e96a90a90790b60cf8dcf09b98324fbfe42cfcdc",
-        "version" : "3.3.0"
+        "revision" : "d850e5b72e203b25224f102b79ae9f39182a55ef",
+        "version" : "3.4.0"
       }
     },
     {
