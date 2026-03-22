@@ -33,6 +33,12 @@ final class LatticeNodeTests: XCTestCase {
         XCTAssertEqual(r1.blockHash, r2.blockHash)
     }
 
+    func testNexusGenesisMatchesExpectedHash() async throws {
+        let result = try await NexusGenesis.create(fetcher: TestFetcher())
+        XCTAssertEqual(result.blockHash, NexusGenesis.expectedBlockHash,
+            "Genesis hash mismatch — serialization may differ across platforms")
+    }
+
     // MARK: - ChainLevel hierarchy for multi-chain
 
     func testChainLevelStartsWithNoChildren() async throws {
