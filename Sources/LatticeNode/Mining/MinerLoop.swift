@@ -114,7 +114,7 @@ public actor MinerLoop {
                         break
                     }
 
-                    nonce += batchSize
+                    nonce &+= batchSize
                     await Task.yield()
                 }
             } catch {
@@ -176,6 +176,8 @@ public actor MinerLoop {
             address: identity.address,
             frontier: previousBlock.frontier
         )
+
+        guard currentBalance <= UInt64.max - payout else { return nil }
 
         let accountAction = AccountAction(
             owner: identity.address,

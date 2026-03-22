@@ -14,8 +14,7 @@ public enum TransactionValidationError: Error, Sendable {
     case balanceMismatch(owner: String, expected: UInt64, claimed: UInt64)
     case insufficientBalance(owner: String, balance: UInt64, required: UInt64)
     case noStateAvailable
-    case disallowedDeposit
-    case disallowedWithdrawal
+    case swapSignerMismatch
     case stateResolutionFailed
     case feeTooLow(actual: UInt64, minimum: UInt64)
     case nonceAlreadyUsed(nonce: UInt64)
@@ -76,8 +75,22 @@ public struct TransactionValidator: Sendable {
             }
         }
 
-        if !body.swapActions.isEmpty && !body.swapActions.allSatisfy({ Set(body.signers).contains($0.sender) }) {
-            return .failure(.disallowedDeposit)
+        let signerSetForSwaps = Set(body.signers)
+        for swap in body.swapActions {
+            if swap.amount == 0 { return .failure(.swapSignerMismatch) }
+            if !signerSetForSwaps.contains(swap.sender) { return .failure(.swapSignerMismatch) }
+        }
+        for claim in body.swapClaimActions {
+            if claim.amount == 0 { return .failure(.swapSignerMismatch) }
+            if claim.isRefund {
+                if !signerSetForSwaps.contains(claim.sender) { return .failure(.swapSignerMismatch) }
+            } else {
+                if !signerSetForSwaps.contains(claim.recipient) { return .failure(.swapSignerMismatch) }
+            }
+        }
+        for settle in body.settleActions {
+            if !signerSetForSwaps.contains(settle.senderA) { return .failure(.swapSignerMismatch) }
+            if !signerSetForSwaps.contains(settle.senderB) { return .failure(.swapSignerMismatch) }
         }
 
         var seenOwners = Set<String>()

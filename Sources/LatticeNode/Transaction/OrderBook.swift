@@ -62,8 +62,12 @@ public struct OrderBook {
         nonce: UInt64 = 0
     ) -> Transaction? {
         guard let action = placementAction(order: order) else { return nil }
-        let lockedAmount = order.side == .buy ? order.price * order.amount : order.amount
-        let totalCost = lockedAmount + fee
+        let (lockedAmount, didOverflow) = order.side == .buy
+            ? order.price.multipliedReportingOverflow(by: order.amount)
+            : (order.amount, false)
+        guard !didOverflow else { return nil }
+        let (totalCost, costOverflow) = lockedAmount.addingReportingOverflow(fee)
+        guard !costOverflow else { return nil }
         guard senderOldBalance >= totalCost else { return nil }
 
         let accountAction = AccountAction(
@@ -103,9 +107,10 @@ public struct OrderBook {
     ) -> Transaction? {
         guard order.owner == wallet.address else { return nil }
         guard let action = cancellationAction(order: order) else { return nil }
-        let refund = order.side == .buy
-            ? order.price * order.remaining
-            : order.remaining
+        let (refund, refundOverflow) = order.side == .buy
+            ? order.price.multipliedReportingOverflow(by: order.remaining)
+            : (order.remaining, false)
+        guard !refundOverflow else { return nil }
 
         var newBalance = senderOldBalance + refund
         if fee > 0 {
@@ -162,8 +167,10 @@ public struct OrderBook {
     ) -> Transaction? {
         guard let match = matchOrders(buyOrder: buyOrder, sellOrder: sellOrder) else { return nil }
 
-        let cost = match.fillPrice * match.fillAmount
-        let buyerRefund = (buyOrder.price - match.fillPrice) * match.fillAmount
+        let (cost, costOverflow) = match.fillPrice.multipliedReportingOverflow(by: match.fillAmount)
+        guard !costOverflow else { return nil }
+        let (buyerRefund, refundOverflow) = (buyOrder.price - match.fillPrice).multipliedReportingOverflow(by: match.fillAmount)
+        guard !refundOverflow else { return nil }
 
         var actions: [Action] = []
 

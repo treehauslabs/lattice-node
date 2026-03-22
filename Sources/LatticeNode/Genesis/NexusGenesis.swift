@@ -51,13 +51,15 @@ public enum NexusGenesis {
     // MARK: - Chain Identity
 
     public static let expectedBlockHash =
-        "baguqeerae7p6crb5k44mtn7iwg7hpls7pikwoo7hjdg2ch5tdluvgfqy774a"
+        "baguqeeraonb2rxiy43jozxlkncbdsjrnsopw3ikvv3taa2rhxxmywj43zeyq"
 
     // MARK: - Genesis Configuration
 
+    public static let genesisTimestamp: Int64 = 1_742_601_600_000
+
     public static let config = GenesisConfig(
         spec: spec,
-        timestamp: 0,
+        timestamp: genesisTimestamp,
         difficulty: UInt256.max
     )
 

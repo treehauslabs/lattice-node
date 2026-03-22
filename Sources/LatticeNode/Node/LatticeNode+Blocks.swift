@@ -40,8 +40,6 @@ extension LatticeNode {
         }
         await recordBlockTime(key: key, time: now)
 
-        await network.storeBlock(cid: cid, data: data)
-
         tally.recordReceived(peer: peer, bytes: data.count)
 
         if let block = Block(data: data) {
@@ -54,10 +52,13 @@ extension LatticeNode {
                 peerTipCID: cid,
                 network: network
             ) {
+                await network.storeBlock(cid: cid, data: data)
                 tally.recordSuccess(peer: peer)
                 return
             }
         }
+
+        await network.storeBlock(cid: cid, data: data)
 
         let directory = await network.directory
         let header = HeaderImpl<Block>(rawCID: cid)
@@ -106,9 +107,11 @@ extension LatticeNode {
             }
         }
 
+        let directory = await network.directory
         let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
         if accepted {
             tally.recordSuccess(peer: peer)
+            await maybePersist(directory: directory)
         } else {
             tally.recordFailure(peer: peer)
         }
