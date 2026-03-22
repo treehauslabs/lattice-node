@@ -18,8 +18,8 @@ primary_region = "iad"
   destination = "/data"
   initial_size = 1
   auto_extend_size_threshold = 80
-  auto_extend_size_increment = 1
-  auto_extend_size_limit = 10
+  auto_extend_size_increment = "1GB"
+  auto_extend_size_limit = "10GB"
 
 [[services]]
   internal_port = 4001
