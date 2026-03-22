@@ -1,8 +1,8 @@
 import Lattice
 import Foundation
-import NIOCore
-import NIOPosix
-import NIOHTTP1
+@preconcurrency import NIOCore
+@preconcurrency import NIOPosix
+@preconcurrency import NIOHTTP1
 import cashew
 import UInt256
 
