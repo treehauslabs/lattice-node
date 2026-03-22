@@ -11,8 +11,9 @@ let package = Package(
         .package(url: "https://github.com/treehauslabs/Acorn.git", from: "1.0.0"),
         .package(url: "https://github.com/treehauslabs/AcornDiskWorker.git", from: "1.0.1"),
         .package(url: "https://github.com/treehauslabs/AcornMemoryWorker.git", from: "1.0.0"),
-        .package(url: "https://github.com/treehauslabs/Tally.git", from: "1.0.0"),
+        .package(url: "https://github.com/treehauslabs/Tally.git", from: "1.1.0"),
         .package(url: "https://github.com/treehauslabs/Ivy.git", from: "2.2.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
     ],
     targets: [
         .executableTarget(
@@ -24,6 +25,8 @@ let package = Package(
                 .product(name: "AcornMemoryWorker", package: "AcornMemoryWorker"),
                 .product(name: "Tally", package: "Tally"),
                 .product(name: "Ivy", package: "Ivy"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
             ]),
         .testTarget(
             name: "LatticeNodeTests",

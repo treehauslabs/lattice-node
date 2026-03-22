@@ -1,5 +1,5 @@
 {
-  "originHash" : "5575dea4587ed3a3cfcdd01c9d7b5e1e541615c47b2508deec948d274e68c374",
+  "originHash" : "ae3e7dc6a388b11d06610d04b66bf660a8c425ea1486234f684c7a2729a6dae0",
   "pins" : [
     {
       "identity" : "acorn",
@@ -205,7 +205,7 @@
       "location" : "https://github.com/treehauslabs/Tally.git",
       "state" : {
         "revision" : "debbd1a91a2c6b00f4c9eece322364aa0a227cb2",
-        "version" : "1.0.0"
+        "version" : "1.1.0"
       }
     },
     {
