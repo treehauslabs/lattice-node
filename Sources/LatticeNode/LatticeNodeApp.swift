@@ -5,9 +5,7 @@ import Ivy
 @main
 struct LatticeNodeApp {
     static func main() async throws {
-        #if canImport(Glibc)
-        setbuf(Glibc.stdout!, nil)
-        #elseif canImport(Darwin)
+        #if canImport(Darwin)
         setbuf(Darwin.stdout, nil)
         #endif
 
