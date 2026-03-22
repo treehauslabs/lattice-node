@@ -107,7 +107,7 @@ cmd_deploy() {
             fly deploy \
                 --app "$app" \
                 --image "$IMAGE" \
-                --region "$region" \
+                --primary-region "$region" \
                 --vm-memory 512 \
                 --vm-cpus 1 \
                 --vm-cpu-kind shared \
