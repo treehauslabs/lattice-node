@@ -40,7 +40,6 @@ private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 // MARK: - Smoke Tests: Node boots, mines, persists
 // ============================================================================
 
-@MainActor
 final class SmokeTests: XCTestCase {
 
     func testNexusGenesisBootAndChainState() async throws {
@@ -192,7 +191,6 @@ final class SmokeTests: XCTestCase {
 // MARK: - Multi-Chain End-to-End: Nexus + Child chains
 // ============================================================================
 
-@MainActor
 final class MultiChainEndToEndTests: XCTestCase {
 
     func testNexusWithChildChainHierarchy() async throws {
@@ -334,7 +332,6 @@ final class MultiChainEndToEndTests: XCTestCase {
 // MARK: - Chain Subscription Tests
 // ============================================================================
 
-@MainActor
 final class SubscriptionTests: XCTestCase {
 
     func testArrayTrieSubscriptionPaths() {
@@ -400,7 +397,6 @@ final class SubscriptionTests: XCTestCase {
 // MARK: - Mempool End-to-End
 // ============================================================================
 
-@MainActor
 final class MempoolEndToEndTests: XCTestCase {
 
     func testTransactionAddedAndSelected() async {
@@ -536,7 +532,6 @@ final class MempoolEndToEndTests: XCTestCase {
 // MARK: - Two-Node Convergence
 // ============================================================================
 
-@MainActor
 final class TwoNodeEndToEndTests: XCTestCase {
 
     func testTwoNodesConvergeFromSameGenesis() async throws {
@@ -645,7 +640,6 @@ final class TwoNodeEndToEndTests: XCTestCase {
 // MARK: - Block Storage via Acorn CAS
 // ============================================================================
 
-@MainActor
 final class AcornStorageTests: XCTestCase {
 
     func testBlockStoreAndRetrieve() async throws {

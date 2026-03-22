@@ -125,7 +125,6 @@ private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 // MARK: - Block Hash Prefix
 // ============================================================================
 
-@MainActor
 final class BlockHashPrefixTests: XCTestCase {
 
     func testGetDifficultyHashPrefixIsStable() async throws {
@@ -211,7 +210,6 @@ final class BlockHashPrefixTests: XCTestCase {
 // MARK: - Mining Challenge Core
 // ============================================================================
 
-@MainActor
 final class MiningChallengeTests: XCTestCase {
 
     private func makeChallenge(
@@ -363,7 +361,6 @@ final class MiningChallengeTests: XCTestCase {
 // MARK: - Mining Challenge with Real Block Headers
 // ============================================================================
 
-@MainActor
 final class MiningChallengeIntegrationTests: XCTestCase {
 
     func testChallengeWithRealBlockHeader() async throws {
@@ -467,7 +464,6 @@ final class MiningChallengeIntegrationTests: XCTestCase {
 // MARK: - Tally Mining Challenge Reputation
 // ============================================================================
 
-@MainActor
 final class TallyMiningReputationTests: XCTestCase {
 
     func testMiningChallengeProducesValidResult() {
@@ -572,7 +568,6 @@ final class TallyMiningReputationTests: XCTestCase {
 // MARK: - Ivy Message Serialization
 // ============================================================================
 
-@MainActor
 final class MiningChallengeMessageTests: XCTestCase {
 
     func testMiningChallengeMessageRoundtrip() {

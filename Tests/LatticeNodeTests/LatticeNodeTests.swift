@@ -11,7 +11,6 @@ private struct TestFetcher: Fetcher {
     }
 }
 
-@MainActor
 final class LatticeNodeTests: XCTestCase {
 
     // MARK: - NexusGenesis boots correctly
