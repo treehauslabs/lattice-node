@@ -468,7 +468,7 @@ public enum RPCError: Error {
 
 // MARK: - NIO Channel Handler
 
-private final class HTTPHandler: ChannelInboundHandler {
+private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
 
