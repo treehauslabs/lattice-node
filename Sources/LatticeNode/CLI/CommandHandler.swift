@@ -24,17 +24,18 @@ actor NodeState {
     }
 }
 
-func handleCommand(_ line: String, node: LatticeNode, state: NodeState, shutdown: @Sendable @escaping () -> Void) async {
+@discardableResult
+func handleCommand(_ line: String, node: LatticeNode, state: NodeState) async -> Bool {
     let parts = line.trimmingCharacters(in: .whitespacesAndNewlines)
         .split(separator: " ", omittingEmptySubsequences: true)
         .map(String.init)
-    guard !parts.isEmpty else { return }
+    guard !parts.isEmpty else { return false }
 
     switch parts[0] {
     case "mine":
         guard parts.count >= 2 else {
             print("  Usage: mine start|stop|list [chain]")
-            return
+            return false
         }
         let chain = parts.count >= 3 ? parts[2] : "Nexus"
         switch parts[1] {
@@ -72,7 +73,7 @@ func handleCommand(_ line: String, node: LatticeNode, state: NodeState, shutdown
     case "subscribe":
         guard parts.count >= 2 else {
             print("  Usage: subscribe <chain/path>")
-            return
+            return false
         }
         let path = parts[1].split(separator: "/").map(String.init)
         await state.subscribe(path: path)
@@ -81,11 +82,11 @@ func handleCommand(_ line: String, node: LatticeNode, state: NodeState, shutdown
     case "unsubscribe":
         guard parts.count >= 2 else {
             print("  Usage: unsubscribe <chain/path>")
-            return
+            return false
         }
         if parts[1] == "Nexus" {
             print("  Cannot unsubscribe from Nexus")
-            return
+            return false
         }
         let path = parts[1].split(separator: "/").map(String.init)
         await state.unsubscribe(path: path)
@@ -106,10 +107,11 @@ func handleCommand(_ line: String, node: LatticeNode, state: NodeState, shutdown
         }
 
     case "quit", "exit":
-        shutdown()
+        return true
 
     default:
         print("  Unknown command: \(parts[0])")
         print("  Commands: mine, status, chains, peers, quit")
     }
+    return false
 }
