@@ -21,7 +21,9 @@ jobs:
         with:
           path: .build
           key: spm-macos-${{ hashFiles('Package.resolved') }}
-          restore-keys: spm-macos-
+
+      - name: Resolve dependencies
+        run: swift package resolve
 
       - name: Build
         run: swift build -c release
