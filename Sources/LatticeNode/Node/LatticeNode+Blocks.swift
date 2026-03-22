@@ -16,6 +16,94 @@ extension LatticeNode {
         return true
     }
 
+    // MARK: - Block Processing with Reorg Recovery
+
+    func processBlockAndRecoverReorg(
+        header: BlockHeader,
+        directory: String,
+        fetcher: Fetcher,
+        mempool: Mempool
+    ) async -> Bool {
+        let chain = await lattice.nexus.chain
+        let tipBefore = await chain.getMainChainTip()
+
+        let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
+        guard accepted else { return false }
+
+        let tipAfter = await chain.getMainChainTip()
+        if tipBefore != tipAfter {
+            let parentOfNewTip = await chain.getConsensusBlock(hash: tipAfter)?.previousBlockHash
+            if parentOfNewTip != tipBefore {
+                await recoverOrphanedTransactions(
+                    oldTip: tipBefore,
+                    newTip: tipAfter,
+                    chain: chain,
+                    fetcher: fetcher,
+                    mempool: mempool
+                )
+            }
+        }
+
+        return true
+    }
+
+    private func recoverOrphanedTransactions(
+        oldTip: String,
+        newTip: String,
+        chain: ChainState,
+        fetcher: Fetcher,
+        mempool: Mempool
+    ) async {
+        let newChainHashes = await collectAncestors(
+            from: newTip, chain: chain, limit: config.retentionDepth
+        )
+
+        var orphanedBlockHashes: [String] = []
+        var current = oldTip
+        for _ in 0..<config.retentionDepth {
+            if newChainHashes.contains(current) { break }
+            orphanedBlockHashes.append(current)
+            guard let meta = await chain.getConsensusBlock(hash: current),
+                  let prev = meta.previousBlockHash else { break }
+            current = prev
+        }
+
+        guard !orphanedBlockHashes.isEmpty else { return }
+
+        for blockHash in orphanedBlockHashes {
+            guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
+                  let block = Block(data: blockData) else { continue }
+            guard let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node else { continue }
+            guard let txEntries = try? txDict.allKeysAndValues() else { continue }
+
+            for (_, txHeader) in txEntries {
+                guard let tx = txHeader.node else { continue }
+                if tx.body.node?.fee == 0 && tx.body.node?.nonce == block.index {
+                    continue
+                }
+                let _ = await mempool.add(transaction: tx)
+            }
+        }
+    }
+
+    private func collectAncestors(
+        from tip: String,
+        chain: ChainState,
+        limit: UInt64
+    ) async -> Set<String> {
+        var hashes = Set<String>()
+        var current = tip
+        for _ in 0..<limit {
+            hashes.insert(current)
+            guard let meta = await chain.getConsensusBlock(hash: current),
+                  let prev = meta.previousBlockHash else { break }
+            current = prev
+        }
+        return hashes
+    }
+
+    // MARK: - Block Reception (ChainNetworkDelegate) with Rate Limiting & Reputation
+
     nonisolated public func chainNetwork(
         _ network: ChainNetwork,
         didReceiveBlock cid: String,
@@ -63,7 +151,10 @@ extension LatticeNode {
         let directory = await network.directory
         let header = HeaderImpl<Block>(rawCID: cid)
         let fetcher = await network.fetcher
-        let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
+        let mempool = await network.mempool
+        let accepted = await processBlockAndRecoverReorg(
+            header: header, directory: directory, fetcher: fetcher, mempool: mempool
+        )
         if accepted {
             tally.recordSuccess(peer: peer)
             await network.setChainTip(tipCID: cid, referencedCIDs: [])
@@ -108,7 +199,10 @@ extension LatticeNode {
         }
 
         let directory = await network.directory
-        let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
+        let mempool = await network.mempool
+        let accepted = await processBlockAndRecoverReorg(
+            header: header, directory: directory, fetcher: fetcher, mempool: mempool
+        )
         if accepted {
             tally.recordSuccess(peer: peer)
             await maybePersist(directory: directory)

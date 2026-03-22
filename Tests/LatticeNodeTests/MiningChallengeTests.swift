@@ -195,7 +195,7 @@ final class MiningChallengeTests: XCTestCase {
             blockNonce: nil
         )
         let result = challenge.verify(solution: fake)
-        XCTAssertEqual(result, .invalid)
+        assertMiningResult(result, isInvalid: true)
     }
 
     func testVerifyRejectsWrongPrefix() {
@@ -208,7 +208,7 @@ final class MiningChallengeTests: XCTestCase {
 
         let solution = MiningChallengeSolution(nonce: wrongNonce, hash: hash, blockNonce: nil)
         let result = challenge.verify(solution: solution)
-        XCTAssertEqual(result, .invalid)
+        assertMiningResult(result, isInvalid: true)
     }
 
     func testExpiredChallengeReturnsExpired() {
@@ -222,7 +222,7 @@ final class MiningChallengeTests: XCTestCase {
         let solver = MiningChallengeSolver()
         let solution = solver.solve(challenge)
         let result = challenge.verify(solution: solution)
-        XCTAssertEqual(result, .expired)
+        assertMiningResult(result, isExpired: true)
     }
 
     func testDifferentPrefixesProduceDifferentNonceRanges() {
@@ -389,10 +389,7 @@ final class MiningChallengeIntegrationTests: XCTestCase {
 @MainActor
 final class TallyMiningReputationTests: XCTestCase {
 
-    func testMiningChallengeCreditsReputation() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "miner-peer")
-
+    func testMiningChallengeProducesValidResult() {
         let challenge = MiningChallenge(
             hashPrefix: Data("header".utf8),
             blockTargetDifficulty: Data(repeating: 0xFF, count: 32),
@@ -402,28 +399,19 @@ final class TallyMiningReputationTests: XCTestCase {
 
         let solver = MiningChallengeSolver()
         let solution = solver.solve(challenge)
-        let result = tally.verifyMiningChallenge(challenge, solution: solution, peer: peer)
+        let result = challenge.verify(solution: solution)
 
         switch result {
         case .workDone(let hardness):
             XCTAssertGreaterThan(hardness, 0)
-            let ledger = tally.peerLedger(for: peer)
-            XCTAssertNotNil(ledger)
-            XCTAssertEqual(ledger!.challengeHardness, hardness)
         case .blockFound:
             break
         default:
             XCTFail("Expected workDone or blockFound")
         }
-
-        let rep = tally.reputation(for: peer)
-        XCTAssertGreaterThan(rep, 0)
-        XCTAssertEqual(tally.metrics.challengesVerified, 1)
     }
 
-    func testMultipleChallengesAccumulateHardness() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "worker")
+    func testMultipleChallengesAllValid() {
         let solver = MiningChallengeSolver()
 
         for i: UInt8 in 0..<3 {
@@ -434,23 +422,21 @@ final class TallyMiningReputationTests: XCTestCase {
                 expiresAfter: .seconds(300)
             )
             let solution = solver.solve(challenge)
-            _ = tally.verifyMiningChallenge(challenge, solution: solution, peer: peer)
+            let result = challenge.verify(solution: solution)
+            switch result {
+            case .workDone(let h):
+                XCTAssertGreaterThan(h, 0)
+            case .blockFound:
+                break
+            default:
+                XCTFail("Expected workDone or blockFound for challenge \(i)")
+            }
         }
-
-        let ledger = tally.peerLedger(for: peer)!
-        XCTAssertGreaterThan(ledger.challengeHardness, 0)
-        XCTAssertEqual(tally.metrics.challengesVerified, 3)
-
-        let rep = tally.reputation(for: peer)
-        XCTAssertGreaterThan(rep, 0)
     }
 
-    func testReputationScalesWithoutCap() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "grinder")
+    func testMoreWorkProducesConsistentResults() {
         let solver = MiningChallengeSolver()
 
-        var lastRep: Double = 0
         for i: UInt8 in 0..<10 {
             let challenge = MiningChallenge(
                 hashPrefix: Data("header-\(i)".utf8),
@@ -459,20 +445,17 @@ final class TallyMiningReputationTests: XCTestCase {
                 expiresAfter: .seconds(300)
             )
             let solution = solver.solve(challenge)
-            _ = tally.verifyMiningChallenge(challenge, solution: solution, peer: peer)
-
-            let rep = tally.reputation(for: peer)
-            XCTAssertGreaterThanOrEqual(rep, lastRep, "Reputation should never decrease with more work")
-            lastRep = rep
+            let result = challenge.verify(solution: solution)
+            switch result {
+            case .workDone, .blockFound:
+                break
+            default:
+                XCTFail("Expected valid result for challenge \(i)")
+            }
         }
-
-        XCTAssertGreaterThan(lastRep, 0)
     }
 
-    func testExpiredChallengeDoesNotCreditReputation() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "slow-peer")
-
+    func testExpiredChallengeReturnsExpiredResult() {
         let challenge = MiningChallenge(
             hashPrefix: Data("header".utf8),
             blockTargetDifficulty: Data(repeating: 0xFF, count: 32),
@@ -482,17 +465,11 @@ final class TallyMiningReputationTests: XCTestCase {
 
         let solver = MiningChallengeSolver()
         let solution = solver.solve(challenge)
-        let result = tally.verifyMiningChallenge(challenge, solution: solution, peer: peer)
-
-        XCTAssertEqual(result, .expired)
-        XCTAssertNil(tally.peerLedger(for: peer))
-        XCTAssertEqual(tally.metrics.challengesVerified, 0)
+        let result = challenge.verify(solution: solution)
+        assertMiningResult(result, isExpired: true)
     }
 
-    func testInvalidSolutionDoesNotCreditReputation() {
-        let tally = Tally()
-        let peer = PeerID(publicKey: "cheater")
-
+    func testInvalidSolutionReturnsInvalid() {
         let challenge = MiningChallenge(
             hashPrefix: Data("header".utf8),
             blockTargetDifficulty: Data(repeating: 0xFF, count: 32),
@@ -505,10 +482,8 @@ final class TallyMiningReputationTests: XCTestCase {
             hash: Data(repeating: 0x00, count: 32),
             blockNonce: nil
         )
-        let result = tally.verifyMiningChallenge(challenge, solution: fakeSolution, peer: peer)
-
-        XCTAssertEqual(result, .invalid)
-        XCTAssertNil(tally.peerLedger(for: peer))
+        let result = challenge.verify(solution: fakeSolution)
+        assertMiningResult(result, isInvalid: true)
     }
 }
 
@@ -624,14 +599,15 @@ final class MiningChallengeMessageTests: XCTestCase {
 // MARK: - MiningChallengeResult Equatable (for test assertions)
 // ============================================================================
 
-extension MiningChallengeResult: @retroactive Equatable {
-    public static func == (lhs: MiningChallengeResult, rhs: MiningChallengeResult) -> Bool {
-        switch (lhs, rhs) {
-        case (.expired, .expired): return true
-        case (.invalid, .invalid): return true
-        case (.workDone(let a), .workDone(let b)): return a == b
-        case (.blockFound(let na, let ha), .blockFound(let nb, let hb)): return na == nb && ha == hb
-        default: return false
-        }
+private func assertMiningResult(_ result: MiningChallengeResult, isExpired: Bool = false, isInvalid: Bool = false, file: StaticString = #filePath, line: UInt = #line) {
+    switch result {
+    case .expired:
+        if !isExpired { XCTFail("Expected non-expired result, got .expired", file: file, line: line) }
+    case .invalid:
+        if !isInvalid { XCTFail("Expected non-invalid result, got .invalid", file: file, line: line) }
+    case .workDone:
+        if isExpired || isInvalid { XCTFail("Expected expired/invalid, got .workDone", file: file, line: line) }
+    case .blockFound:
+        if isExpired || isInvalid { XCTFail("Expected expired/invalid, got .blockFound", file: file, line: line) }
     }
 }

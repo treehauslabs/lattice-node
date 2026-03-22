@@ -48,7 +48,12 @@ extension LatticeNode {
 
         await network.publishBlock(cid: header.rawCID, data: blockData)
         await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
-        let _ = await lattice.processBlockHeader(header, fetcher: network.fetcher)
+        let _ = await processBlockAndRecoverReorg(
+            header: header,
+            directory: directory,
+            fetcher: network.fetcher,
+            mempool: network.mempool
+        )
         await maybePersist(directory: directory)
     }
 

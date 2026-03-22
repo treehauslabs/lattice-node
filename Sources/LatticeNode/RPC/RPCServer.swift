@@ -1,6 +1,7 @@
 import Lattice
 import Foundation
-import Network
+import NIOCore
+import NIOPosix
 import cashew
 import UInt256
 
@@ -8,80 +9,77 @@ public final class RPCServer: @unchecked Sendable {
     private let node: LatticeNode
     private let port: UInt16
     private let allowedOrigin: String
-    private var listener: NWListener?
-    private let queue: DispatchQueue
+    private var channel: Channel?
+    private let group: MultiThreadedEventLoopGroup
+
     public init(node: LatticeNode, port: UInt16 = 8080, allowedOrigin: String = "http://127.0.0.1") {
         self.node = node
         self.port = port
         self.allowedOrigin = allowedOrigin
-        self.queue = DispatchQueue(label: "lattice.rpc", attributes: .concurrent)
+        self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
     }
 
     public func start() throws {
-        let params = NWParameters.tcp
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            throw RPCError.invalidPort
-        }
-        let l = try NWListener(using: params, on: nwPort)
-        l.newConnectionHandler = { [weak self] conn in
-            self?.handleConnection(conn)
-        }
-        l.start(queue: queue)
-        self.listener = l
+        let server = self
+        let bootstrap = ServerBootstrap(group: group)
+            .serverChannelOption(.backlog, value: 256)
+            .childChannelInitializer { channel in
+                channel.pipeline.addHandler(HTTPHandler(server: server))
+            }
+            .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
+
+        channel = try bootstrap.bind(host: "0.0.0.0", port: Int(port)).wait()
     }
 
     public func stop() {
-        listener?.cancel()
-        listener = nil
+        try? channel?.close().wait()
+        try? group.syncShutdownGracefully()
     }
 
-    // MARK: - Connection Handling
+    fileprivate func handleRequest(method: String, path: String, body: String?) async -> (Int, Data) {
+        return await route(method: method, path: path, body: body)
+    }
 
-    private func handleConnection(_ conn: NWConnection) {
-        conn.start(queue: queue)
-
-        let remoteIP: String
-        if let endpoint = conn.currentPath?.remoteEndpoint,
-           case .hostPort(let host, _) = endpoint {
-            remoteIP = "\(host)"
-        } else {
-            remoteIP = "unknown"
+    fileprivate func buildResponseData(status: Int, body: Data) -> Data {
+        let statusText: String = switch status {
+        case 200: "OK"
+        case 400: "Bad Request"
+        case 404: "Not Found"
+        case 429: "Too Many Requests"
+        case 500: "Internal Server Error"
+        default: "Error"
         }
+        var header = "HTTP/1.1 \(status) \(statusText)\r\n"
+        header += "Content-Type: application/json\r\n"
+        header += "Content-Length: \(body.count)\r\n"
+        header += "Access-Control-Allow-Origin: \(allowedOrigin)\r\n"
+        header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        header += "Access-Control-Allow-Headers: Content-Type\r\n"
+        header += "\r\n"
+        var responseData = Data(header.utf8)
+        responseData.append(body)
+        return responseData
+    }
 
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] data, _, isComplete, error in
-            guard let self, let data, error == nil else {
-                conn.cancel()
-                return
-            }
-
-            guard let raw = String(data: data, encoding: .utf8) else {
-                self.sendResponse(conn, status: 400, body: self.jsonError("Invalid request encoding"))
-                return
-            }
-
-            let parsed = self.parseHTTP(raw)
-
-            if parsed.method == "OPTIONS" {
-                self.sendCORSPreflight(conn)
-                return
-            }
-
-            Task {
-                let (status, body) = await self.route(method: parsed.method, path: parsed.path, body: parsed.body)
-                self.sendResponse(conn, status: status, body: body)
-            }
-        }
+    fileprivate func buildCORSPreflightData() -> Data {
+        var header = "HTTP/1.1 204 No Content\r\n"
+        header += "Access-Control-Allow-Origin: \(allowedOrigin)\r\n"
+        header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        header += "Access-Control-Allow-Headers: Content-Type\r\n"
+        header += "Content-Length: 0\r\n"
+        header += "\r\n"
+        return Data(header.utf8)
     }
 
     // MARK: - HTTP Parsing
 
-    private struct HTTPRequest {
+    fileprivate struct HTTPRequest {
         let method: String
         let path: String
         let body: String?
     }
 
-    private func parseHTTP(_ raw: String) -> HTTPRequest {
+    fileprivate func parseHTTP(_ raw: String) -> HTTPRequest {
         let lines = raw.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else {
             return HTTPRequest(method: "GET", path: "/", body: nil)
@@ -99,43 +97,6 @@ public final class RPCServer: @unchecked Sendable {
             if !rest.isEmpty { body = rest }
         }
         return HTTPRequest(method: method, path: path, body: body)
-    }
-
-    // MARK: - Response Helpers
-
-    private func sendResponse(_ conn: NWConnection, status: Int, body: Data) {
-        let statusText: String = switch status {
-        case 200: "OK"
-        case 400: "Bad Request"
-        case 404: "Not Found"
-        case 429: "Too Many Requests"
-        case 500: "Internal Server Error"
-        default: "Error"
-        }
-        var header = "HTTP/1.1 \(status) \(statusText)\r\n"
-        header += "Content-Type: application/json\r\n"
-        header += "Content-Length: \(body.count)\r\n"
-        header += "Access-Control-Allow-Origin: \(self.allowedOrigin)\r\n"
-        header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-        header += "Access-Control-Allow-Headers: Content-Type\r\n"
-        header += "\r\n"
-        var responseData = Data(header.utf8)
-        responseData.append(body)
-        conn.send(content: responseData, completion: .contentProcessed { _ in
-            conn.cancel()
-        })
-    }
-
-    private func sendCORSPreflight(_ conn: NWConnection) {
-        var header = "HTTP/1.1 204 No Content\r\n"
-        header += "Access-Control-Allow-Origin: \(self.allowedOrigin)\r\n"
-        header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-        header += "Access-Control-Allow-Headers: Content-Type\r\n"
-        header += "Content-Length: 0\r\n"
-        header += "\r\n"
-        conn.send(content: Data(header.utf8), completion: .contentProcessed { _ in
-            conn.cancel()
-        })
     }
 
     private func jsonError(_ message: String) -> Data {
@@ -503,4 +464,65 @@ public final class RPCServer: @unchecked Sendable {
 
 public enum RPCError: Error {
     case invalidPort
+}
+
+// MARK: - NIO Channel Handler
+
+private final class HTTPHandler: ChannelInboundHandler {
+    typealias InboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
+
+    private let server: RPCServer
+    private var accumulated = Data()
+
+    init(server: RPCServer) {
+        self.server = server
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        var buf = unwrapInboundIn(data)
+        if let bytes = buf.readBytes(length: buf.readableBytes) {
+            accumulated.append(contentsOf: bytes)
+        }
+
+        guard let raw = String(data: accumulated, encoding: .utf8),
+              raw.contains("\r\n\r\n") else {
+            return
+        }
+
+        let requestData = accumulated
+        accumulated = Data()
+
+        let parsed = server.parseHTTP(raw)
+
+        if parsed.method == "OPTIONS" {
+            let responseData = server.buildCORSPreflightData()
+            var outBuf = context.channel.allocator.buffer(capacity: responseData.count)
+            outBuf.writeBytes(responseData)
+            context.writeAndFlush(wrapOutboundOut(outBuf), promise: nil)
+            context.close(promise: nil)
+            return
+        }
+
+        let channel = context.channel
+        let eventLoop = context.eventLoop
+        let reqMethod = parsed.method
+        let reqPath = parsed.path
+        let reqBody = parsed.body
+        let srv = server
+        Task { @Sendable in
+            let (status, body) = await srv.handleRequest(method: reqMethod, path: reqPath, body: reqBody)
+            let responseData = srv.buildResponseData(status: status, body: body)
+            eventLoop.execute {
+                var outBuf = channel.allocator.buffer(capacity: responseData.count)
+                outBuf.writeBytes(responseData)
+                channel.writeAndFlush(outBuf, promise: nil)
+                channel.close(promise: nil)
+            }
+        }
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.close(promise: nil)
+    }
 }

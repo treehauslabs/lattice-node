@@ -27,6 +27,7 @@ final class LatticeNodeTests: XCTestCase {
         XCTAssertNotNil(result.chainState)
     }
 
+
     func testNexusGenesisBlockIsDeterministic() async throws {
         let r1 = try await NexusGenesis.create(fetcher: TestFetcher())
         let r2 = try await NexusGenesis.create(fetcher: TestFetcher())
