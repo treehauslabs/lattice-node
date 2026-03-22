@@ -26,11 +26,11 @@ public final class RPCServer: Sendable {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.backlog, value: 256)
             .childChannelInitializer { channel in
-                channel.pipeline.addHandlers([
-                    ByteToMessageHandler(HTTPRequestDecoder()),
-                    HTTPResponseEncoder(),
-                    RPCHandler(node: node, allowedOrigin: allowedOrigin),
-                ])
+                channel.pipeline.addHandler(ByteToMessageHandler(HTTPRequestDecoder())).flatMap {
+                    channel.pipeline.addHandler(HTTPResponseEncoder())
+                }.flatMap {
+                    channel.pipeline.addHandler(RPCHandler(node: node, allowedOrigin: allowedOrigin))
+                }
             }
             .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
 
