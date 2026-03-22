@@ -69,9 +69,10 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
                 config: genesisConfig,
                 fetcher: nexusNetwork.fetcher
             )
-            if let blockData = genesis.block.toData() {
-                await nexusNetwork.storeBlock(cid: genesis.blockHash, data: blockData)
-            }
+        }
+
+        if let blockData = genesis.block.toData() {
+            await nexusNetwork.storeBlock(cid: genesis.blockHash, data: blockData)
         }
 
         self.genesisResult = genesis
