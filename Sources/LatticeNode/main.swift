@@ -2,6 +2,8 @@ import Lattice
 import Foundation
 import Ivy
 
+setbuf(stdout, nil)
+
 let args = parseArgs()
 
 if args.showHelp {
