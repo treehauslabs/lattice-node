@@ -2,7 +2,8 @@ import Lattice
 import Foundation
 import Ivy
 
-setbuf(stdout, nil)
+nonisolated(unsafe) let stdoutHandle = stdout
+setbuf(stdoutHandle, nil)
 
 let args = parseArgs()
 
