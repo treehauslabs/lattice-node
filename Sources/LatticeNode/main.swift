@@ -2,7 +2,11 @@ import Lattice
 import Foundation
 import Ivy
 
-nonisolated(unsafe) let stdoutHandle = stdout
+#if canImport(Glibc)
+nonisolated(unsafe) let stdoutHandle = Glibc.stdout!
+#elseif canImport(Darwin)
+nonisolated(unsafe) let stdoutHandle = Darwin.stdout
+#endif
 setbuf(stdoutHandle, nil)
 
 let args = parseArgs()
