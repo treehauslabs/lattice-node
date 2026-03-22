@@ -337,11 +337,17 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         case .noStateAvailable:
             return "Chain state not available"
         case .disallowedDeposit:
-            return "Deposit actions not allowed on nexus chain"
+            return "Swap action signer mismatch"
         case .disallowedWithdrawal:
-            return "Withdrawal actions not allowed on nexus chain"
+            return "Disallowed action on nexus chain"
         case .stateResolutionFailed:
             return "Failed to resolve chain state"
+        case .feeTooLow(let actual, let minimum):
+            return "Fee too low: \(actual) < minimum \(minimum)"
+        case .nonceAlreadyUsed(let nonce):
+            return "Nonce already used or expired: \(nonce)"
+        case .nonceFromFuture(let nonce):
+            return "Nonce too far in the future: \(nonce)"
         }
     }
 
@@ -356,6 +362,18 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
         let _ = await lattice.processBlockHeader(header, fetcher: network.fetcher)
         await maybePersist(directory: directory)
+    }
+
+    // MARK: - Block Timestamp Validation
+
+    private static let maxTimestampDriftMs: Int64 = 7_200_000
+
+    nonisolated private func isBlockTimestampValid(_ block: Block) -> Bool {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        if block.timestamp > nowMs + Self.maxTimestampDriftMs {
+            return false
+        }
+        return true
     }
 
     // MARK: - Block Reception (ChainNetworkDelegate) with Rate Limiting & Reputation
@@ -384,6 +402,10 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         tally.recordReceived(peer: peer, bytes: data.count)
 
         if let block = Block(data: data) {
+            if !isBlockTimestampValid(block) {
+                tally.recordFailure(peer: peer)
+                return
+            }
             if await checkSyncNeeded(
                 peerBlock: block,
                 peerTipCID: cid,
@@ -427,6 +449,10 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         let header = HeaderImpl<Block>(rawCID: cid)
 
         if let block = try? await header.resolve(fetcher: fetcher).node {
+            if !isBlockTimestampValid(block) {
+                tally.recordFailure(peer: peer)
+                return
+            }
             if await checkSyncNeeded(
                 peerBlock: block,
                 peerTipCID: cid,

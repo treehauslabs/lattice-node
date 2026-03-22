@@ -7,9 +7,9 @@ let package = Package(
         .macOS(.v15)
     ],
     dependencies: [
-        .package(url: "https://github.com/treehauslabs/Lattice.git", from: "3.1.0"),
+        .package(url: "https://github.com/treehauslabs/Lattice.git", from: "3.2.0"),
         .package(url: "https://github.com/treehauslabs/Acorn.git", from: "1.0.0"),
-        .package(url: "https://github.com/treehauslabs/AcornDiskWorker.git", from: "1.0.0"),
+        .package(url: "https://github.com/treehauslabs/AcornDiskWorker.git", from: "1.0.1"),
         .package(url: "https://github.com/treehauslabs/AcornMemoryWorker.git", from: "1.0.0"),
         .package(url: "https://github.com/treehauslabs/Tally.git", from: "1.0.0"),
         .package(url: "https://github.com/treehauslabs/Ivy.git", from: "2.2.0"),

@@ -104,14 +104,14 @@ public actor MinerLoop {
                     transactions.insert(coinbase, at: 0)
                 }
 
-                let childBlocks = await buildChildBlocks(
+                let childResult = await buildChildBlocks(
                     nexusBlock: previousBlock
                 )
 
                 let template = try await BlockBuilder.buildBlock(
                     previous: previousBlock,
                     transactions: transactions,
-                    childBlocks: childBlocks,
+                    childBlocks: childResult.blocks,
                     timestamp: Int64(Date().timeIntervalSince1970 * 1000),
                     difficulty: previousBlock.nextDifficulty,
                     nonce: 0,
@@ -137,6 +137,10 @@ public actor MinerLoop {
 
                         let confirmedCIDs = Set(transactions.map { $0.body.rawCID })
                         await mempool.removeAll(txCIDs: confirmedCIDs)
+
+                        for removal in childResult.pendingChildTxRemovals {
+                            await removal.mempool.removeAll(txCIDs: removal.txCIDs)
+                        }
 
                         await delegate?.minerDidProduceBlock(mined, hash: HeaderImpl<Block>(node: mined).rawCID)
                         break
@@ -214,11 +218,11 @@ public actor MinerLoop {
         let body = TransactionBody(
             accountActions: [accountAction],
             actions: [],
-            depositActions: [],
+            swapActions: [],
+            swapClaimActions: [],
             genesisActions: [],
             peerActions: [],
-            receiptActions: [],
-            withdrawalActions: [],
+            settleActions: [],
             signers: [identity.address],
             fee: 0,
             nonce: previousBlock.index + 1
@@ -252,8 +256,14 @@ public actor MinerLoop {
 
     // MARK: - Child Block Building (Merged Mining)
 
-    private func buildChildBlocks(nexusBlock: Block) async -> [String: Block] {
-        var result: [String: Block] = [:]
+    private struct ChildBlockResult {
+        let blocks: [String: Block]
+        let pendingChildTxRemovals: [(mempool: Mempool, txCIDs: Set<String>)]
+    }
+
+    private func buildChildBlocks(nexusBlock: Block) async -> ChildBlockResult {
+        var blocks: [String: Block] = [:]
+        var pendingRemovals: [(mempool: Mempool, txCIDs: Set<String>)] = []
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
 
         for ctx in childContexts {
@@ -275,15 +285,16 @@ public actor MinerLoop {
                     nonce: 0,
                     fetcher: ctx.fetcher
                 )
-                result[ctx.directory] = childBlock
-
-                let confirmedCIDs = Set(childTxs.map { $0.body.rawCID })
-                await ctx.mempool.removeAll(txCIDs: confirmedCIDs)
+                blocks[ctx.directory] = childBlock
+                let cids = Set(childTxs.map { $0.body.rawCID })
+                if !cids.isEmpty {
+                    pendingRemovals.append((mempool: ctx.mempool, txCIDs: cids))
+                }
             } catch {
                 continue
             }
         }
-        return result
+        return ChildBlockResult(blocks: blocks, pendingChildTxRemovals: pendingRemovals)
     }
 
     // MARK: - Helpers

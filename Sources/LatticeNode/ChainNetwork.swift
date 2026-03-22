@@ -31,7 +31,8 @@ public actor ChainNetwork: IvyDelegate {
         config: IvyConfig,
         storagePath: URL,
         resources: NodeResourceConfig = .default,
-        chainCount: Int = 1
+        chainCount: Int = 1,
+        maxPeerConnections: Int = BootstrapPeers.maxPeerConnections
     ) async throws {
         self.directory = directory
         self.subscribedChains = Set([directory])
@@ -62,7 +63,34 @@ public actor ChainNetwork: IvyDelegate {
         )
         self.verifiedStore = verified
 
-        let ivy = Ivy(config: config)
+        var ivyConfig = config
+        let tallyWithMaxPeers = TallyConfig(maxPeers: maxPeerConnections)
+        ivyConfig = IvyConfig(
+            publicKey: config.publicKey,
+            listenPort: config.listenPort,
+            bootstrapPeers: config.bootstrapPeers,
+            enableLocalDiscovery: config.enableLocalDiscovery,
+            tallyConfig: tallyWithMaxPeers,
+            kBucketSize: config.kBucketSize,
+            maxConcurrentRequests: config.maxConcurrentRequests,
+            requestTimeout: config.requestTimeout,
+            relayTimeout: config.relayTimeout,
+            serviceType: config.serviceType,
+            enableRelay: config.enableRelay,
+            enableAutoNAT: config.enableAutoNAT,
+            enableHolePunch: config.enableHolePunch,
+            stunServers: config.stunServers,
+            enableTransport: config.enableTransport,
+            enableAnnounce: config.enableAnnounce,
+            announceInterval: config.announceInterval,
+            announceAppName: config.announceAppName,
+            udpPort: config.udpPort,
+            enableUDP: config.enableUDP,
+            signingKey: config.signingKey,
+            defaultTTL: config.defaultTTL,
+            healthConfig: config.healthConfig
+        )
+        let ivy = Ivy(config: ivyConfig)
         let network = await ivy.reticulumWorker()
 
         let composite = await CompositeCASWorker(

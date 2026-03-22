@@ -3,6 +3,9 @@ import Foundation
 import cashew
 import UInt256
 
+public let MINIMUM_TRANSACTION_FEE: UInt64 = 1
+public let MAX_NONCE_DRIFT: UInt64 = 600
+
 public enum TransactionValidationError: Error, Sendable {
     case missingBody
     case invalidSignatures
@@ -14,15 +17,20 @@ public enum TransactionValidationError: Error, Sendable {
     case disallowedDeposit
     case disallowedWithdrawal
     case stateResolutionFailed
+    case feeTooLow(actual: UInt64, minimum: UInt64)
+    case nonceAlreadyUsed(nonce: UInt64)
+    case nonceFromFuture(nonce: UInt64)
 }
 
 public struct TransactionValidator: Sendable {
     private let fetcher: Fetcher
     private let chainState: ChainState
+    private let isCoinbase: Bool
 
-    public init(fetcher: Fetcher, chainState: ChainState) {
+    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false) {
         self.fetcher = fetcher
         self.chainState = chainState
+        self.isCoinbase = isCoinbase
     }
 
     public func validate(_ transaction: Transaction) async -> Result<Void, TransactionValidationError> {
@@ -54,11 +62,22 @@ public struct TransactionValidator: Sendable {
             }
         }
 
-        if !body.depositActions.isEmpty {
-            return .failure(.disallowedDeposit)
+        if !isCoinbase && body.fee < MINIMUM_TRANSACTION_FEE {
+            return .failure(.feeTooLow(actual: body.fee, minimum: MINIMUM_TRANSACTION_FEE))
         }
-        if !body.withdrawalActions.isEmpty {
-            return .failure(.disallowedWithdrawal)
+
+        let currentHeight = await chainState.getHighestBlockIndex()
+        if !isCoinbase {
+            if body.nonce <= currentHeight && currentHeight > MAX_NONCE_DRIFT && body.nonce < currentHeight - MAX_NONCE_DRIFT {
+                return .failure(.nonceAlreadyUsed(nonce: body.nonce))
+            }
+            if body.nonce > currentHeight + MAX_NONCE_DRIFT {
+                return .failure(.nonceFromFuture(nonce: body.nonce))
+            }
+        }
+
+        if !body.swapActions.isEmpty && !body.swapActions.allSatisfy({ Set(body.signers).contains($0.sender) }) {
+            return .failure(.disallowedDeposit)
         }
 
         var seenOwners = Set<String>()

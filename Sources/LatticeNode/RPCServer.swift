@@ -7,13 +7,15 @@ import UInt256
 public final class RPCServer: @unchecked Sendable {
     private let node: LatticeNode
     private let port: UInt16
+    private let allowedOrigin: String
     private var listener: NWListener?
     private let queue: DispatchQueue
     private let rateLimiter = RateLimiter(maxRequestsPerSecond: 50, windowSeconds: 1.0)
 
-    public init(node: LatticeNode, port: UInt16 = 8080) {
+    public init(node: LatticeNode, port: UInt16 = 8080, allowedOrigin: String = "http://127.0.0.1") {
         self.node = node
         self.port = port
+        self.allowedOrigin = allowedOrigin
         self.queue = DispatchQueue(label: "lattice.rpc", attributes: .concurrent)
     }
 
@@ -120,7 +122,7 @@ public final class RPCServer: @unchecked Sendable {
         var header = "HTTP/1.1 \(status) \(statusText)\r\n"
         header += "Content-Type: application/json\r\n"
         header += "Content-Length: \(body.count)\r\n"
-        header += "Access-Control-Allow-Origin: *\r\n"
+        header += "Access-Control-Allow-Origin: \(self.allowedOrigin)\r\n"
         header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
         header += "Access-Control-Allow-Headers: Content-Type\r\n"
         header += "\r\n"
@@ -133,7 +135,7 @@ public final class RPCServer: @unchecked Sendable {
 
     private func sendCORSPreflight(_ conn: NWConnection) {
         var header = "HTTP/1.1 204 No Content\r\n"
-        header += "Access-Control-Allow-Origin: *\r\n"
+        header += "Access-Control-Allow-Origin: \(self.allowedOrigin)\r\n"
         header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
         header += "Access-Control-Allow-Headers: Content-Type\r\n"
         header += "Content-Length: 0\r\n"
@@ -188,12 +190,6 @@ public final class RPCServer: @unchecked Sendable {
         }
         if method == "POST" && segments.count == 2 && segments[1] == "orders" {
             return await handlePlaceOrder(body: body)
-        }
-        if method == "GET" && segments.count == 3 && segments[1] == "wallet" && segments[2] == "create" {
-            return handleCreateWallet()
-        }
-        if method == "POST" && segments.count == 3 && segments[1] == "wallet" && segments[2] == "sign" {
-            return handleSignTransaction(body: body)
         }
         if method == "GET" && segments.count == 3 && segments[1] == "proof" {
             return await handleBalanceProof(address: segments[2])
@@ -391,57 +387,6 @@ public final class RPCServer: @unchecked Sendable {
         return (200, jsonEncode(MempoolResponse(count: count, totalFees: totalFees)))
     }
 
-    // MARK: - Wallet
-
-    private func handleCreateWallet() -> (Int, Data) {
-        let wallet = Wallet.create()
-        struct WalletResponse: Encodable {
-            let address: String
-            let publicKeyHex: String
-        }
-        let response = WalletResponse(
-            address: wallet.address,
-            publicKeyHex: wallet.publicKeyHex
-        )
-        return (200, jsonEncode(response))
-    }
-
-    // MARK: - Client-Side Signing
-
-    private func handleSignTransaction(body: String?) -> (Int, Data) {
-        guard let body, let bodyData = body.data(using: .utf8) else {
-            return (400, jsonError("Missing request body"))
-        }
-
-        struct SignRequest: Decodable {
-            let privateKeyHex: String
-            let bodyCID: String
-        }
-
-        guard let req = try? JSONDecoder().decode(SignRequest.self, from: bodyData) else {
-            return (400, jsonError("Expected: {privateKeyHex, bodyCID}"))
-        }
-
-        guard let wallet = Wallet.fromPrivateKey(req.privateKeyHex) else {
-            return (400, jsonError("Invalid private key"))
-        }
-
-        guard let signature = wallet.sign(message: req.bodyCID) else {
-            return (500, jsonError("Signing failed"))
-        }
-
-        struct SignResponse: Encodable {
-            let signature: String
-            let publicKeyHex: String
-            let address: String
-        }
-        return (200, jsonEncode(SignResponse(
-            signature: signature,
-            publicKeyHex: wallet.publicKeyHex,
-            address: wallet.address
-        )))
-    }
-
     // MARK: - Merkle Proof
 
     private func handleBalanceProof(address: String) async -> (Int, Data) {
@@ -507,61 +452,30 @@ public final class RPCServer: @unchecked Sendable {
             return (400, jsonError("Missing request body"))
         }
 
-        struct OrderRequest: Decodable {
-            let privateKeyHex: String
-            let side: String
-            let price: UInt64
-            let amount: UInt64
+        struct OrderSubmission: Decodable {
+            let signatures: [String: String]
+            let bodyCID: String
         }
 
-        guard let req = try? JSONDecoder().decode(OrderRequest.self, from: bodyData) else {
-            return (400, jsonError("Invalid order format. Expected: {privateKeyHex, side, price, amount}"))
+        guard let submission = try? JSONDecoder().decode(OrderSubmission.self, from: bodyData) else {
+            return (400, jsonError("Invalid order format. Expected: {signatures, bodyCID} (sign client-side)"))
         }
 
-        guard let side = OrderSide(rawValue: req.side) else {
-            return (400, jsonError("Invalid side. Must be 'buy' or 'sell'"))
+        let txBody = HeaderImpl<TransactionBody>(rawCID: submission.bodyCID)
+        let tx = Transaction(signatures: submission.signatures, body: txBody)
+        let directory = node.genesisConfig.spec.directory
+        let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
+
+        struct PlaceOrderResponse: Encodable {
+            let accepted: Bool
+            let txCID: String
+            let error: String?
         }
-
-        guard let wallet = Wallet.fromPrivateKey(req.privateKeyHex) else {
-            return (400, jsonError("Invalid private key"))
-        }
-
-        do {
-            let balance = try await node.getBalance(address: wallet.address)
-            let order = Order(
-                id: UUID().uuidString,
-                owner: wallet.address,
-                side: side,
-                price: req.price,
-                amount: req.amount,
-                timestamp: Int64(Date().timeIntervalSince1970 * 1000)
-            )
-
-            guard let tx = OrderBook.buildPlacementTransaction(
-                wallet: wallet,
-                order: order,
-                senderOldBalance: balance,
-                nonce: UInt64(Date().timeIntervalSince1970)
-            ) else {
-                return (400, jsonError("Insufficient balance to place order"))
-            }
-
-            let directory = node.genesisConfig.spec.directory
-            let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
-
-            struct PlaceOrderResponse: Encodable {
-                let accepted: Bool
-                let orderId: String
-                let error: String?
-            }
-            switch result {
-            case .success:
-                return (200, jsonEncode(PlaceOrderResponse(accepted: true, orderId: order.id, error: nil)))
-            case .failure(let reason):
-                return (400, jsonEncode(PlaceOrderResponse(accepted: false, orderId: order.id, error: reason)))
-            }
-        } catch {
-            return (500, jsonError("Failed to place order: \(error)"))
+        switch result {
+        case .success:
+            return (200, jsonEncode(PlaceOrderResponse(accepted: true, txCID: submission.bodyCID, error: nil)))
+        case .failure(let reason):
+            return (400, jsonEncode(PlaceOrderResponse(accepted: false, txCID: submission.bodyCID, error: reason)))
         }
     }
 }

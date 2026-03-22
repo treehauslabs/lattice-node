@@ -1,5 +1,5 @@
 {
-  "originHash" : "80c1d5c17f28eeef5397de59bbe60ec0488cb993a52caf7984e7367defb62d63",
+  "originHash" : "5575dea4587ed3a3cfcdd01c9d7b5e1e541615c47b2508deec948d274e68c374",
   "pins" : [
     {
       "identity" : "acorn",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/AcornDiskWorker.git",
       "state" : {
-        "revision" : "f8509227a354bdd362bd77ef4964719baac66a2f",
-        "version" : "1.0.0"
+        "revision" : "29718fda5ad2038f98a04d309fddef1f1b6c6cf1",
+        "version" : "1.0.1"
       }
     },
     {
@@ -74,12 +74,21 @@
       }
     },
     {
+      "identity" : "jxkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jectivex/JXKit.git",
+      "state" : {
+        "revision" : "a4c1872d36036fe4ade4b1cadb268603e89e25f0",
+        "version" : "3.6.0"
+      }
+    },
+    {
       "identity" : "lattice",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
-        "revision" : "dbe02eaff316f32e7739773c9ce89b39b1e735cf",
-        "version" : "3.1.0"
+        "revision" : "2d4a9a1b5d7fdbc81a9692a2284db6a448b187cd",
+        "version" : "3.2.0"
       }
     },
     {

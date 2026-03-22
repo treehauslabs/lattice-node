@@ -56,11 +56,11 @@ public struct Wallet: Sendable {
         let body = TransactionBody(
             accountActions: [senderAction, recipientAction],
             actions: [],
-            depositActions: [],
+            swapActions: [],
+            swapClaimActions: [],
             genesisActions: [],
             peerActions: [],
-            receiptActions: [],
-            withdrawalActions: [],
+            settleActions: [],
             signers: [address],
             fee: fee,
             nonce: nonce
@@ -94,11 +94,11 @@ public struct Wallet: Sendable {
         let body = TransactionBody(
             accountActions: accountActions,
             actions: actions,
-            depositActions: [],
+            swapActions: [],
+            swapClaimActions: [],
             genesisActions: [],
             peerActions: [],
-            receiptActions: [],
-            withdrawalActions: [],
+            settleActions: [],
             signers: [address],
             fee: fee,
             nonce: nonce

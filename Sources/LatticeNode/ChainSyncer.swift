@@ -23,23 +23,47 @@ public struct SyncResult: Sendable {
     public let tipBlockIndex: UInt64
 }
 
+public enum SyncFetchError: Error, Sendable {
+    case timeout
+}
+
 public actor ChainSyncer {
     private let fetcher: Fetcher
     private let storeFn: @Sendable (String, Data) async -> Void
     private let genesisBlockHash: String
     private let retentionDepth: UInt64
+    private let fetchTimeout: Duration
     private var cancelled = false
 
     public init(
         fetcher: Fetcher,
         store: @Sendable @escaping (String, Data) async -> Void,
         genesisBlockHash: String,
-        retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE
+        retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE,
+        fetchTimeout: Duration = .seconds(30)
     ) {
         self.fetcher = fetcher
         self.storeFn = store
         self.genesisBlockHash = genesisBlockHash
         self.retentionDepth = retentionDepth
+        self.fetchTimeout = fetchTimeout
+    }
+
+    private func fetchWithTimeout(rawCid: String) async throws -> Data {
+        try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask {
+                try await self.fetcher.fetch(rawCid: rawCid)
+            }
+            group.addTask {
+                try await Task.sleep(for: self.fetchTimeout)
+                throw SyncFetchError.timeout
+            }
+            guard let result = try await group.next() else {
+                throw SyncFetchError.timeout
+            }
+            group.cancelAll()
+            return result
+        }
     }
 
     public func cancel() {
@@ -64,7 +88,7 @@ public actor ChainSyncer {
         while !cancelled {
             let data: Data
             do {
-                data = try await fetcher.fetch(rawCid: currentCID)
+                data = try await fetchWithTimeout(rawCid: currentCID)
             } catch {
                 throw SyncError.invalidBlock(UInt64(collected.count))
             }
@@ -134,7 +158,7 @@ public actor ChainSyncer {
         while !cancelled {
             let data: Data
             do {
-                data = try await fetcher.fetch(rawCid: currentCID)
+                data = try await fetchWithTimeout(rawCid: currentCID)
             } catch {
                 throw SyncError.invalidBlock(UInt64(collected.count))
             }

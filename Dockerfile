@@ -1,6 +1,10 @@
 # Stage 1: Build
 FROM swift:6.0-jammy AS builder
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libjavascriptcoregtk-4.1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 COPY Package.swift Package.resolved ./
 RUN swift package resolve
@@ -13,6 +17,7 @@ FROM ubuntu:22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    libjavascriptcoregtk-4.1-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/.build/release/LatticeNode /usr/local/bin/lattice-node
@@ -22,6 +27,7 @@ USER lattice
 
 VOLUME /home/lattice/.lattice
 EXPOSE 4001
+EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD grep -q "status: OK" /home/lattice/.lattice/health || exit 1

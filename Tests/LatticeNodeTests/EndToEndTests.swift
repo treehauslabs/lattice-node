@@ -241,8 +241,8 @@ final class MultiChainEndToEndTests: XCTestCase {
 
         let childPremineBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, oldBalance: 0, newBalance: childPremine)],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
+            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
+            settleActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, transactions: [sign(childPremineBody, kp)],
@@ -267,8 +267,8 @@ final class MultiChainEndToEndTests: XCTestCase {
                 AccountAction(owner: kpAddr, oldBalance: childPremine, newBalance: childPremine - 100),
                 AccountAction(owner: receiverAddr, oldBalance: 0, newBalance: 100 + childReward)
             ],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 1
+            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
+            settleActions: [], signers: [kpAddr], fee: 0, nonce: 1
         )
         let childTx = sign(transferBody, kp)
         let added = await childMempool.add(transaction: childTx)
@@ -409,8 +409,8 @@ final class MempoolEndToEndTests: XCTestCase {
         let mempool = Mempool(maxSize: 100)
 
         let body = TransactionBody(
-            accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+            peerActions: [], settleActions: [],
             signers: [kpAddr], fee: 50, nonce: 0
         )
         let tx = sign(body, kp)
@@ -430,8 +430,8 @@ final class MempoolEndToEndTests: XCTestCase {
         let mempool = Mempool(maxSize: 100)
 
         let body = TransactionBody(
-            accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+            peerActions: [], settleActions: [],
             signers: [kpAddr], fee: 10, nonce: 0
         )
         let tx = sign(body, kp)
@@ -448,8 +448,8 @@ final class MempoolEndToEndTests: XCTestCase {
 
         for i: UInt64 in 0..<5 {
             let body = TransactionBody(
-                accountActions: [], actions: [], depositActions: [], genesisActions: [],
-                peerActions: [], receiptActions: [], withdrawalActions: [],
+                accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+                peerActions: [], settleActions: [],
                 signers: [kpAddr], fee: i * 10, nonce: i
             )
             let _ = await mempool.add(transaction: sign(body, kp))
@@ -468,8 +468,8 @@ final class MempoolEndToEndTests: XCTestCase {
         var cids: [String] = []
         for i: UInt64 in 0..<3 {
             let body = TransactionBody(
-                accountActions: [], actions: [], depositActions: [], genesisActions: [],
-                peerActions: [], receiptActions: [], withdrawalActions: [],
+                accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+                peerActions: [], settleActions: [],
                 signers: [kpAddr], fee: 10, nonce: i
             )
             let tx = sign(body, kp)
@@ -490,8 +490,8 @@ final class MempoolEndToEndTests: XCTestCase {
         let mempool = Mempool(maxSize: 100)
 
         let body = TransactionBody(
-            accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+            peerActions: [], settleActions: [],
             signers: ["fake"], fee: 10, nonce: 0
         )
         let tx = Transaction(signatures: [kp.publicKey: "deadbeef"], body: HeaderImpl<TransactionBody>(node: body))
@@ -507,13 +507,13 @@ final class MempoolEndToEndTests: XCTestCase {
         let childMempool = Mempool(maxSize: 100)
 
         let nexusBody = TransactionBody(
-            accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+            peerActions: [], settleActions: [],
             signers: [kpAddr], fee: 10, nonce: 0
         )
         let childBody = TransactionBody(
-            accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+            peerActions: [], settleActions: [],
             signers: [kpAddr], fee: 20, nonce: 1
         )
 

@@ -39,6 +39,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install JSC for Linux
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends libjavascriptcoregtk-4.1-dev
+
       - name: Build
         run: swift build -c release
 

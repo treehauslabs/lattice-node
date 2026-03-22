@@ -4,9 +4,12 @@ services:
     container_name: lattice-bootstrap-1
     ports:
       - "4001:4001"
+      - "8081:8080"
     volumes:
       - bootstrap-1-data:/home/lattice/.lattice
-    command: ["--mine", "Nexus", "--port", "4001", "--data-dir", "/home/lattice/.lattice"]
+    networks:
+      - lattice-net
+    command: ["--mine", "Nexus", "--port", "4001", "--rpc-port", "8080", "--data-dir", "/home/lattice/.lattice"]
     restart: unless-stopped
 
   bootstrap-2:
@@ -14,9 +17,12 @@ services:
     container_name: lattice-bootstrap-2
     ports:
       - "4002:4002"
+      - "8082:8080"
     volumes:
       - bootstrap-2-data:/home/lattice/.lattice
-    command: ["--mine", "Nexus", "--port", "4002", "--data-dir", "/home/lattice/.lattice"]
+    networks:
+      - lattice-net
+    command: ["--mine", "Nexus", "--port", "4002", "--rpc-port", "8080", "--data-dir", "/home/lattice/.lattice"]
     restart: unless-stopped
     depends_on:
       - bootstrap-1
@@ -26,12 +32,19 @@ services:
     container_name: lattice-bootstrap-3
     ports:
       - "4003:4003"
+      - "8083:8080"
     volumes:
       - bootstrap-3-data:/home/lattice/.lattice
-    command: ["--mine", "Nexus", "--port", "4003", "--data-dir", "/home/lattice/.lattice"]
+    networks:
+      - lattice-net
+    command: ["--mine", "Nexus", "--port", "4003", "--rpc-port", "8080", "--data-dir", "/home/lattice/.lattice"]
     restart: unless-stopped
     depends_on:
       - bootstrap-1
+
+networks:
+  lattice-net:
+    driver: bridge
 
 volumes:
   bootstrap-1-data:

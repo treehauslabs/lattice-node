@@ -77,11 +77,11 @@ public enum NexusGenesis {
         let body = TransactionBody(
             accountActions: [accountAction],
             actions: [],
-            depositActions: [],
+            swapActions: [],
+            swapClaimActions: [],
             genesisActions: [],
             peerActions: [],
-            receiptActions: [],
-            withdrawalActions: [],
+            settleActions: [],
             signers: [ownerAddress],
             fee: 0,
             nonce: 0

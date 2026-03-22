@@ -4,6 +4,11 @@ import Ivy
 import UInt256
 import ArrayTrie
 
+// MARK: - Version
+
+let LatticeNodeVersion = "0.1.0"
+let ProtocolVersion: UInt16 = 1
+
 // MARK: - Identity Persistence
 
 struct IdentityFile: Codable {
@@ -22,6 +27,9 @@ func loadOrCreateIdentity(dataDir: URL) throws -> IdentityFile {
     try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
     let data = try JSONEncoder().encode(identity)
     try data.write(to: path)
+    #if !os(Windows)
+    chmod(path.path, 0o600)
+    #endif
     return identity
 }
 
@@ -47,6 +55,8 @@ struct NodeArgs {
     var rpcPort: UInt16? = nil
     var enableDiscovery: Bool = true
     var showHelp: Bool = false
+    var showVersion: Bool = false
+    var rpcAllowedOrigin: String = "http://127.0.0.1"
 }
 
 func parseArgs() -> NodeArgs {
@@ -102,8 +112,13 @@ func parseArgs() -> NodeArgs {
             if i < argv.count, let p = UInt16(argv[i]) { args.rpcPort = p }
         case "--no-discovery":
             args.enableDiscovery = false
+        case "--rpc-allowed-origin":
+            i += 1
+            if i < argv.count { args.rpcAllowedOrigin = argv[i] }
         case "--help", "-h":
             args.showHelp = true
+        case "--version", "-v":
+            args.showVersion = true
         default:
             break
         }
@@ -150,6 +165,8 @@ func printUsage() {
       Memory: ~25% of system RAM. Disk: ~50% of system disk.
       Budgets are shared across all subscribed chains.
       --no-discovery             Disable mDNS local peer discovery
+      --rpc-allowed-origin <url> CORS allowed origin (default: http://127.0.0.1)
+      --version, -v              Show version and protocol info
       --help, -h                 Show this help
 
     INTERACTIVE COMMANDS:
@@ -192,13 +209,33 @@ private func fmt(_ gb: Double) -> String {
     String(format: "%.2f", gb)
 }
 
+// MARK: - Shared Node State (actor-isolated to prevent data races)
+
+actor NodeState {
+    var subscriptions: ArrayTrie<Bool>
+    var nodeArgs: NodeArgs
+
+    init(subscriptions: ArrayTrie<Bool>, nodeArgs: NodeArgs) {
+        self.subscriptions = subscriptions
+        self.nodeArgs = nodeArgs
+    }
+
+    func updateArgs(_ args: NodeArgs) {
+        self.nodeArgs = args
+    }
+
+    func subscribe(path: [String]) {
+        subscriptions.set(path, value: true)
+    }
+
+    func unsubscribe(path: [String]) {
+        subscriptions = subscriptions.deleting(path: path)
+    }
+}
+
 // MARK: - Command Handler
 
-nonisolated(unsafe) var subscriptions = ArrayTrie<Bool>()
-
-nonisolated(unsafe) var nodeArgs = NodeArgs()
-
-func handleCommand(_ line: String, node: LatticeNode, shutdown: @Sendable @escaping () -> Void) async {
+func handleCommand(_ line: String, node: LatticeNode, state: NodeState, shutdown: @Sendable @escaping () -> Void) async {
     let parts = line.trimmingCharacters(in: .whitespacesAndNewlines)
         .split(separator: " ", omittingEmptySubsequences: true)
         .map(String.init)
@@ -232,7 +269,8 @@ func handleCommand(_ line: String, node: LatticeNode, shutdown: @Sendable @escap
 
     case "status":
         let statuses = await node.chainStatus()
-        printStatus(statuses, resources: nodeArgs)
+        let currentArgs = await state.nodeArgs
+        printStatus(statuses, resources: currentArgs)
 
     case "chains":
         let dirs = await node.allDirectories()
@@ -248,7 +286,7 @@ func handleCommand(_ line: String, node: LatticeNode, shutdown: @Sendable @escap
             return
         }
         let path = parts[1].split(separator: "/").map(String.init)
-        subscriptions.set(path, value: true)
+        await state.subscribe(path: path)
         print("  Subscribed to \(parts[1])")
 
     case "unsubscribe":
@@ -261,11 +299,11 @@ func handleCommand(_ line: String, node: LatticeNode, shutdown: @Sendable @escap
             return
         }
         let path = parts[1].split(separator: "/").map(String.init)
-        subscriptions = subscriptions.deleting(path: path)
+        await state.unsubscribe(path: path)
         print("  Unsubscribed from \(parts[1])")
 
     case "subscriptions":
-        let all = subscriptions.allValues()
+        let all = await state.subscriptions.allValues()
         if all.isEmpty {
             print("  No subscriptions")
         } else {
@@ -327,13 +365,18 @@ func startMempoolExpiryLoop(node: LatticeNode) {
 // MARK: - Main
 
 let args = parseArgs()
-nodeArgs = args
-subscriptions = args.subscribedChains
 
 if args.showHelp {
     printUsage()
     exit(0)
 }
+
+if args.showVersion {
+    print("lattice-node v\(LatticeNodeVersion) (protocol \(ProtocolVersion))")
+    exit(0)
+}
+
+let sharedState = NodeState(subscriptions: args.subscribedChains, nodeArgs: args)
 
 signal(SIGINT, SIG_IGN)
 signal(SIGTERM, SIG_IGN)
@@ -346,7 +389,7 @@ Task {
         let identity = try loadOrCreateIdentity(dataDir: args.dataDir)
 
         print()
-        print("  Lattice Node")
+        print("  Lattice Node v\(LatticeNodeVersion) (protocol \(ProtocolVersion))")
         print("  ============")
         print("  Public key:  \(String(identity.publicKey.prefix(32)))...")
         print("  Data dir:    \(args.dataDir.path)")
@@ -374,11 +417,12 @@ Task {
             )
         }
 
-        // Update nodeArgs for status display
-        nodeArgs.memoryGB = resources.memoryBudgetGB
-        nodeArgs.diskGB = resources.diskBudgetGB
-        nodeArgs.mempoolMB = resources.mempoolBudgetMB
-        nodeArgs.miningBatch = resources.miningBatchSize
+        var updatedArgs = args
+        updatedArgs.memoryGB = resources.memoryBudgetGB
+        updatedArgs.diskGB = resources.diskBudgetGB
+        updatedArgs.mempoolMB = resources.mempoolBudgetMB
+        updatedArgs.miningBatch = resources.miningBatchSize
+        await sharedState.updateArgs(updatedArgs)
 
         print("  Memory:      \(String(format: "%.2f", resources.memoryBudgetGB)) GB")
         print("  Disk:        \(String(format: "%.2f", resources.diskBudgetGB)) GB")
@@ -400,6 +444,7 @@ Task {
             print("  Bootstrap:   \(allPeers.count) peer(s) (\(savedPeers.count) persisted)")
         }
 
+        let currentSubscriptions = await sharedState.subscriptions
         let nodeConfig = LatticeNodeConfig(
             publicKey: identity.publicKey,
             privateKey: identity.privateKey,
@@ -408,7 +453,7 @@ Task {
             storagePath: args.dataDir,
             enableLocalDiscovery: args.enableDiscovery,
             persistInterval: 100,
-            subscribedChains: subscriptions,
+            subscribedChains: currentSubscriptions,
             resources: resources
         )
 
@@ -440,7 +485,7 @@ Task {
         // Start RPC server if requested
         var rpcServer: RPCServer? = nil
         if let rpcPort = args.rpcPort {
-            let server = RPCServer(node: node, port: rpcPort)
+            let server = RPCServer(node: node, port: rpcPort, allowedOrigin: args.rpcAllowedOrigin)
             try server.start()
             rpcServer = server
             print("  RPC server:  http://localhost:\(rpcPort)/api/chain/info")
@@ -492,7 +537,7 @@ Task {
         // Interactive command loop on a background thread
         Task.detached {
             while let line = readLine(strippingNewline: true) {
-                await handleCommand(line, node: node, shutdown: shutdownHandler)
+                await handleCommand(line, node: node, state: sharedState, shutdown: shutdownHandler)
             }
         }
 

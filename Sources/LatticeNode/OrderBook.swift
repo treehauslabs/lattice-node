@@ -75,11 +75,11 @@ public struct OrderBook {
         let body = TransactionBody(
             accountActions: [accountAction],
             actions: [action],
-            depositActions: [],
+            swapActions: [],
+            swapClaimActions: [],
             genesisActions: [],
             peerActions: [],
-            receiptActions: [],
-            withdrawalActions: [],
+            settleActions: [],
             signers: [wallet.address],
             fee: fee,
             nonce: nonce
@@ -122,11 +122,11 @@ public struct OrderBook {
         let body = TransactionBody(
             accountActions: [accountAction],
             actions: [action],
-            depositActions: [],
+            swapActions: [],
+            swapClaimActions: [],
             genesisActions: [],
             peerActions: [],
-            receiptActions: [],
-            withdrawalActions: [],
+            settleActions: [],
             signers: [wallet.address],
             fee: fee,
             nonce: nonce
@@ -223,11 +223,11 @@ public struct OrderBook {
         let body = TransactionBody(
             accountActions: accountActions,
             actions: actions,
-            depositActions: [],
+            swapActions: [],
+            swapClaimActions: [],
             genesisActions: [],
             peerActions: [],
-            receiptActions: [],
-            withdrawalActions: [],
+            settleActions: [],
             signers: signers,
             fee: fee,
             nonce: nonce
