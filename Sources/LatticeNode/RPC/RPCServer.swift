@@ -26,8 +26,10 @@ public final class RPCServer: Sendable {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.backlog, value: 256)
             .childChannelInitializer { channel in
-                channel.pipeline.addHandler(ByteToMessageHandler(HTTPRequestDecoder())).flatMap {
-                    channel.pipeline.addHandler(HTTPResponseEncoder())
+                nonisolated(unsafe) let decoder = ByteToMessageHandler(HTTPRequestDecoder())
+                nonisolated(unsafe) let encoder = HTTPResponseEncoder()
+                return channel.pipeline.addHandler(decoder).flatMap {
+                    channel.pipeline.addHandler(encoder)
                 }.flatMap {
                     channel.pipeline.addHandler(RPCHandler(node: node, allowedOrigin: allowedOrigin))
                 }
