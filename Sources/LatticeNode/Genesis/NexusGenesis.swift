@@ -45,13 +45,13 @@ public enum NexusGenesis {
     // MARK: - Pre-computed Genesis Transaction Signature
 
     static let premineSignature =
-        "2166be9fc56bd628c723a68ff5af1ef6ccc43dcff60617431996ad6f006b0a8d" +
-        "da161ddb21e396fa6d562210a1fe7e5b5cafa0ac1c09598d38a1b9f9be9fc294"
+        "b04ee9f8b032cfd228a0d51f5ca88643b5acd9aa8c3ea2d52acab81823c70ec4" +
+        "07f52ca46a40d0cd5857c47feb1d55e2477ee3622efd21a5a57620958c2ba60f"
 
     // MARK: - Chain Identity
 
     public static let expectedBlockHash =
-        "baguqeeraonb2rxiy43jozxlkncbdsjrnsopw3ikvv3taa2rhxxmywj43zeyq"
+        "baguqeeratr46ka3algx5oew3gmo7tjn23k5nl6paapclic6s33h2ipekw3ca"
 
     // MARK: - Genesis Configuration
 

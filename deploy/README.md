@@ -5,61 +5,60 @@
 1. [Terraform](https://developer.hashicorp.com/terraform/install) installed
 2. [Hetzner Cloud account](https://console.hetzner.cloud) with an API token
 3. SSH key pair (`~/.ssh/id_ed25519.pub`)
+4. `jq` installed (`brew install jq`)
 
-## Deploy
+## Quick Start (one command)
 
 ```bash
-cd deploy/terraform
-
-# Set your Hetzner API token
-export TF_VAR_hcloud_token="your-token-here"
-
-# Deploy 3 bootstrap miners
-terraform init
-terraform apply
+export TF_VAR_hcloud_token="your-hetzner-token"
+./deploy/bootstrap.sh deploy
 ```
 
-This creates 3 servers across US-East, EU, and US-West, each running a Lattice miner node in Docker.
+This will:
+1. Create 3 servers across US-East, EU, and US-West (~$4.50/mo each)
+2. Wait for Docker and the miner to start on each node
+3. Extract each node's public key
+4. Restart each node with `--peer` flags pointing to the others
+5. Print the `BootstrapPeers.swift` code to hardcode into the binary
 
-## Manage
+## Commands
 
-```bash
-# Check node IPs
-terraform output node_ips
+| Command | Description |
+|---------|-------------|
+| `bootstrap.sh deploy` | Full deploy: terraform + wait + peer |
+| `bootstrap.sh peer` | Re-extract keys and reconnect existing nodes |
+| `bootstrap.sh status` | Show status of all nodes |
+| `bootstrap.sh codegen` | Print BootstrapPeers.swift snippet |
+| `bootstrap.sh codegen --apply` | Write BootstrapPeers.swift directly |
+| `bootstrap.sh update` | Pull latest Docker image on all nodes |
+| `bootstrap.sh destroy` | Tear down all nodes |
 
-# SSH into a node
-ssh root@<ip>
-
-# On the node: check status
-lattice-status
-
-# On the node: update to latest image
-lattice-update
-
-# On the node: view live logs
-docker logs -f lattice-miner
-```
-
-## Connect a new node to the bootstrap network
-
-After deploying, get the public keys from each node:
+## Full Launch Sequence
 
 ```bash
-ssh root@<ip> "docker logs lattice-miner 2>&1 | grep 'Public key'"
-```
+# 1. Deploy and peer the bootstrap miners
+export TF_VAR_hcloud_token="your-token"
+./deploy/bootstrap.sh deploy
 
-Then connect new nodes:
+# 2. Write the bootstrap peers into source code
+./deploy/bootstrap.sh codegen --apply
 
-```bash
-lattice-node --mine Nexus \
-  --peer <key1>@<ip1>:4001 \
-  --peer <key2>@<ip2>:4001 \
-  --peer <key3>@<ip3>:4001
+# 3. Build, test, push — triggers new Docker image with hardcoded peers
+swift build && swift test
+git add Sources/LatticeNode/Network/BootstrapPeers.swift
+git commit -m "Add bootstrap peers for mainnet launch"
+git push origin main
+
+# 4. Update all miners to the new image with hardcoded peers
+./deploy/bootstrap.sh update
+
+# 5. Verify
+./deploy/bootstrap.sh status
 ```
 
 ## Customize
 
-Edit `variables.tf` to change:
+Edit `terraform/variables.tf` to change:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -79,5 +78,5 @@ Edit `variables.tf` to change:
 ## Tear down
 
 ```bash
-terraform destroy
+./deploy/bootstrap.sh destroy
 ```
