@@ -1,8 +1,7 @@
 import Lattice
 import Foundation
-@preconcurrency import NIOCore
-@preconcurrency import NIOPosix
-@preconcurrency import NIOHTTP1
+import NIOCore
+import NIOPosix
 import cashew
 import UInt256
 
@@ -26,13 +25,7 @@ public final class RPCServer: Sendable {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.backlog, value: 256)
             .childChannelInitializer { channel in
-                nonisolated(unsafe) let decoder = ByteToMessageHandler(HTTPRequestDecoder())
-                nonisolated(unsafe) let encoder = HTTPResponseEncoder()
-                return channel.pipeline.addHandler(decoder).flatMap {
-                    channel.pipeline.addHandler(encoder)
-                }.flatMap {
-                    channel.pipeline.addHandler(RPCHandler(node: node, allowedOrigin: allowedOrigin))
-                }
+                channel.pipeline.addHandler(RPCHandler(node: node, allowedOrigin: allowedOrigin))
             }
             .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
 
@@ -49,17 +42,15 @@ public enum RPCError: Error {
     case invalidPort
 }
 
-// MARK: - NIO HTTP Handler
+// MARK: - Raw ByteBuffer Handler
 
 private final class RPCHandler: ChannelInboundHandler, @unchecked Sendable {
-    typealias InboundIn = HTTPServerRequestPart
-    typealias OutboundOut = HTTPServerResponsePart
+    typealias InboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
 
     private let node: LatticeNode
     private let allowedOrigin: String
-    private var method: HTTPMethod = .GET
-    private var uri: String = "/"
-    private var body = ByteBuffer()
+    private var accumulated = Data()
 
     init(node: LatticeNode, allowedOrigin: String) {
         self.node = node
@@ -67,81 +58,111 @@ private final class RPCHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let part = unwrapInboundIn(data)
+        var buf = unwrapInboundIn(data)
+        if let bytes = buf.readBytes(length: buf.readableBytes) {
+            accumulated.append(contentsOf: bytes)
+        }
 
-        switch part {
-        case .head(let head):
-            method = head.method
-            uri = head.uri
-            body.clear()
+        guard let raw = String(data: accumulated, encoding: .utf8),
+              raw.contains("\r\n\r\n") else {
+            return
+        }
 
-        case .body(var buf):
-            body.writeBuffer(&buf)
+        let requestData = accumulated
+        accumulated = Data()
 
-        case .end:
-            let reqMethod = method.rawValue
-            let reqPath = uri
-            let reqBody = body.readableBytes > 0 ? body.getString(at: body.readerIndex, length: body.readableBytes) : nil
-            let origin = allowedOrigin
+        let parsed = HTTPParser.parse(raw)
+        let origin = allowedOrigin
 
-            if method == .OPTIONS {
-                sendCORSPreflight(context: context, origin: origin)
-                return
-            }
+        if parsed.method == "OPTIONS" {
+            writeRaw(context: context, data: HTTPParser.corsPreflightResponse(origin: origin))
+            return
+        }
 
-            let channel = context.channel
-            let eventLoop = channel.eventLoop
-            let capturedNode = node
-            Task { @Sendable in
-                let (status, responseBody) = await RPCRouter.route(
-                    node: capturedNode, method: reqMethod, path: reqPath, body: reqBody
-                )
-                eventLoop.execute {
-                    RPCHandler.writeResponse(
-                        channel: channel, status: status, body: responseBody, origin: origin
-                    )
-                }
+        let channel = context.channel
+        let eventLoop = channel.eventLoop
+        let capturedNode = node
+        Task { @Sendable in
+            let (status, body) = await RPCRouter.route(
+                node: capturedNode, method: parsed.method, path: parsed.path, body: parsed.body
+            )
+            let responseData = HTTPParser.buildResponse(status: status, body: body, origin: origin)
+            eventLoop.execute {
+                var outBuf = channel.allocator.buffer(capacity: responseData.count)
+                outBuf.writeBytes(responseData)
+                channel.writeAndFlush(outBuf, promise: nil)
+                channel.close(promise: nil)
             }
         }
     }
 
-    static func writeResponse(channel: Channel, status: Int, body: Data, origin: String) {
-        let httpStatus = HTTPResponseStatus(statusCode: status)
-        var headers = HTTPHeaders()
-        headers.add(name: "Content-Type", value: "application/json")
-        headers.add(name: "Content-Length", value: "\(body.count)")
-        headers.add(name: "Access-Control-Allow-Origin", value: origin)
-        headers.add(name: "Access-Control-Allow-Methods", value: "GET, POST, OPTIONS")
-        headers.add(name: "Access-Control-Allow-Headers", value: "Content-Type")
-
-        let head = HTTPResponseHead(version: .http1_1, status: httpStatus, headers: headers)
-        channel.write(NIOAny(HTTPServerResponsePart.head(head)), promise: nil)
-
-        var buf = channel.allocator.buffer(capacity: body.count)
-        buf.writeBytes(body)
-        channel.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buf))), promise: nil)
-
-        channel.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil))).whenComplete { _ in
-            channel.close(promise: nil)
-        }
-    }
-
-    private func sendCORSPreflight(context: ChannelHandlerContext, origin: String) {
-        var headers = HTTPHeaders()
-        headers.add(name: "Access-Control-Allow-Origin", value: origin)
-        headers.add(name: "Access-Control-Allow-Methods", value: "GET, POST, OPTIONS")
-        headers.add(name: "Access-Control-Allow-Headers", value: "Content-Type")
-        headers.add(name: "Content-Length", value: "0")
-
-        let head = HTTPResponseHead(version: .http1_1, status: .noContent, headers: headers)
-        context.write(wrapOutboundOut(.head(head)), promise: nil)
-        context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { _ in
-            context.close(promise: nil)
-        }
+    private func writeRaw(context: ChannelHandlerContext, data: Data) {
+        var buf = context.channel.allocator.buffer(capacity: data.count)
+        buf.writeBytes(data)
+        context.writeAndFlush(wrapOutboundOut(buf), promise: nil)
+        context.close(promise: nil)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         context.close(promise: nil)
+    }
+}
+
+// MARK: - HTTP Parser
+
+private enum HTTPParser {
+    struct Request {
+        let method: String
+        let path: String
+        let body: String?
+    }
+
+    static func parse(_ raw: String) -> Request {
+        let lines = raw.components(separatedBy: "\r\n")
+        guard let requestLine = lines.first else {
+            return Request(method: "GET", path: "/", body: nil)
+        }
+        let parts = requestLine.split(separator: " ", maxSplits: 2)
+        guard parts.count >= 2 else {
+            return Request(method: "GET", path: "/", body: nil)
+        }
+        var body: String? = nil
+        if let idx = lines.firstIndex(of: "") {
+            let rest = lines[(idx + 1)...].joined(separator: "\r\n")
+            if !rest.isEmpty { body = rest }
+        }
+        return Request(method: String(parts[0]), path: String(parts[1]), body: body)
+    }
+
+    static func buildResponse(status: Int, body: Data, origin: String) -> Data {
+        let statusText: String = switch status {
+        case 200: "OK"
+        case 400: "Bad Request"
+        case 404: "Not Found"
+        case 429: "Too Many Requests"
+        case 500: "Internal Server Error"
+        default: "Error"
+        }
+        var header = "HTTP/1.1 \(status) \(statusText)\r\n"
+        header += "Content-Type: application/json\r\n"
+        header += "Content-Length: \(body.count)\r\n"
+        header += "Access-Control-Allow-Origin: \(origin)\r\n"
+        header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        header += "Access-Control-Allow-Headers: Content-Type\r\n"
+        header += "\r\n"
+        var responseData = Data(header.utf8)
+        responseData.append(body)
+        return responseData
+    }
+
+    static func corsPreflightResponse(origin: String) -> Data {
+        var header = "HTTP/1.1 204 No Content\r\n"
+        header += "Access-Control-Allow-Origin: \(origin)\r\n"
+        header += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        header += "Access-Control-Allow-Headers: Content-Type\r\n"
+        header += "Content-Length: 0\r\n"
+        header += "\r\n"
+        return Data(header.utf8)
     }
 }
 
@@ -171,8 +192,6 @@ enum RPCRouter {
         return (404, jsonError("Not found"))
     }
 
-    // MARK: - Helpers
-
     static func jsonError(_ message: String) -> Data {
         let escaped = message.replacingOccurrences(of: "\"", with: "\\\"")
         return Data("{\"error\":\"\(escaped)\"}".utf8)
@@ -184,58 +203,37 @@ enum RPCRouter {
         return (try? encoder.encode(value)) ?? Data("{}".utf8)
     }
 
-    // MARK: - Chain Info
+    // MARK: - Handlers
 
     static func handleChainInfo(node: LatticeNode) async -> (Int, Data) {
         let statuses = await node.chainStatus()
-        struct ChainInfoResponse: Encodable {
-            let chains: [ChainEntry]
-            let genesisHash: String
-        }
+        struct ChainInfoResponse: Encodable { let chains: [ChainEntry]; let genesisHash: String }
         struct ChainEntry: Encodable {
-            let directory: String
-            let height: UInt64
-            let tip: String
-            let mining: Bool
-            let mempoolCount: Int
-            let syncing: Bool
+            let directory: String; let height: UInt64; let tip: String
+            let mining: Bool; let mempoolCount: Int; let syncing: Bool
         }
         let chains = statuses.map { s in
-            ChainEntry(
-                directory: s.directory, height: s.height, tip: s.tip,
-                mining: s.mining, mempoolCount: s.mempoolCount, syncing: s.syncing
-            )
+            ChainEntry(directory: s.directory, height: s.height, tip: s.tip,
+                       mining: s.mining, mempoolCount: s.mempoolCount, syncing: s.syncing)
         }
         return (200, jsonEncode(ChainInfoResponse(chains: chains, genesisHash: node.genesisResult.blockHash)))
     }
 
     static func handleChainSpec(node: LatticeNode) async -> (Int, Data) {
         let spec = node.genesisConfig.spec
-        struct SpecResponse: Encodable {
-            let directory: String
-            let targetBlockTime: UInt64
-            let initialReward: UInt64
-            let halvingInterval: UInt64
-            let maxTransactionsPerBlock: UInt64
-            let maxStateGrowth: Int
-            let maxBlockSize: Int
-            let premine: UInt64
-            let premineAmount: UInt64
+        struct R: Encodable {
+            let directory: String; let targetBlockTime: UInt64; let initialReward: UInt64
+            let halvingInterval: UInt64; let maxTransactionsPerBlock: UInt64
+            let maxStateGrowth: Int; let maxBlockSize: Int; let premine: UInt64; let premineAmount: UInt64
         }
-        return (200, jsonEncode(SpecResponse(
-            directory: spec.directory,
-            targetBlockTime: spec.targetBlockTime,
-            initialReward: spec.initialReward,
-            halvingInterval: spec.halvingInterval,
+        return (200, jsonEncode(R(
+            directory: spec.directory, targetBlockTime: spec.targetBlockTime,
+            initialReward: spec.initialReward, halvingInterval: spec.halvingInterval,
             maxTransactionsPerBlock: spec.maxNumberOfTransactionsPerBlock,
-            maxStateGrowth: spec.maxStateGrowth,
-            maxBlockSize: spec.maxBlockSize,
-            premine: spec.premine,
-            premineAmount: spec.premineAmount()
+            maxStateGrowth: spec.maxStateGrowth, maxBlockSize: spec.maxBlockSize,
+            premine: spec.premine, premineAmount: spec.premineAmount()
         )))
     }
-
-    // MARK: - Balance
 
     static func handleGetBalance(node: LatticeNode, address: String) async -> (Int, Data) {
         do {
@@ -246,8 +244,6 @@ enum RPCRouter {
             return (500, jsonError("Failed to query balance: \(error)"))
         }
     }
-
-    // MARK: - Blocks
 
     static func handleLatestBlock(node: LatticeNode) async -> (Int, Data) {
         let tip = await node.lattice.nexus.chain.getMainChainTip()
@@ -288,8 +284,6 @@ enum RPCRouter {
         }
     }
 
-    // MARK: - Transactions
-
     static func handleSubmitTransaction(node: LatticeNode, body: String?) async -> (Int, Data) {
         guard let body, let bodyData = body.data(using: .utf8) else {
             return (400, jsonError("Missing request body"))
@@ -314,27 +308,19 @@ enum RPCRouter {
         let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
         struct R: Encodable { let accepted: Bool; let txCID: String; let error: String? }
         switch result {
-        case .success:
-            return (200, jsonEncode(R(accepted: true, txCID: submission.bodyCID, error: nil)))
-        case .failure(let reason):
-            return (400, jsonEncode(R(accepted: false, txCID: submission.bodyCID, error: reason)))
+        case .success: return (200, jsonEncode(R(accepted: true, txCID: submission.bodyCID, error: nil)))
+        case .failure(let reason): return (400, jsonEncode(R(accepted: false, txCID: submission.bodyCID, error: reason)))
         }
     }
-
-    // MARK: - Mempool
 
     static func handleMempool(node: LatticeNode) async -> (Int, Data) {
         let directory = node.genesisConfig.spec.directory
         guard let network = await node.network(for: directory) else {
             return (500, jsonError("Network not available"))
         }
-        let count = await network.mempool.count
-        let totalFees = await network.mempool.totalFees()
         struct R: Encodable { let count: Int; let totalFees: UInt64 }
-        return (200, jsonEncode(R(count: count, totalFees: totalFees)))
+        return (200, jsonEncode(R(count: await network.mempool.count, totalFees: await network.mempool.totalFees())))
     }
-
-    // MARK: - Merkle Proof
 
     static func handleBalanceProof(node: LatticeNode, address: String) async -> (Int, Data) {
         do {
@@ -347,8 +333,6 @@ enum RPCRouter {
         }
     }
 
-    // MARK: - Peers
-
     static func handleGetPeers(node: LatticeNode) async -> (Int, Data) {
         let peers = await node.connectedPeerEndpoints()
         struct PeerEntry: Encodable { let publicKey: String; let host: String; let port: UInt16 }
@@ -356,8 +340,6 @@ enum RPCRouter {
         let entries = peers.map { PeerEntry(publicKey: String($0.publicKey.prefix(16)) + "...", host: $0.host, port: $0.port) }
         return (200, jsonEncode(R(count: peers.count, peers: entries)))
     }
-
-    // MARK: - DEX Orders
 
     static func handleGetOrders(node: LatticeNode) async -> (Int, Data) {
         do {
@@ -401,10 +383,8 @@ enum RPCRouter {
         let result = await node.submitTransactionWithReason(directory: directory, transaction: tx)
         struct R: Encodable { let accepted: Bool; let txCID: String; let error: String? }
         switch result {
-        case .success:
-            return (200, jsonEncode(R(accepted: true, txCID: submission.bodyCID, error: nil)))
-        case .failure(let reason):
-            return (400, jsonEncode(R(accepted: false, txCID: submission.bodyCID, error: reason)))
+        case .success: return (200, jsonEncode(R(accepted: true, txCID: submission.bodyCID, error: nil)))
+        case .failure(let reason): return (400, jsonEncode(R(accepted: false, txCID: submission.bodyCID, error: reason)))
         }
     }
 }
