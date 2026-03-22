@@ -129,7 +129,10 @@ struct LatticeNodeApp {
 
         Task.detached {
             while !shutdownRequested.isSet {
-                guard let line = readLine(strippingNewline: true) else { break }
+                guard let line = readLine(strippingNewline: true) else {
+                    await shutdownRequested.wait()
+                    return
+                }
                 let shouldQuit = await handleCommand(line, node: node, state: state)
                 if shouldQuit { break }
             }
