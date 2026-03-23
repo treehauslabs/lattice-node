@@ -36,6 +36,25 @@ private func addr(_ pubKey: String) -> String {
 
 private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
+private func deepCopyCID(_ cid: String, from source: AcornFetcher, to dest: AcornFetcher, visited: inout Set<String>) async {
+    guard !cid.isEmpty, !visited.contains(cid) else { return }
+    visited.insert(cid)
+    guard let data = try? await source.fetch(rawCid: cid) else { return }
+    await dest.store(rawCid: cid, data: data)
+
+    if let block = Block(data: data) {
+        if let prevCID = block.previousBlock?.rawCID {
+            await deepCopyCID(prevCID, from: source, to: dest, visited: &visited)
+        }
+        await deepCopyCID(block.transactions.rawCID, from: source, to: dest, visited: &visited)
+        await deepCopyCID(block.spec.rawCID, from: source, to: dest, visited: &visited)
+        await deepCopyCID(block.homestead.rawCID, from: source, to: dest, visited: &visited)
+        await deepCopyCID(block.frontier.rawCID, from: source, to: dest, visited: &visited)
+        await deepCopyCID(block.parentHomestead.rawCID, from: source, to: dest, visited: &visited)
+        await deepCopyCID(block.childBlocks.rawCID, from: source, to: dest, visited: &visited)
+    }
+}
+
 // ============================================================================
 // MARK: - Smoke Tests: Node boots, mines, persists
 // ============================================================================
@@ -1796,6 +1815,91 @@ final class FullMiningIntegrationTests: XCTestCase {
         let childHeightB = await childChainB.getHighestBlockIndex()
         XCTAssertEqual(childHeightA, childHeightB, "Both nodes should agree on child chain height")
         XCTAssertGreaterThan(childHeightA, 0, "Child chain should advance on both nodes")
+    }
+}
+
+// ============================================================================
+// MARK: - CAS Isolation: Separate CAS per chain
+// ============================================================================
+
+final class CASIsolationTests: XCTestCase {
+
+    func testDeepCopyBlockBetweenSeparateCAS() async throws {
+        let nexusCAS = fetcher()
+        let childCAS = fetcher()
+        let t = now() - 5_000
+        let childSpec = testSpec("Payments", premine: 1000)
+        let kp = CryptoUtils.generateKeyPair()
+        let kpAddr = addr(kp.publicKey)
+
+        let premineBody = TransactionBody(
+            accountActions: [AccountAction(owner: kpAddr, oldBalance: 0, newBalance: childSpec.premineAmount())],
+            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+            peerActions: [], settleActions: [], signers: [kpAddr], fee: 0, nonce: 0
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, transactions: [sign(premineBody, kp)],
+            timestamp: t, difficulty: UInt256(1000), fetcher: nexusCAS
+        )
+
+        let genesisHeader = HeaderImpl<Block>(node: childGenesis)
+        let storer = BufferedStorer()
+        try genesisHeader.storeRecursively(storer: storer)
+        await storer.flush(to: nexusCAS)
+
+        let genesisCID = genesisHeader.rawCID
+
+        do {
+            let _ = try await childCAS.fetch(rawCid: genesisCID)
+            XCTFail("Child CAS should not have the block yet")
+        } catch {}
+
+        // Deep copy using CID walking (same as production handleChildChainDiscovery)
+        var visited = Set<String>()
+        await deepCopyCID(genesisCID, from: nexusCAS, to: childCAS, visited: &visited)
+        XCTAssertGreaterThan(visited.count, 3, "Should copy block + multiple child CIDs")
+
+        let fetchedData = try await childCAS.fetch(rawCid: genesisCID)
+        XCTAssertEqual(fetchedData, childGenesis.toData()!)
+
+        let specData = try await childCAS.fetch(rawCid: childGenesis.spec.rawCID)
+        XCTAssertNotNil(ChainSpec(data: specData))
+
+        let frontierData = try await childCAS.fetch(rawCid: childGenesis.frontier.rawCID)
+        XCTAssertNotNil(frontierData)
+    }
+
+    func testMinerCanBuildChildBlockFromSeparateCAS() async throws {
+        let nexusCAS = fetcher()
+        let childCAS = fetcher()
+        let t = now() - 5_000
+        let childSpec = testSpec("Payments")
+
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: nexusCAS
+        )
+        let genesisHeader = HeaderImpl<Block>(node: childGenesis)
+        let storer = BufferedStorer()
+        try genesisHeader.storeRecursively(storer: storer)
+        await storer.flush(to: nexusCAS)
+
+        // Deep copy to child CAS
+        var visited = Set<String>()
+        await deepCopyCID(genesisHeader.rawCID, from: nexusCAS, to: childCAS, visited: &visited)
+
+        // Simulate what MinerLoop.buildChildBlocks does: fetch tip, build new block
+        let tipData = try await childCAS.fetch(rawCid: genesisHeader.rawCID)
+        let tipBlock = Block(data: tipData)
+        XCTAssertNotNil(tipBlock, "Should deserialize child genesis from child CAS")
+        XCTAssertEqual(tipBlock!.index, 0)
+
+        // This is the critical call — BlockBuilder needs frontier data from child CAS
+        let childBlock1 = try await BlockBuilder.buildBlock(
+            previous: tipBlock!, timestamp: t + 1000,
+            difficulty: UInt256(1000), nonce: 1, fetcher: childCAS
+        )
+        XCTAssertEqual(childBlock1.index, 1)
+        XCTAssertEqual(childBlock1.homestead.rawCID, tipBlock!.frontier.rawCID)
     }
 }
 

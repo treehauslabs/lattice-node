@@ -25,6 +25,30 @@ extension LatticeNode {
         await storer.flush(to: fetcher)
     }
 
+    func deepCopyBlock(cid: String, from source: AcornFetcher, to dest: AcornFetcher) async {
+        var visited = Set<String>()
+        await copyCIDRecursive(cid, from: source, to: dest, visited: &visited)
+    }
+
+    private func copyCIDRecursive(_ cid: String, from source: AcornFetcher, to dest: AcornFetcher, visited: inout Set<String>) async {
+        guard !cid.isEmpty, !visited.contains(cid) else { return }
+        visited.insert(cid)
+        guard let data = try? await source.fetch(rawCid: cid) else { return }
+        await dest.store(rawCid: cid, data: data)
+
+        if let block = Block(data: data) {
+            if let prevCID = block.previousBlock?.rawCID {
+                await copyCIDRecursive(prevCID, from: source, to: dest, visited: &visited)
+            }
+            await copyCIDRecursive(block.transactions.rawCID, from: source, to: dest, visited: &visited)
+            await copyCIDRecursive(block.spec.rawCID, from: source, to: dest, visited: &visited)
+            await copyCIDRecursive(block.homestead.rawCID, from: source, to: dest, visited: &visited)
+            await copyCIDRecursive(block.frontier.rawCID, from: source, to: dest, visited: &visited)
+            await copyCIDRecursive(block.parentHomestead.rawCID, from: source, to: dest, visited: &visited)
+            await copyCIDRecursive(block.childBlocks.rawCID, from: source, to: dest, visited: &visited)
+        }
+    }
+
     func storeReceivedBlockRecursively(cid: String, data: Data, fetcher: AcornFetcher) async {
         await fetcher.store(rawCid: cid, data: data)
         guard let block = Block(data: data) else { return }
@@ -269,11 +293,12 @@ extension LatticeNode {
            let childLevel = await lattice.nexus.children[directory] {
             let tipHash = await childLevel.chain.getMainChainTip()
             let nexusDir = genesisConfig.spec.directory
-            if let nexusNetwork = networks[nexusDir],
-               let blockData = try? await nexusNetwork.fetcher.fetch(rawCid: tipHash) {
-                if let block = Block(data: blockData) {
-                    await storeBlockRecursively(block, fetcher: childNetwork.fetcher)
-                }
+            if let nexusNetwork = networks[nexusDir] {
+                await deepCopyBlock(
+                    cid: tipHash,
+                    from: nexusNetwork.fetcher,
+                    to: childNetwork.fetcher
+                )
             }
         }
     }
