@@ -13,6 +13,7 @@ public actor MinerLoop {
     private let batchSize: UInt64
     private var mining: Bool
     private var currentTask: Task<Void, Never>?
+    private var nonceOffset: UInt64 = 0
     public weak var delegate: MinerDelegate?
 
     public init(
@@ -96,18 +97,20 @@ public actor MinerLoop {
                 let hashPrefix = difficultyHashPrefix(template)
                 let targetDifficulty = previousBlock.nextDifficulty
                 let batchSize = self.batchSize
-                var nonce: UInt64 = 0
+                let workerCount = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
 
                 while mining && !Task.isCancelled {
                     let currentTip = await chainState.getMainChainTip()
                     if currentTip != previousBlockHash { break }
 
-                    if let foundNonce = mineBatch(
+                    let foundNonce = await mineParallel(
                         prefix: hashPrefix,
                         targetDifficulty: targetDifficulty,
-                        startNonce: nonce,
-                        count: batchSize
-                    ) {
+                        totalBatchSize: batchSize,
+                        workerCount: workerCount
+                    )
+
+                    if let foundNonce {
                         let mined = withNonce(template, startNonce: foundNonce)
 
                         let confirmedCIDs = Set(transactions.map { $0.body.rawCID })
@@ -124,7 +127,7 @@ public actor MinerLoop {
                         break
                     }
 
-                    nonce &+= batchSize
+                    nonceOffset &+= batchSize
                     await Task.yield()
                 }
             } catch {
@@ -152,7 +155,7 @@ public actor MinerLoop {
         return prefix
     }
 
-    private func mineBatch(
+    nonisolated private func mineBatch(
         prefix: String,
         targetDifficulty: UInt256,
         startNonce: UInt64,
@@ -168,6 +171,37 @@ public actor MinerLoop {
             nonce &+= 1
         }
         return nil
+    }
+
+    private func mineParallel(
+        prefix: String,
+        targetDifficulty: UInt256,
+        totalBatchSize: UInt64,
+        workerCount: Int
+    ) async -> UInt64? {
+        let rangePerWorker = totalBatchSize / UInt64(workerCount)
+        let baseOffset = self.nonceOffset
+
+        return await withTaskGroup(of: UInt64?.self) { group in
+            for i in 0..<workerCount {
+                let startNonce = baseOffset &+ UInt64(i) &* rangePerWorker
+                group.addTask {
+                    self.mineBatch(
+                        prefix: prefix,
+                        targetDifficulty: targetDifficulty,
+                        startNonce: startNonce,
+                        count: rangePerWorker
+                    )
+                }
+            }
+            for await result in group {
+                if let nonce = result {
+                    group.cancelAll()
+                    return nonce
+                }
+            }
+            return nil
+        }
     }
 
     // MARK: - Coinbase Transaction

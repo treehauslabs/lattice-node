@@ -61,6 +61,18 @@ struct NodeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Disable mDNS local peer discovery")
     var noDiscovery: Bool = false
 
+    @Flag(name: .long, help: "Route P2P through Tor (SOCKS5 on 127.0.0.1:9050)")
+    var tor: Bool = false
+
+    @Option(name: .long, help: "Route P2P through SOCKS5 proxy (socks5://host:port)")
+    var proxy: String?
+
+    @Flag(name: .long, help: "Enable cookie-based RPC authentication")
+    var rpcAuth: Bool = false
+
+    @Flag(name: .long, help: "Disable DNS seed resolution")
+    var noDnsSeeds: Bool = false
+
     func run() async throws {
         #if canImport(Darwin)
         setbuf(Darwin.stdout, nil)
@@ -125,7 +137,17 @@ struct NodeCommand: AsyncParsableCommand {
         print("  Mempool:     \(String(format: "%.0f", resources.mempoolBudgetMB)) MB")
         print("  Mine batch:  \(resources.miningBatchSize)")
 
-        let allPeers = await loadPeers(dataDirURL: dataDirURL, bootstrapPeers: bootstrapPeers)
+        var allPeers = await loadPeers(dataDirURL: dataDirURL, bootstrapPeers: bootstrapPeers)
+        if !noDnsSeeds {
+            let dnsResolved = await DNSSeeds.resolve()
+            if !dnsResolved.isEmpty {
+                let existingKeys = Set(allPeers.map { $0.publicKey })
+                for peer in dnsResolved where !existingKeys.contains(peer.publicKey) {
+                    allPeers.append(peer)
+                }
+                print("  DNS seeds:   \(dnsResolved.count) peer(s) resolved")
+            }
+        }
         if !allPeers.isEmpty {
             let peerStore = PeerStore(dataDir: dataDirURL)
             let savedCount = await peerStore.load().count
@@ -166,9 +188,21 @@ struct NodeCommand: AsyncParsableCommand {
         let health = HealthCheck(dataDir: dataDirURL)
         await health.start()
 
+        if tor {
+            print("  Tor:         enabled (SOCKS5 on 127.0.0.1:9050)")
+        } else if let proxyStr = proxy, let proxyConfig = ProxyConfig.parse(proxyStr) {
+            print("  Proxy:       \(proxyConfig.type.rawValue)://\(proxyConfig.host):\(proxyConfig.port)")
+        }
+
         var rpcTask: Task<Void, any Error>? = nil
         if let rpcPort = rpcPort {
-            let server = RPCServer(node: node, port: rpcPort, bindAddress: rpcBind, allowedOrigin: rpcAllowedOrigin)
+            var cookieAuth: CookieAuth? = nil
+            if rpcAuth {
+                let cookiePath = dataDirURL.appendingPathComponent(".cookie")
+                cookieAuth = try CookieAuth.generate(at: cookiePath)
+                print("  RPC auth:    cookie (\(cookiePath.path))")
+            }
+            let server = RPCServer(node: node, port: rpcPort, bindAddress: rpcBind, allowedOrigin: rpcAllowedOrigin, auth: cookieAuth)
             rpcTask = Task { try await server.run() }
             print("  RPC server:  http://localhost:\(rpcPort)/api/chain/info")
         }
@@ -225,6 +259,17 @@ struct NodeCommand: AsyncParsableCommand {
         peerRefreshTask.cancel()
         rpcTask?.cancel()
         await health.stop()
+
+        let mempoolPersistence = MempoolPersistence(dataDir: dataDirURL)
+        let nexusDir = NexusGenesis.config.spec.directory
+        if let network = await node.network(for: nexusDir) {
+            let txs = await network.nodeMempool.allTransactions()
+            if !txs.isEmpty {
+                try? mempoolPersistence.save(transactions: txs)
+                print("  Mempool:     \(txs.count) transaction(s) saved")
+            }
+        }
+
         let peers = await node.connectedPeerEndpoints()
         await peerStore.save(peers)
         await node.stop()

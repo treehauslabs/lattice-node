@@ -26,6 +26,10 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var syncTask: Task<Void, Never>?
     var peerRefreshTask: Task<Void, Never>?
     var cachedOrders: (tip: String, orders: [Order])?
+    public let blockIndex: BlockIndex
+    public let feeEstimator: FeeEstimator
+    public let subscriptions: SubscriptionManager
+    public let anchorPeers: AnchorPeers
 
     // MARK: - Initialization
 
@@ -91,6 +95,11 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         self.recentPeerBlocks = [:]
         self.recentPeerBlockOrder = []
         self.peerBlockCounts = [:]
+        let loadedIndex = try? BlockIndex.load(from: config.storagePath)
+        self.blockIndex = loadedIndex ?? BlockIndex(storagePath: config.storagePath)
+        self.feeEstimator = FeeEstimator()
+        self.subscriptions = SubscriptionManager()
+        self.anchorPeers = AnchorPeers(dataDir: config.storagePath)
     }
 
     // MARK: - Lifecycle
@@ -114,6 +123,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         for (dir, _) in networks {
             await persistChainState(directory: dir)
         }
+        try? await blockIndex.save()
+        let currentPeers = await connectedPeerEndpoints()
+        await anchorPeers.update(peers: currentPeers)
         for (_, network) in networks {
             await network.stop()
         }
@@ -161,6 +173,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public func pruneExpiredTransactions(olderThan age: Duration = .seconds(600)) async {
         for (_, network) in networks {
             await network.mempool.pruneExpired(olderThan: age)
+            await network.nodeMempool.pruneExpired(olderThan: age)
         }
     }
 

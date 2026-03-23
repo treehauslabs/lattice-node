@@ -72,6 +72,22 @@ extension LatticeNode {
         let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
         guard accepted else { return false }
 
+        if let block = try? await header.resolve(fetcher: fetcher).node {
+            await blockIndex.insert(height: block.index, hash: header.rawCID)
+
+            let txFees = block.collectTransactionFees()
+            if !txFees.isEmpty {
+                await feeEstimator.recordBlock(height: block.index, transactionFees: txFees)
+            }
+
+            await subscriptions.emit(.newBlock(
+                hash: header.rawCID,
+                height: block.index,
+                directory: directory,
+                timestamp: block.timestamp
+            ))
+        }
+
         let tipAfter = await chain.getMainChainTip()
         if tipBefore != tipAfter {
             let parentOfNewTip = await chain.getConsensusBlock(hash: tipAfter)?.previousBlockHash
@@ -297,6 +313,15 @@ extension LatticeNode {
         }
     }
 
+    func emitReorgEvent(directory: String, oldTip: String, newTip: String, depth: UInt64) async {
+        await subscriptions.emit(.chainReorg(
+            directory: directory,
+            oldTip: oldTip,
+            newTip: newTip,
+            depth: depth
+        ))
+    }
+
     nonisolated public func lattice(_ lattice: Lattice, didDiscoverChildChain directory: String) async {
         await handleChildChainDiscovery(directory: directory)
     }
@@ -324,5 +349,18 @@ extension LatticeNode {
                 )
             }
         }
+    }
+}
+
+extension Block {
+    func collectTransactionFees() -> [UInt64] {
+        guard let txDict = self.transactions.node else { return [] }
+        guard let entries = try? txDict.allKeysAndValues() else { return [] }
+        var fees: [UInt64] = []
+        for (_, txHeader) in entries {
+            guard let tx = txHeader.node, let fee = tx.body.node?.fee, fee > 0 else { continue }
+            fees.append(fee)
+        }
+        return fees
     }
 }

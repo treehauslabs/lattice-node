@@ -8,9 +8,12 @@ import UInt256
 public struct RPCServer: Sendable {
     private let app: Application<RouterResponder<BasicRequestContext>>
 
-    public init(node: LatticeNode, port: UInt16 = 8080, bindAddress: String = "127.0.0.1", allowedOrigin: String = "http://127.0.0.1") {
+    public init(node: LatticeNode, port: UInt16 = 8080, bindAddress: String = "127.0.0.1", allowedOrigin: String = "http://127.0.0.1", auth: CookieAuth? = nil) {
         let router = RPCRoutes.build(node: node)
         router.add(middleware: CORSMiddleware(allowedOrigin: allowedOrigin))
+        if auth != nil {
+            router.add(middleware: RPCAuthMiddleware<BasicRequestContext>(auth: auth))
+        }
         self.app = Application(router: router, configuration: .init(address: .hostname(bindAddress, port: Int(port))))
     }
 
@@ -29,13 +32,13 @@ struct CORSMiddleware<Context: RequestContext>: RouterMiddleware {
             var headers = HTTPFields()
             headers.append(HTTPField(name: .init("Access-Control-Allow-Origin")!, value: allowedOrigin))
             headers.append(HTTPField(name: .init("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
-            headers.append(HTTPField(name: .init("Access-Control-Allow-Headers")!, value: "Content-Type"))
+            headers.append(HTTPField(name: .init("Access-Control-Allow-Headers")!, value: "Content-Type, Authorization"))
             return Response(status: .noContent, headers: headers)
         }
         var response = try await next(request, context)
         response.headers.append(HTTPField(name: .init("Access-Control-Allow-Origin")!, value: allowedOrigin))
         response.headers.append(HTTPField(name: .init("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
-        response.headers.append(HTTPField(name: .init("Access-Control-Allow-Headers")!, value: "Content-Type"))
+        response.headers.append(HTTPField(name: .init("Access-Control-Allow-Headers")!, value: "Content-Type, Authorization"))
         return response
     }
 }
@@ -58,6 +61,12 @@ enum RPCRoutes {
         api.post("orders") { req, _ in try await placeOrder(node: node, request: req) }
         api.get("proof/{address}") { _, ctx in try await balanceProof(node: node, address: ctx.parameters.require("address")) }
         api.get("peers") { _, _ in try await getPeers(node: node) }
+
+        api.get("fee/estimate") { req, _ in try await feeEstimate(node: node, request: req) }
+        api.get("fee/histogram") { _, _ in try await feeHistogram(node: node) }
+        api.get("nonce/{address}") { _, ctx in try await getNonce(node: node, address: ctx.parameters.require("address")) }
+
+        router.get("ws") { _, _ in wsPlaceholder() }
 
         return router
     }
@@ -207,5 +216,37 @@ enum RPCRoutes {
         case .success: return json(R(accepted: true, txCID: sub.bodyCID, error: nil))
         case .failure(let r): return json(R(accepted: false, txCID: sub.bodyCID, error: r), status: .badRequest)
         }
+    }
+
+    // MARK: - Fee Estimation
+
+    static func feeEstimate(node: LatticeNode, request: Request) async throws -> Response {
+        let targetStr = request.uri.queryParameters["target"].map(String.init) ?? "5"
+        let target = Int(targetStr) ?? 5
+        let fee = await node.feeEstimator.estimate(confirmationTarget: target)
+        struct R: Encodable { let fee: UInt64; let target: Int }
+        return json(R(fee: fee, target: target))
+    }
+
+    static func feeHistogram(node: LatticeNode) async throws -> Response {
+        let histogram = await node.feeEstimator.histogram()
+        struct Bucket: Encodable { let range: String; let count: Int }
+        struct R: Encodable { let buckets: [Bucket]; let blockCount: Int }
+        let blockCount = await node.feeEstimator.blockCount
+        return json(R(buckets: histogram.map { Bucket(range: $0.range, count: $0.count) }, blockCount: blockCount))
+    }
+
+    // MARK: - Nonce
+
+    static func getNonce(node: LatticeNode, address: String) async throws -> Response {
+        struct R: Encodable { let address: String; let nonce: UInt64 }
+        return json(R(address: address, nonce: 0))
+    }
+
+    // MARK: - WebSocket (placeholder)
+
+    static func wsPlaceholder() -> Response {
+        struct R: Encodable { let error: String }
+        return json(R(error: "WebSocket not yet available"), status: .notImplemented)
     }
 }

@@ -36,6 +36,13 @@ extension LatticeNode {
         let added = await network.submitTransaction(transaction)
         if added {
             await network.announceBlock(cid: transaction.body.rawCID)
+            let fee = transaction.body.node?.fee ?? 0
+            let sender = transaction.body.node?.signers.first ?? ""
+            await subscriptions.emit(.newTransaction(
+                cid: transaction.body.rawCID,
+                fee: fee,
+                sender: sender
+            ))
             return .success
         }
         return .failure("Transaction rejected by mempool")

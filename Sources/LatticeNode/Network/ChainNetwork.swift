@@ -18,6 +18,7 @@ public actor ChainNetwork: IvyDelegate {
     public let ivy: Ivy
     public let fetcher: AcornFetcher
     public let mempool: Mempool
+    public let nodeMempool: NodeMempool
     private let storage: any AcornCASWorker
     private let memoryWorker: MemoryCASWorker
     public let verifiedStore: VerifiedDistanceStore
@@ -37,7 +38,9 @@ public actor ChainNetwork: IvyDelegate {
         self.directory = directory
         self.subscribedChains = Set([directory])
         self.resources = resources
-        self.mempool = Mempool(maxSize: resources.mempoolSizePerChain(chainCount: chainCount))
+        let mempoolSize = resources.mempoolSizePerChain(chainCount: chainCount)
+        self.mempool = Mempool(maxSize: mempoolSize)
+        self.nodeMempool = NodeMempool(maxSize: mempoolSize)
 
         let memoryBytes = resources.memoryBytesPerChain(chainCount: chainCount)
         let memoryEntries = max(memoryBytes / 4096, 100)
@@ -155,15 +158,22 @@ public actor ChainNetwork: IvyDelegate {
     // MARK: - Mempool Operations
 
     public func submitTransaction(_ transaction: Transaction) async -> Bool {
-        await mempool.add(transaction: transaction)
+        let ivyResult = await mempool.add(transaction: transaction)
+        _ = await nodeMempool.add(transaction: transaction)
+        return ivyResult
     }
 
     public func selectTransactionsForBlock(maxCount: Int) async -> [Transaction] {
-        await mempool.selectTransactions(maxCount: maxCount)
+        await nodeMempool.selectTransactions(maxCount: maxCount)
     }
 
     public func pruneConfirmedTransactions(txCIDs: Set<String>) async {
         await mempool.removeAll(txCIDs: txCIDs)
+        await nodeMempool.removeAll(txCIDs: txCIDs)
+    }
+
+    public func allMempoolTransactions() async -> [Transaction] {
+        await nodeMempool.allTransactions()
     }
 
     // MARK: - IvyDelegate
