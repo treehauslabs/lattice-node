@@ -16,6 +16,24 @@ extension LatticeNode {
         return true
     }
 
+    // MARK: - Recursive Block Storage
+
+    func storeBlockRecursively(_ block: Block, fetcher: AcornFetcher) async {
+        let header = HeaderImpl<Block>(node: block)
+        let storer = BufferedStorer()
+        try? header.storeRecursively(storer: storer)
+        await storer.flush(to: fetcher)
+    }
+
+    func storeReceivedBlockRecursively(cid: String, data: Data, fetcher: AcornFetcher) async {
+        await fetcher.store(rawCid: cid, data: data)
+        guard let block = Block(data: data) else { return }
+        let storer = BufferedStorer()
+        let header = HeaderImpl<Block>(node: block)
+        try? header.storeRecursively(storer: storer)
+        await storer.flush(to: fetcher)
+    }
+
     // MARK: - Block Processing with Reorg Recovery
 
     func processBlockAndRecoverReorg(
@@ -130,6 +148,9 @@ extension LatticeNode {
 
         tally.recordReceived(peer: peer, bytes: data.count)
 
+        let fetcher = await network.fetcher
+        await storeReceivedBlockRecursively(cid: cid, data: data, fetcher: fetcher)
+
         if let block = Block(data: data) {
             if !isBlockTimestampValid(block) {
                 tally.recordFailure(peer: peer)
@@ -140,17 +161,13 @@ extension LatticeNode {
                 peerTipCID: cid,
                 network: network
             ) {
-                await network.storeBlock(cid: cid, data: data)
                 tally.recordSuccess(peer: peer)
                 return
             }
         }
 
-        await network.storeBlock(cid: cid, data: data)
-
         let directory = await network.directory
         let header = HeaderImpl<Block>(rawCID: cid)
-        let fetcher = await network.fetcher
         let mempool = await network.mempool
         let accepted = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: fetcher, mempool: mempool
@@ -181,6 +198,11 @@ extension LatticeNode {
         guard !(await isSyncing) else { return }
 
         let fetcher = await network.fetcher
+
+        if let blockData = try? await fetcher.fetch(rawCid: cid) {
+            await storeReceivedBlockRecursively(cid: cid, data: blockData, fetcher: fetcher as! AcornFetcher)
+        }
+
         let header = HeaderImpl<Block>(rawCID: cid)
 
         if let block = try? await header.resolve(fetcher: fetcher).node {

@@ -46,9 +46,7 @@ extension LatticeNode {
         let header = HeaderImpl<Block>(node: block)
         guard let blockData = block.toData() else { return }
 
-        let storer = BufferedStorer()
-        try? header.storeRecursively(storer: storer)
-        await storer.flush(to: network.fetcher)
+        await storeBlockRecursively(block, fetcher: network.fetcher)
         await network.publishBlock(cid: header.rawCID, data: blockData)
         await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
         let _ = await processBlockAndRecoverReorg(
@@ -60,8 +58,6 @@ extension LatticeNode {
         await maybePersist(directory: directory)
     }
 
-
-
     func buildChildMiningContexts() async -> [ChildMiningContext] {
         var contexts: [ChildMiningContext] = []
         let nexusDir = genesisConfig.spec.directory
@@ -70,12 +66,16 @@ extension LatticeNode {
             guard config.isSubscribed(chainPath: [nexusDir, dir]) else { continue }
             guard let network = networks[dir] else { continue }
             guard let childChainState = await lattice.nexus.children[dir]?.chain else { continue }
+            let tipSnapshot = await childChainState.tipSnapshot
+            guard let specCID = tipSnapshot?.specCID else { continue }
+            let specHeader = HeaderImpl<ChainSpec>(rawCID: specCID)
+            guard let childSpec = try? await specHeader.resolve(fetcher: network.fetcher).node else { continue }
             contexts.append(ChildMiningContext(
                 directory: dir,
                 chainState: childChainState,
                 mempool: network.mempool,
                 fetcher: network.fetcher,
-                spec: genesisConfig.spec
+                spec: childSpec
             ))
         }
         return contexts
