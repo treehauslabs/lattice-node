@@ -878,3 +878,491 @@ final class AcornStorageTests: XCTestCase {
         }
     }
 }
+
+// ============================================================================
+// MARK: - Multi-Chain Deep Integration Tests
+// ============================================================================
+
+private struct MultiChainEnv {
+    let f: AcornFetcher
+    let t: Int64
+    let nexusSpec: ChainSpec
+    let childSpec: ChainSpec
+    let nexusGenesis: Block
+    let childGenesis: Block
+    let nexusChain: ChainState
+    let childChain: ChainState
+    let nexusLevel: ChainLevel
+    let kp: (privateKey: String, publicKey: String)
+    let kpAddr: String
+
+    static func create(childDir: String = "Payments", premine: UInt64 = 1000) async throws -> MultiChainEnv {
+        let f = fetcher()
+        let t = now() - 10_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec(childDir, premine: premine)
+        let kp = CryptoUtils.generateKeyPair()
+        let kpAddr = addr(kp.publicKey)
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let premineBody = TransactionBody(
+            accountActions: [AccountAction(owner: kpAddr, oldBalance: 0, newBalance: childSpec.premineAmount())],
+            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+            peerActions: [], settleActions: [], signers: [kpAddr], fee: 0, nonce: 0
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, transactions: [sign(premineBody, kp)],
+            timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusStorer = BufferedStorer()
+        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: nexusStorer)
+        await nexusStorer.flush(to: f)
+        let childStorer = BufferedStorer()
+        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: childStorer)
+        await childStorer.flush(to: f)
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        let nexusLevel = ChainLevel(chain: nexusChain, children: [childDir: childLevel])
+
+        return MultiChainEnv(
+            f: f, t: t, nexusSpec: nexusSpec, childSpec: childSpec,
+            nexusGenesis: nexusGenesis, childGenesis: childGenesis,
+            nexusChain: nexusChain, childChain: childChain, nexusLevel: nexusLevel,
+            kp: kp, kpAddr: kpAddr
+        )
+    }
+
+    func buildNexusBlock(
+        previous: Block, childBlocks: [String: Block] = [:],
+        offset: Int64 = 1000, nonce: UInt64 = 1
+    ) async throws -> Block {
+        try await BlockBuilder.buildBlock(
+            previous: previous, childBlocks: childBlocks,
+            timestamp: previous.timestamp + offset,
+            difficulty: UInt256(1000), nonce: nonce, fetcher: f
+        )
+    }
+
+    func submitNexus(_ block: Block) async -> SubmissionResult {
+        await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil,
+            blockHeader: HeaderImpl<Block>(node: block), block: block
+        )
+    }
+
+    func extractChildren(from block: Block) async -> [String] {
+        await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: block,
+            parentBlockHeader: HeaderImpl<Block>(node: block),
+            fetcher: f
+        )
+    }
+}
+
+final class MultiChainReorgTests: XCTestCase {
+
+    func testChildChainAdvancesWithParentBlocks() async throws {
+        let env = try await MultiChainEnv.create()
+
+        let nexusBlock1 = try await env.buildNexusBlock(
+            previous: env.nexusGenesis,
+            childBlocks: ["Payments": env.childGenesis]
+        )
+        let r1 = await env.submitNexus(nexusBlock1)
+        XCTAssertTrue(r1.extendsMainChain)
+        let _ = await env.extractChildren(from: nexusBlock1)
+
+        let childDirs = await env.nexusLevel.childDirectories()
+        XCTAssertTrue(childDirs.contains("Payments"))
+
+        let nexusHeight = await env.nexusChain.getHighestBlockIndex()
+        XCTAssertEqual(nexusHeight, 1)
+    }
+
+    func testMultipleNexusBlocksWithChildGenesis() async throws {
+        let env = try await MultiChainEnv.create()
+
+        let nexusBlock1 = try await env.buildNexusBlock(
+            previous: env.nexusGenesis,
+            childBlocks: ["Payments": env.childGenesis]
+        )
+        let r1 = await env.submitNexus(nexusBlock1)
+        XCTAssertTrue(r1.extendsMainChain)
+        let _ = await env.extractChildren(from: nexusBlock1)
+
+        let nexusBlock2 = try await env.buildNexusBlock(
+            previous: nexusBlock1, offset: 2000, nonce: 2
+        )
+        let r2 = await env.submitNexus(nexusBlock2)
+        XCTAssertTrue(r2.extendsMainChain)
+
+        let nexusBlock3 = try await env.buildNexusBlock(
+            previous: nexusBlock2, offset: 3000, nonce: 3
+        )
+        let r3 = await env.submitNexus(nexusBlock3)
+        XCTAssertTrue(r3.extendsMainChain)
+
+        let nexusHeight = await env.nexusChain.getHighestBlockIndex()
+        XCTAssertEqual(nexusHeight, 3)
+
+        let childDirs = await env.nexusLevel.childDirectories()
+        XCTAssertTrue(childDirs.contains("Payments"))
+    }
+
+    func testNexusBlockWithoutChildBlockDoesNotAdvanceChild() async throws {
+        let env = try await MultiChainEnv.create()
+
+        let nexusBlock1 = try await env.buildNexusBlock(previous: env.nexusGenesis)
+        let r1 = await env.submitNexus(nexusBlock1)
+        XCTAssertTrue(r1.extendsMainChain)
+        let _ = await env.extractChildren(from: nexusBlock1)
+
+        let nexusHeight = await env.nexusChain.getHighestBlockIndex()
+        XCTAssertEqual(nexusHeight, 1)
+        let childHeight = await env.childChain.getHighestBlockIndex()
+        XCTAssertEqual(childHeight, 0)
+    }
+}
+
+final class MultiChainPersistenceTests: XCTestCase {
+
+    func testChildChainPersistsAndRestores() async throws {
+        let env = try await MultiChainEnv.create()
+
+        let childBlock1 = try await BlockBuilder.buildBlock(
+            previous: env.childGenesis, timestamp: env.t + 1000,
+            difficulty: UInt256(1000), nonce: 1, fetcher: env.f
+        )
+        let nexusBlock1 = try await env.buildNexusBlock(
+            previous: env.nexusGenesis,
+            childBlocks: ["Payments": childBlock1]
+        )
+        let _ = await env.submitNexus(nexusBlock1)
+        let _ = await env.extractChildren(from: nexusBlock1)
+
+        let childPersisted = await env.childChain.persist()
+        let data = try JSONEncoder().encode(childPersisted)
+        let decoded = try JSONDecoder().decode(PersistedChainState.self, from: data)
+        let restored = ChainState.restore(from: decoded)
+
+        let origTip = await env.childChain.getMainChainTip()
+        let resTip = await restored.getMainChainTip()
+        XCTAssertEqual(origTip, resTip)
+
+        let resHeight = await restored.getHighestBlockIndex()
+        XCTAssertEqual(resHeight, 1)
+    }
+
+    func testMultipleChildChainsPersistIndependently() async throws {
+        let f = fetcher()
+        let t = now() - 10_000
+        let nexusSpec = testSpec("Nexus")
+        let childASpec = testSpec("Payments")
+        let childBSpec = testSpec("Identity")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childAGenesis = try await BlockBuilder.buildGenesis(
+            spec: childASpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childBGenesis = try await BlockBuilder.buildGenesis(
+            spec: childBSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let chainA = ChainState.fromGenesis(block: childAGenesis)
+        let chainB = ChainState.fromGenesis(block: childBGenesis)
+
+        let persistedA = await chainA.persist()
+        let persistedB = await chainB.persist()
+
+        let restoredA = ChainState.restore(from: persistedA)
+        let restoredB = ChainState.restore(from: persistedB)
+
+        let tipA = await restoredA.getMainChainTip()
+        let tipB = await restoredB.getMainChainTip()
+        XCTAssertNotEqual(tipA, tipB)
+
+        let nexusTip = await nexusChain.getMainChainTip()
+        XCTAssertNotEqual(nexusTip, tipA)
+        XCTAssertNotEqual(nexusTip, tipB)
+    }
+}
+
+final class MultiChainBalanceAndStateTests: XCTestCase {
+
+    func testChildChainHasValidTipSnapshot() async throws {
+        let env = try await MultiChainEnv.create()
+        let snapshot = await env.childChain.tipSnapshot
+        XCTAssertNotNil(snapshot)
+        XCTAssertEqual(snapshot?.index, 0)
+        XCTAssertFalse(snapshot!.frontierCID.isEmpty)
+        XCTAssertFalse(snapshot!.specCID.isEmpty)
+    }
+
+    func testChainStatusReportsMultipleChains() async throws {
+        let env = try await MultiChainEnv.create()
+
+        let nexusBlock1 = try await env.buildNexusBlock(
+            previous: env.nexusGenesis,
+            childBlocks: ["Payments": env.childGenesis]
+        )
+        let _ = await env.submitNexus(nexusBlock1)
+        let _ = await env.extractChildren(from: nexusBlock1)
+
+        let nexusHeight = await env.nexusChain.getHighestBlockIndex()
+        XCTAssertEqual(nexusHeight, 1)
+
+        let childDirs = await env.nexusLevel.childDirectories()
+        XCTAssertEqual(childDirs, ["Payments"])
+
+        let childHeight = await env.childChain.getHighestBlockIndex()
+        XCTAssertEqual(childHeight, 0)
+    }
+
+    func testChildChainTransactionAdvancesChain() async throws {
+        let env = try await MultiChainEnv.create()
+        let receiver = CryptoUtils.generateKeyPair()
+        let receiverAddr = addr(receiver.publicKey)
+        let premineAmount = env.childSpec.premineAmount()
+
+        let transferBody = TransactionBody(
+            accountActions: [
+                AccountAction(owner: env.kpAddr, oldBalance: premineAmount, newBalance: premineAmount - 500),
+                AccountAction(owner: receiverAddr, oldBalance: 0, newBalance: 500)
+            ],
+            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
+            peerActions: [], settleActions: [], signers: [env.kpAddr], fee: 0, nonce: 1
+        )
+        let tx = sign(transferBody, env.kp)
+
+        let childBlock1 = try await BlockBuilder.buildBlock(
+            previous: env.childGenesis, transactions: [tx],
+            timestamp: env.t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: env.f
+        )
+        let childResult = await env.childChain.submitBlock(
+            parentBlockHeaderAndIndex: nil,
+            blockHeader: HeaderImpl<Block>(node: childBlock1), block: childBlock1
+        )
+        XCTAssertTrue(childResult.extendsMainChain)
+
+        let childHeight = await env.childChain.getHighestBlockIndex()
+        XCTAssertEqual(childHeight, 1)
+
+        let snapshot = await env.childChain.tipSnapshot
+        XCTAssertNotNil(snapshot)
+        XCTAssertEqual(snapshot?.index, 1)
+    }
+}
+
+final class MultiChainMiningContextTests: XCTestCase {
+
+    func testChildMiningContextUsesCorrectSpec() async throws {
+        let f = fetcher()
+        let t = now() - 10_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childMempool = Mempool(maxSize: 100)
+
+        let ctx = ChildMiningContext(
+            directory: "Payments", chainState: childChain,
+            mempool: childMempool, fetcher: f, spec: childSpec
+        )
+        XCTAssertEqual(ctx.directory, "Payments")
+        XCTAssertEqual(ctx.spec.directory, "Payments")
+        XCTAssertNotEqual(ctx.spec.directory, nexusSpec.directory)
+    }
+
+    func testMinerWithMultipleChildContexts() async throws {
+        let f = fetcher()
+        let t = now() - 10_000
+        let nexusSpec = testSpec("Nexus")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        await f.store(rawCid: HeaderImpl<Block>(node: nexusGenesis).rawCID, data: nexusGenesis.toData()!)
+
+        var contexts: [ChildMiningContext] = []
+        for dir in ["Payments", "Identity", "Data"] {
+            let spec = testSpec(dir)
+            let genesis = try await BlockBuilder.buildGenesis(
+                spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+            )
+            let chain = ChainState.fromGenesis(block: genesis)
+            await f.store(rawCid: HeaderImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
+            contexts.append(ChildMiningContext(
+                directory: dir, chainState: chain,
+                mempool: Mempool(maxSize: 100), fetcher: f, spec: spec
+            ))
+        }
+
+        let miner = MinerLoop(
+            chainState: nexusChain, mempool: Mempool(maxSize: 100),
+            fetcher: f, spec: nexusSpec, childContexts: contexts
+        )
+        XCTAssertNotNil(miner)
+        let mining = await miner.isMining
+        XCTAssertFalse(mining)
+    }
+
+    func testChildMempoolIsolation() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let kpAddr = addr(kp.publicKey)
+        let nexusMempool = Mempool(maxSize: 100)
+        let childAMempool = Mempool(maxSize: 100)
+        let childBMempool = Mempool(maxSize: 100)
+
+        for (mempool, fee) in [(nexusMempool, 10 as UInt64), (childAMempool, 20), (childBMempool, 30)] {
+            let body = TransactionBody(
+                accountActions: [], actions: [], swapActions: [], swapClaimActions: [],
+                genesisActions: [], peerActions: [], settleActions: [],
+                signers: [kpAddr], fee: fee, nonce: fee
+            )
+            let _ = await mempool.add(transaction: sign(body, kp))
+        }
+
+        let nc = await nexusMempool.count
+        let ac = await childAMempool.count
+        let bc = await childBMempool.count
+        XCTAssertEqual(nc, 1)
+        XCTAssertEqual(ac, 1)
+        XCTAssertEqual(bc, 1)
+
+        let nexusTxs = await nexusMempool.selectTransactions(maxCount: 10)
+        XCTAssertEqual(nexusTxs.first?.body.node?.fee, 10)
+        let aTxs = await childAMempool.selectTransactions(maxCount: 10)
+        XCTAssertEqual(aTxs.first?.body.node?.fee, 20)
+        let bTxs = await childBMempool.selectTransactions(maxCount: 10)
+        XCTAssertEqual(bTxs.first?.body.node?.fee, 30)
+    }
+}
+
+final class MultiChainDiscoveryTests: XCTestCase {
+
+    func testNewChildChainDiscoveredFromNexusBlock() async throws {
+        let f = fetcher()
+        let t = now() - 10_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("NewChain")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
+
+        let dirsBefore = await nexusLevel.childDirectories()
+        XCTAssertTrue(dirsBefore.isEmpty)
+
+        let nexusBlock1 = try await BlockBuilder.buildBlock(
+            previous: nexusGenesis,
+            childBlocks: ["NewChain": childGenesis],
+            timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let _ = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil,
+            blockHeader: HeaderImpl<Block>(node: nexusBlock1), block: nexusBlock1
+        )
+        let _ = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1,
+            parentBlockHeader: HeaderImpl<Block>(node: nexusBlock1),
+            fetcher: f
+        )
+
+        let dirsAfter = await nexusLevel.childDirectories()
+        XCTAssertEqual(dirsAfter, ["NewChain"])
+    }
+
+    func testMultipleChildChainsDiscoveredSimultaneously() async throws {
+        let f = fetcher()
+        let t = now() - 10_000
+        let nexusSpec = testSpec("Nexus")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
+
+        var childBlocks: [String: Block] = [:]
+        for dir in ["Alpha", "Beta", "Gamma"] {
+            let spec = testSpec(dir)
+            let genesis = try await BlockBuilder.buildGenesis(
+                spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+            )
+            childBlocks[dir] = genesis
+        }
+
+        let nexusBlock1 = try await BlockBuilder.buildBlock(
+            previous: nexusGenesis, childBlocks: childBlocks,
+            timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let _ = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil,
+            blockHeader: HeaderImpl<Block>(node: nexusBlock1), block: nexusBlock1
+        )
+        let _ = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1,
+            parentBlockHeader: HeaderImpl<Block>(node: nexusBlock1),
+            fetcher: f
+        )
+
+        let dirs = await nexusLevel.childDirectories().sorted()
+        XCTAssertEqual(dirs, ["Alpha", "Beta", "Gamma"])
+    }
+
+    func testDuplicateChildChainDiscoveryIsIdempotent() async throws {
+        let f = fetcher()
+        let t = now() - 10_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
+
+        let nexusBlock1 = try await BlockBuilder.buildBlock(
+            previous: nexusGenesis,
+            childBlocks: ["Payments": childGenesis],
+            timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let _ = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil,
+            blockHeader: HeaderImpl<Block>(node: nexusBlock1), block: nexusBlock1
+        )
+        let _ = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1,
+            parentBlockHeader: HeaderImpl<Block>(node: nexusBlock1),
+            fetcher: f
+        )
+
+        let dirs = await nexusLevel.childDirectories()
+        XCTAssertEqual(dirs.count, 1)
+        XCTAssertEqual(dirs, ["Payments"])
+    }
+}
