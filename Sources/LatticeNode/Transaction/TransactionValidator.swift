@@ -4,6 +4,7 @@ import cashew
 import UInt256
 
 public let MINIMUM_TRANSACTION_FEE: UInt64 = 1
+public let MAX_TRANSACTION_FEE: UInt64 = 1_000_000_000_000
 public let MAX_NONCE_DRIFT: UInt64 = 600
 public let MAX_TRANSACTION_SIZE: Int = 102_400
 
@@ -18,6 +19,7 @@ public enum TransactionValidationError: Error, Sendable {
     case swapSignerMismatch
     case stateResolutionFailed
     case feeTooLow(actual: UInt64, minimum: UInt64)
+    case feeTooHigh(actual: UInt64, maximum: UInt64)
     case nonceAlreadyUsed(nonce: UInt64)
     case nonceFromFuture(nonce: UInt64)
     case balanceNotConserved(totalDebits: UInt64, totalCredits: UInt64, fee: UInt64)
@@ -70,6 +72,9 @@ public struct TransactionValidator: Sendable {
 
         if !isCoinbase && body.fee < MINIMUM_TRANSACTION_FEE {
             return .failure(.feeTooLow(actual: body.fee, minimum: MINIMUM_TRANSACTION_FEE))
+        }
+        if !isCoinbase && body.fee > MAX_TRANSACTION_FEE {
+            return .failure(.feeTooHigh(actual: body.fee, maximum: MAX_TRANSACTION_FEE))
         }
 
         let currentHeight = await chainState.getHighestBlockIndex()
@@ -155,12 +160,17 @@ public struct TransactionValidator: Sendable {
             var totalCredits: UInt64 = 0
             for action in body.accountActions {
                 if action.newBalance < action.oldBalance {
-                    totalDebits += action.oldBalance - action.newBalance
+                    let (newDebits, dOverflow) = totalDebits.addingReportingOverflow(action.oldBalance - action.newBalance)
+                    if dOverflow { return .failure(.balanceNotConserved(totalDebits: totalDebits, totalCredits: totalCredits, fee: body.fee)) }
+                    totalDebits = newDebits
                 } else if action.newBalance > action.oldBalance {
-                    totalCredits += action.newBalance - action.oldBalance
+                    let (newCredits, cOverflow) = totalCredits.addingReportingOverflow(action.newBalance - action.oldBalance)
+                    if cOverflow { return .failure(.balanceNotConserved(totalDebits: totalDebits, totalCredits: totalCredits, fee: body.fee)) }
+                    totalCredits = newCredits
                 }
             }
-            if totalDebits != totalCredits + body.fee {
+            let (creditsWithFee, feeOverflow) = totalCredits.addingReportingOverflow(body.fee)
+            if feeOverflow || totalDebits != creditsWithFee {
                 return .failure(.balanceNotConserved(
                     totalDebits: totalDebits,
                     totalCredits: totalCredits,

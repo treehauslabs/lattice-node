@@ -8,10 +8,10 @@ import UInt256
 public struct RPCServer: Sendable {
     private let app: Application<RouterResponder<BasicRequestContext>>
 
-    public init(node: LatticeNode, port: UInt16 = 8080, allowedOrigin: String = "http://127.0.0.1") {
+    public init(node: LatticeNode, port: UInt16 = 8080, bindAddress: String = "127.0.0.1", allowedOrigin: String = "http://127.0.0.1") {
         let router = RPCRoutes.build(node: node)
         router.add(middleware: CORSMiddleware(allowedOrigin: allowedOrigin))
-        self.app = Application(router: router, configuration: .init(address: .hostname("0.0.0.0", port: Int(port))))
+        self.app = Application(router: router, configuration: .init(address: .hostname(bindAddress, port: Int(port))))
     }
 
     public func run() async throws {
@@ -126,7 +126,16 @@ enum RPCRoutes {
         }
         let dir = node.genesisConfig.spec.directory
         guard let net = await node.network(for: dir) else { return jsonError("Network not available", status: .internalServerError) }
-        if let hex = sub.bodyData, let raw = Data(hex: hex) { await net.fetcher.store(rawCid: sub.bodyCID, data: raw) }
+        if let hex = sub.bodyData, let raw = Data(hex: hex) {
+            guard let parsed = TransactionBody(data: raw) else {
+                return jsonError("Invalid bodyData: cannot deserialize")
+            }
+            let computedCID = HeaderImpl<TransactionBody>(node: parsed).rawCID
+            guard computedCID == sub.bodyCID else {
+                return jsonError("CID mismatch: bodyData hashes to \(computedCID), not \(sub.bodyCID)")
+            }
+            await net.fetcher.store(rawCid: sub.bodyCID, data: raw)
+        }
         guard let body = try? await HeaderImpl<TransactionBody>(rawCID: sub.bodyCID).resolve(fetcher: net.fetcher).node else {
             return jsonError("Transaction body not found. Provide bodyData or ensure bodyCID is in the CAS.")
         }
@@ -178,7 +187,16 @@ enum RPCRoutes {
         }
         let dir = node.genesisConfig.spec.directory
         guard let net = await node.network(for: dir) else { return jsonError("Network not available", status: .internalServerError) }
-        if let hex = sub.bodyData, let raw = Data(hex: hex) { await net.fetcher.store(rawCid: sub.bodyCID, data: raw) }
+        if let hex = sub.bodyData, let raw = Data(hex: hex) {
+            guard let parsed = TransactionBody(data: raw) else {
+                return jsonError("Invalid bodyData: cannot deserialize")
+            }
+            let computedCID = HeaderImpl<TransactionBody>(node: parsed).rawCID
+            guard computedCID == sub.bodyCID else {
+                return jsonError("CID mismatch: bodyData hashes to \(computedCID), not \(sub.bodyCID)")
+            }
+            await net.fetcher.store(rawCid: sub.bodyCID, data: raw)
+        }
         guard let body = try? await HeaderImpl<TransactionBody>(rawCID: sub.bodyCID).resolve(fetcher: net.fetcher).node else {
             return jsonError("Transaction body not found. Provide bodyData.")
         }

@@ -91,7 +91,7 @@ struct LatticeNodeApp {
 
         var rpcTask: Task<Void, any Error>? = nil
         if let rpcPort = args.rpcPort {
-            let server = RPCServer(node: node, port: rpcPort, allowedOrigin: args.rpcAllowedOrigin)
+            let server = RPCServer(node: node, port: rpcPort, bindAddress: args.rpcBindAddress, allowedOrigin: args.rpcAllowedOrigin)
             rpcTask = Task { try await server.run() }
             print("  RPC server:  http://localhost:\(rpcPort)/api/chain/info")
         }

@@ -20,6 +20,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var blocksSinceLastPersist: [String: UInt64]
     var recentPeerBlocks: [String: ContinuousClock.Instant]
     var recentPeerBlockOrder: [String]
+    var peerBlockCounts: [PeerID: (count: Int, windowStart: ContinuousClock.Instant)]
+    static let maxBlocksPerPeerPerWindow = 20
+    static let peerRateWindow: Duration = .seconds(10)
     var syncTask: Task<Void, Never>?
     var peerRefreshTask: Task<Void, Never>?
     var cachedOrders: (tip: String, orders: [Order])?
@@ -87,6 +90,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         self.blocksSinceLastPersist = [:]
         self.recentPeerBlocks = [:]
         self.recentPeerBlockOrder = []
+        self.peerBlockCounts = [:]
     }
 
     // MARK: - Lifecycle

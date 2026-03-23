@@ -29,6 +29,11 @@ public struct ChildMiningContext: Sendable {
     }
 }
 
+public struct MinedBlockPendingRemovals: Sendable {
+    public let nexusTxCIDs: Set<String>
+    public let childTxRemovals: [(directory: String, mempool: Mempool, txCIDs: Set<String>)]
+}
+
 public protocol MinerDelegate: AnyObject, Sendable {
-    func minerDidProduceBlock(_ block: Block, hash: String) async
+    func minerDidProduceBlock(_ block: Block, hash: String, pendingRemovals: MinedBlockPendingRemovals) async
 }

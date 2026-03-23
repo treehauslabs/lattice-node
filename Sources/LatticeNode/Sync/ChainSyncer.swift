@@ -15,12 +15,14 @@ public enum SyncError: Error, Sendable {
     case genesisMismatch
     case cancelled
     case emptyChain
+    case insufficientWork
 }
 
 public struct SyncResult: Sendable {
     public let persisted: PersistedChainState
     public let tipBlockHash: String
     public let tipBlockIndex: UInt64
+    public let cumulativeWork: UInt256
 }
 
 public enum SyncFetchError: Error, Sendable {
@@ -77,13 +79,20 @@ public actor ChainSyncer {
     // Then build ChainState metadata from the collected chain.
     // This is complete but slow — O(n) sequential fetches for n blocks.
 
+    private static func workForDifficulty(_ difficulty: UInt256) -> UInt256 {
+        guard difficulty > UInt256.zero else { return UInt256.zero }
+        return UInt256.max / difficulty
+    }
+
     public func syncFull(
         peerTipCID: String,
+        localCumulativeWork: UInt256 = UInt256.zero,
         progress: (@Sendable (UInt64, UInt64) async -> Void)? = nil
     ) async throws -> SyncResult {
         var collected: [(hash: String, index: UInt64, prevHash: String?)] = []
         var currentCID = peerTipCID
         var targetHeight: UInt64 = 0
+        var cumulativeWork = UInt256.zero
 
         while !cancelled {
             let data: Data
@@ -105,6 +114,8 @@ public actor ChainSyncer {
             guard block.validateBlockDifficulty(nexusHash: diffHash) else {
                 throw SyncError.invalidPoW(block.index)
             }
+
+            cumulativeWork = cumulativeWork &+ Self.workForDifficulty(block.difficulty)
 
             await storeFn(currentCID, data)
             collected.append((
@@ -129,10 +140,14 @@ public actor ChainSyncer {
         if cancelled { throw SyncError.cancelled }
         guard !collected.isEmpty else { throw SyncError.emptyChain }
 
+        if cumulativeWork < localCumulativeWork {
+            throw SyncError.insufficientWork
+        }
+
         collected.reverse()
         await progress?(targetHeight + 1, targetHeight + 1)
 
-        return buildResult(from: collected)
+        return buildResult(from: collected, cumulativeWork: cumulativeWork)
     }
 
     // MARK: - Snapshot Sync
@@ -147,6 +162,7 @@ public actor ChainSyncer {
     public func syncSnapshot(
         peerTipCID: String,
         depth: UInt64? = nil,
+        localCumulativeWork: UInt256 = UInt256.zero,
         progress: (@Sendable (UInt64, UInt64) async -> Void)? = nil
     ) async throws -> SyncResult {
         let effectiveDepth = depth ?? retentionDepth
@@ -154,6 +170,7 @@ public actor ChainSyncer {
         var currentCID = peerTipCID
         var targetHeight: UInt64 = 0
         var tipBlock: Block?
+        var cumulativeWork = UInt256.zero
 
         while !cancelled {
             let data: Data
@@ -176,6 +193,8 @@ public actor ChainSyncer {
             guard block.validateBlockDifficulty(nexusHash: diffHash) else {
                 throw SyncError.invalidPoW(block.index)
             }
+
+            cumulativeWork = cumulativeWork &+ Self.workForDifficulty(block.difficulty)
 
             await storeFn(currentCID, data)
             collected.append((
@@ -202,6 +221,10 @@ public actor ChainSyncer {
         if cancelled { throw SyncError.cancelled }
         guard !collected.isEmpty else { throw SyncError.emptyChain }
 
+        if cumulativeWork < localCumulativeWork {
+            throw SyncError.insufficientWork
+        }
+
         if let tip = tipBlock {
             let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher)) ?? false
             if !valid {
@@ -214,7 +237,7 @@ public actor ChainSyncer {
 
         collected.reverse()
 
-        return buildResult(from: collected)
+        return buildResult(from: collected, cumulativeWork: cumulativeWork)
     }
 
     private func verifyTipFrontier(_ block: Block) async throws -> Bool {
@@ -231,7 +254,8 @@ public actor ChainSyncer {
     // MARK: - Build Result
 
     private func buildResult(
-        from blocks: [(hash: String, index: UInt64, prevHash: String?)]
+        from blocks: [(hash: String, index: UInt64, prevHash: String?)],
+        cumulativeWork: UInt256 = UInt256.zero
     ) -> SyncResult {
         let tipIndex = blocks.last!.index
         let cutoff: UInt64 = tipIndex > retentionDepth
@@ -277,7 +301,8 @@ public actor ChainSyncer {
         return SyncResult(
             persisted: persisted,
             tipBlockHash: blocks.last!.hash,
-            tipBlockIndex: tipIndex
+            tipBlockIndex: tipIndex,
+            cumulativeWork: cumulativeWork
         )
     }
 }

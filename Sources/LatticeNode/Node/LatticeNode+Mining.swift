@@ -36,12 +36,12 @@ extension LatticeNode {
         miners.removeValue(forKey: directory)
     }
 
-    nonisolated public func minerDidProduceBlock(_ block: Block, hash: String) async {
+    nonisolated public func minerDidProduceBlock(_ block: Block, hash: String, pendingRemovals: MinedBlockPendingRemovals) async {
         let directory = block.spec.node?.directory ?? "Nexus"
-        await submitMinedBlock(directory: directory, block: block)
+        await submitMinedBlock(directory: directory, block: block, pendingRemovals: pendingRemovals)
     }
 
-    public func submitMinedBlock(directory: String, block: Block) async {
+    public func submitMinedBlock(directory: String, block: Block, pendingRemovals: MinedBlockPendingRemovals? = nil) async {
         guard let network = networks[directory] else { return }
         let header = HeaderImpl<Block>(node: block)
         guard let blockData = block.toData() else { return }
@@ -49,12 +49,18 @@ extension LatticeNode {
         await storeBlockRecursively(block, fetcher: network.fetcher)
         await network.publishBlock(cid: header.rawCID, data: blockData)
         await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
-        let _ = await processBlockAndRecoverReorg(
+        let accepted = await processBlockAndRecoverReorg(
             header: header,
             directory: directory,
             fetcher: network.fetcher,
             mempool: network.mempool
         )
+        if accepted, let removals = pendingRemovals {
+            await network.mempool.removeAll(txCIDs: removals.nexusTxCIDs)
+            for childRemoval in removals.childTxRemovals {
+                await childRemoval.mempool.removeAll(txCIDs: childRemoval.txCIDs)
+            }
+        }
         await maybePersist(directory: directory)
     }
 

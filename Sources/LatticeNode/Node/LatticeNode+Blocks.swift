@@ -96,6 +96,7 @@ extension LatticeNode {
         fetcher: Fetcher,
         mempool: Mempool
     ) async {
+        let validator = TransactionValidator(fetcher: fetcher, chainState: chain)
         let newChainHashes = await collectAncestors(
             from: newTip, chain: chain, limit: config.retentionDepth
         )
@@ -123,7 +124,10 @@ extension LatticeNode {
                 if tx.body.node?.fee == 0 && tx.body.node?.nonce == block.index {
                     continue
                 }
-                let _ = await mempool.add(transaction: tx)
+                let validationResult = await validator.validate(tx)
+                if case .success = validationResult {
+                    let _ = await mempool.add(transaction: tx)
+                }
             }
         }
     }
@@ -154,6 +158,7 @@ extension LatticeNode {
     ) async {
         let tally = await network.ivy.tally
         guard tally.shouldAllow(peer: peer) else { return }
+        if await isPeerBlockRateLimited(peer) { return }
 
         if data.count > genesisConfig.spec.maxBlockSize {
             tally.recordFailure(peer: peer)
@@ -212,6 +217,7 @@ extension LatticeNode {
     ) async {
         let tally = await network.ivy.tally
         guard tally.shouldAllow(peer: peer) else { return }
+        if await isPeerBlockRateLimited(peer) { return }
 
         let now = ContinuousClock.Instant.now
         if let lastSeen = await recentBlockTime(for: cid) {
@@ -255,6 +261,23 @@ extension LatticeNode {
         } else {
             tally.recordFailure(peer: peer)
         }
+    }
+
+    func isPeerBlockRateLimited(_ peer: PeerID) -> Bool {
+        let now = ContinuousClock.Instant.now
+        if let entry = peerBlockCounts[peer] {
+            if now - entry.windowStart < Self.peerRateWindow {
+                if entry.count >= Self.maxBlocksPerPeerPerWindow {
+                    return true
+                }
+                peerBlockCounts[peer] = (count: entry.count + 1, windowStart: entry.windowStart)
+            } else {
+                peerBlockCounts[peer] = (count: 1, windowStart: now)
+            }
+        } else {
+            peerBlockCounts[peer] = (count: 1, windowStart: now)
+        }
+        return false
     }
 
     func recentBlockTime(for key: String) -> ContinuousClock.Instant? {

@@ -23,6 +23,7 @@ struct NodeArgs {
     var maxMemoryGB: Double? = nil
     var maxDiskGB: Double? = nil
     var rpcPort: UInt16? = nil
+    var rpcBindAddress: String = "127.0.0.1"
     var enableDiscovery: Bool = true
     var showHelp: Bool = false
     var showVersion: Bool = false
@@ -80,6 +81,9 @@ func parseArgs() -> NodeArgs {
         case "--rpc-port":
             i += 1
             if i < argv.count, let p = UInt16(argv[i]) { args.rpcPort = p }
+        case "--rpc-bind":
+            i += 1
+            if i < argv.count { args.rpcBindAddress = argv[i] }
         case "--no-discovery":
             args.enableDiscovery = false
         case "--rpc-allowed-origin":
@@ -127,6 +131,7 @@ func printUsage() {
       --max-memory <GB>          Cap for autosize memory (optional)
       --max-disk <GB>            Cap for autosize disk (optional)
       --rpc-port <N>             Enable JSON RPC server on port (e.g. 8080)
+      --rpc-bind <addr>          RPC bind address (default: 127.0.0.1)
 
     SIZING GUIDE:
       2GB RAM / 40GB disk VPS   --memory 0.5  --disk 20

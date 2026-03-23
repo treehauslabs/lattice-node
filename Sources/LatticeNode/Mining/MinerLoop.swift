@@ -111,15 +111,16 @@ public actor MinerLoop {
                         let mined = withNonce(template, startNonce: foundNonce)
 
                         let confirmedCIDs = Set(transactions.map { $0.body.rawCID })
-                        await mempool.removeAll(txCIDs: confirmedCIDs)
-
-                        for removal in childResult.pendingChildTxRemovals {
-                            await removal.mempool.removeAll(txCIDs: removal.txCIDs)
-                        }
+                        let pendingRemovals = MinedBlockPendingRemovals(
+                            nexusTxCIDs: confirmedCIDs,
+                            childTxRemovals: childResult.pendingChildTxRemovals.map {
+                                (directory: "", mempool: $0.mempool, txCIDs: $0.txCIDs)
+                            }
+                        )
 
                         let delegate = self.delegate
                         let hash = HeaderImpl<Block>(node: mined).rawCID
-                        Task.detached { await delegate?.minerDidProduceBlock(mined, hash: hash) }
+                        Task.detached { await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals) }
                         break
                     }
 
@@ -178,8 +179,15 @@ public actor MinerLoop {
         guard let identity = identity else { return nil }
 
         let reward = spec.rewardAtBlock(previousBlock.index + 1)
-        let totalFees = mempoolTransactions.compactMap { $0.body.node?.fee }.reduce(0, +)
-        let payout = reward + totalFees
+        var totalFees: UInt64 = 0
+        for tx in mempoolTransactions {
+            guard let fee = tx.body.node?.fee else { continue }
+            let (newTotal, overflow) = totalFees.addingReportingOverflow(fee)
+            if overflow { return nil }
+            totalFees = newTotal
+        }
+        let (payout, payoutOverflow) = reward.addingReportingOverflow(totalFees)
+        if payoutOverflow { return nil }
         guard payout > 0 else { return nil }
 
         let currentBalance = try await lookupBalance(
