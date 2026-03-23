@@ -172,18 +172,6 @@ This is used for:
 
 Advantages over transaction replay: correct by construction (captures all state changes including implicit ones from child chains), O(changed accounts) instead of O(transactions × actions), and independent of transaction execution logic.
 
-### 4.4 Reverse Diffs
-
-For reorg recovery, each block's state changes are stored as reverse diffs in SQLite:
-
-| Column | Type | Description |
-|--------|------|-------------|
-| height | UInt64 | Block height |
-| path | String | State path modified |
-| old_value | Data? | Previous value (nil if new) |
-
-On reorg: CAS diffs reverse the orphaned blocks' state changes, then SQLite reverse diffs provide a secondary recovery path.
-
 ### 4.4 State Expiry
 
 Accounts inactive for >1,000,000 blocks are moved from `account:<address>` to `expired:<address>`. They can be revived by providing the account data. Expired accounts retain their balance and nonce.
