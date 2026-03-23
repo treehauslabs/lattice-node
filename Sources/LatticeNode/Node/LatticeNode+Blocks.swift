@@ -264,5 +264,17 @@ extension LatticeNode {
             enableLocalDiscovery: config.enableLocalDiscovery
         )
         try? await registerChainNetwork(directory: directory, config: ivyConfig)
+
+        if let childNetwork = networks[directory],
+           let childLevel = await lattice.nexus.children[directory] {
+            let tipHash = await childLevel.chain.getMainChainTip()
+            let nexusDir = genesisConfig.spec.directory
+            if let nexusNetwork = networks[nexusDir],
+               let blockData = try? await nexusNetwork.fetcher.fetch(rawCid: tipHash) {
+                if let block = Block(data: blockData) {
+                    await storeBlockRecursively(block, fetcher: childNetwork.fetcher)
+                }
+            }
+        }
     }
 }

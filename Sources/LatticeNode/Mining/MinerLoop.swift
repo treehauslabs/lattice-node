@@ -72,11 +72,10 @@ public actor MinerLoop {
                     transactions.insert(coinbase, at: 0)
                 }
 
-                let childResult = await buildChildBlocks(
-                    nexusBlock: previousBlock
-                )
-
                 let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
+                let childResult = await buildChildBlocks(
+                    nexusBlock: previousBlock, timestamp: blockTimestamp
+                )
                 let blockDifficulty = previousBlock.nextDifficulty
                 let computedNextDifficulty = spec.calculateMinimumDifficulty(
                     previousDifficulty: blockDifficulty,
@@ -241,10 +240,9 @@ public actor MinerLoop {
         let pendingChildTxRemovals: [(mempool: Mempool, txCIDs: Set<String>)]
     }
 
-    private func buildChildBlocks(nexusBlock: Block) async -> ChildBlockResult {
+    private func buildChildBlocks(nexusBlock: Block, timestamp: Int64) async -> ChildBlockResult {
         var blocks: [String: Block] = [:]
         var pendingRemovals: [(mempool: Mempool, txCIDs: Set<String>)] = []
-        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
 
         for ctx in childContexts {
             do {
@@ -256,12 +254,20 @@ public actor MinerLoop {
                     maxCount: max(0, Int(ctx.spec.maxNumberOfTransactionsPerBlock) - 1)
                 )
 
+                let childDifficulty = childTip.nextDifficulty
+                let childNextDifficulty = ctx.spec.calculateMinimumDifficulty(
+                    previousDifficulty: childDifficulty,
+                    blockTimestamp: timestamp,
+                    previousTimestamp: childTip.timestamp
+                )
+
                 let childBlock = try await BlockBuilder.buildBlock(
                     previous: childTip,
                     transactions: childTxs,
                     parentChainBlock: nexusBlock,
                     timestamp: timestamp,
-                    difficulty: childTip.nextDifficulty,
+                    difficulty: childDifficulty,
+                    nextDifficulty: childNextDifficulty,
                     nonce: 0,
                     fetcher: ctx.fetcher
                 )
