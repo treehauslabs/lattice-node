@@ -149,6 +149,20 @@ public actor StateStore {
         recordDiff(height: atHeight, path: path, oldValue: oldValue)
     }
 
+    public func queryGeneralKeys(prefix: String) throws -> [(key: String, data: Data)] {
+        let fullPrefix = "general:\(prefix)"
+        let rows = try db.query(
+            "SELECT path, value FROM state WHERE path LIKE ?1",
+            params: [.text(fullPrefix + "%")]
+        )
+        return rows.compactMap { row in
+            guard let path = row["path"]?.textValue,
+                  let data = row["value"]?.blobValue else { return nil }
+            let key = String(path.dropFirst("general:".count))
+            return (key: key, data: data)
+        }
+    }
+
     // MARK: - Chain Metadata
 
     public func getChainTip() -> String? {

@@ -58,30 +58,7 @@ extension LatticeNode {
                 result = try await syncer.syncSnapshot(peerTipCID: peerTipCID)
             }
 
-            let nexusDir = genesisConfig.spec.directory
-            await lattice.nexus.chain.resetFrom(
-                result.persisted,
-                retentionDepth: config.retentionDepth
-            )
-            await persistChainState(directory: nexusDir)
-
-            if let store = stateStores[nexusDir] {
-                let log = NodeLogger("sync")
-                log.info("Rebuilding StateStore from \(result.persisted.blocks.count) synced blocks...")
-                for block in result.persisted.blocks {
-                    if let data = try? await fetcher.fetch(rawCid: block.blockHash),
-                       let blk = Block(data: data) {
-                        let changeset = await extractStateChangeset(block: blk, blockHash: block.blockHash, fetcher: fetcher)
-                        if let changeset { await store.applyBlock(changeset) }
-                    }
-                }
-                log.info("StateStore rebuilt")
-            }
-
-            await reprocessSyncedBlocksForChildChains(
-                persisted: result.persisted,
-                fetcher: fetcher
-            )
+            await finalizeSyncResult(result, network: network, fetcher: fetcher)
         } catch {
             let log = NodeLogger("sync")
             log.error("Sync failed: \(error) — will retry on next peer block")
@@ -152,32 +129,7 @@ extension LatticeNode {
 
             print("  [sync] Sync complete: height \(result.tipBlockIndex), applying to chain...")
 
-            let nexusDir = genesisConfig.spec.directory
-            await lattice.nexus.chain.resetFrom(
-                result.persisted,
-                retentionDepth: config.retentionDepth
-            )
-
-            await persistChainState(directory: nexusDir)
-            await reprocessSyncedBlocksForChildChains(
-                persisted: result.persisted,
-                fetcher: fetcher
-            )
-
-            if let store = stateStores[genesisConfig.spec.directory] {
-                for header in headers {
-                    if let data = try? await fetcher.fetch(rawCid: header.cid),
-                       let block = Block(data: data) {
-                        let changeset = await extractStateChangeset(
-                            block: block, blockHash: header.cid, fetcher: fetcher
-                        )
-                        if let changeset {
-                            await store.applyBlock(changeset)
-                        }
-                    }
-                }
-                print("  [sync] StateStore rebuilt with \(headers.count) blocks")
-            }
+            await finalizeSyncResult(result, network: network, fetcher: fetcher)
 
             syncTask = nil
             print("  [sync] Headers-first sync complete")
@@ -218,6 +170,49 @@ extension LatticeNode {
             await storer.flush(to: fetcher as! AcornFetcher)
 
             let _ = await lattice.processBlockHeader(header, fetcher: fetcher)
+        }
+    }
+
+    private func finalizeSyncResult(_ result: SyncResult, network: ChainNetwork, fetcher: Fetcher) async {
+        let log = NodeLogger("sync")
+        let nexusDir = genesisConfig.spec.directory
+
+        await lattice.nexus.chain.resetFrom(result.persisted, retentionDepth: config.retentionDepth)
+        await persistChainState(directory: nexusDir)
+
+        if let store = stateStores[nexusDir] {
+            log.info("Rebuilding StateStore from \(result.persisted.blocks.count) synced blocks...")
+            for block in result.persisted.blocks {
+                if let data = try? await fetcher.fetch(rawCid: block.blockHash),
+                   let blk = Block(data: data) {
+                    let changeset = await extractStateChangeset(block: blk, blockHash: block.blockHash, fetcher: fetcher)
+                    if let changeset { await store.applyBlock(changeset) }
+                }
+            }
+            log.info("StateStore rebuilt")
+        }
+
+        await reprocessSyncedBlocksForChildChains(persisted: result.persisted, fetcher: fetcher)
+        await verifySyncWithPeers(tipCID: result.tipBlockHash, tipHeight: result.tipBlockIndex, network: network)
+    }
+
+    func verifySyncWithPeers(tipCID: String, tipHeight: UInt64, network: ChainNetwork) async {
+        let log = NodeLogger("sync")
+        let peers = await network.ivy.router.allPeers()
+        guard peers.count >= 2 else {
+            log.warn("Insufficient peers for sync verification (\(peers.count) available)")
+            return
+        }
+        var confirmed = 0
+        for _ in peers.prefix(3) {
+            if let _ = try? await network.fetcher.fetch(rawCid: tipCID) {
+                confirmed += 1
+            }
+        }
+        if confirmed >= 2 {
+            log.info("Sync verified: \(confirmed) peers confirm tip at height \(tipHeight)")
+        } else {
+            log.warn("Sync verification weak: only \(confirmed) peer(s) confirm tip")
         }
     }
 

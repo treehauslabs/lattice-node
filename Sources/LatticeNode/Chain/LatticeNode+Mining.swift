@@ -49,7 +49,6 @@ extension LatticeNode {
 
         await storeBlockRecursively(block, fetcher: network.fetcher)
         await network.publishBlock(cid: header.rawCID, data: blockData)
-        await network.cacheCompactBlock(cid: header.rawCID, block: block)
         await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
         let accepted = await processBlockAndRecoverReorg(
             header: header,
