@@ -5,6 +5,7 @@ import cashew
 extension LatticeNode {
 
     public var isSyncing: Bool { syncTask != nil }
+    var childSyncTasks: [String: Task<Void, Never>] { [:] }
 
     func checkSyncNeeded(
         peerBlock: Block,
@@ -57,10 +58,36 @@ extension LatticeNode {
                 retentionDepth: config.retentionDepth
             )
             await persistChainState(directory: nexusDir)
+
+            await reprocessSyncedBlocksForChildChains(
+                persisted: result.persisted,
+                fetcher: fetcher
+            )
         } catch {
             print("  [sync] Failed: \(error) — will retry on next peer block")
         }
 
         syncTask = nil
+    }
+
+    private func reprocessSyncedBlocksForChildChains(
+        persisted: PersistedChainState,
+        fetcher: Fetcher
+    ) async {
+        for blockMeta in persisted.blocks {
+            guard let blockData = try? await fetcher.fetch(rawCid: blockMeta.blockHash),
+                  let block = Block(data: blockData) else { continue }
+            let header = HeaderImpl<Block>(node: block)
+
+            let storer = BufferedStorer()
+            try? header.storeRecursively(storer: storer)
+            await storer.flush(to: fetcher as! AcornFetcher)
+
+            let _ = await lattice.processBlockHeader(header, fetcher: fetcher)
+        }
+    }
+
+    func isChildChainSyncing(directory: String) -> Bool {
+        return false
     }
 }

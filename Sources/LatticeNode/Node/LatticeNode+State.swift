@@ -34,7 +34,7 @@ extension LatticeNode {
                 result.append(ChainInfo(
                     directory: dir, height: h, tip: t,
                     mining: miners[dir] != nil, mempoolCount: mc,
-                    syncing: false
+                    syncing: isChildChainSyncing(directory: dir)
                 ))
             }
         }
