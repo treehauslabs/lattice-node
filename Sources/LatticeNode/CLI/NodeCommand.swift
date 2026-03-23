@@ -233,8 +233,7 @@ struct NodeCommand: AsyncParsableCommand {
                 cookieAuth = try CookieAuth.generate(at: cookiePath)
                 print("  RPC auth:    cookie (\(cookiePath.path))")
             }
-            let rateLimiter = RPCRateLimiter()
-            let server = RPCServer(node: node, port: rpcPort, bindAddress: rpcBind, allowedOrigin: rpcAllowedOrigin, auth: cookieAuth, rateLimiter: rateLimiter)
+            let server = RPCServer(node: node, port: rpcPort, bindAddress: rpcBind, allowedOrigin: rpcAllowedOrigin, auth: cookieAuth)
             rpcTask = Task { try await server.run() }
             print("  RPC server:  http://localhost:\(rpcPort)/api/chain/info")
         }

@@ -8,12 +8,9 @@ import UInt256
 public struct RPCServer: Sendable {
     private let app: Application<RouterResponder<BasicRequestContext>>
 
-    public init(node: LatticeNode, port: UInt16 = 8080, bindAddress: String = "127.0.0.1", allowedOrigin: String = "http://127.0.0.1", auth: CookieAuth? = nil, rateLimiter: RPCRateLimiter? = nil) {
+    public init(node: LatticeNode, port: UInt16 = 8080, bindAddress: String = "127.0.0.1", allowedOrigin: String = "http://127.0.0.1", auth: CookieAuth? = nil) {
         let router = RPCRoutes.build(node: node)
         router.add(middleware: CORSMiddleware(allowedOrigin: allowedOrigin))
-        if let rateLimiter {
-            router.add(middleware: RPCRateLimitMiddleware<BasicRequestContext>(rateLimiter: rateLimiter))
-        }
         if auth != nil {
             router.add(middleware: RPCAuthMiddleware<BasicRequestContext>(auth: auth))
         }
