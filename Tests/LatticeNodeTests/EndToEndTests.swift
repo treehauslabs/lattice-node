@@ -637,6 +637,170 @@ final class TwoNodeEndToEndTests: XCTestCase {
 }
 
 // ============================================================================
+// MARK: - Multi-Chain Block Reception & Propagation
+// ============================================================================
+
+final class MultiChainReceptionTests: XCTestCase {
+
+    func testReceivedNexusBlockWithChildBlockExtractsChildChain() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
+
+        let nexusBlock1 = try await BlockBuilder.buildBlock(
+            previous: nexusGenesis,
+            childBlocks: ["Payments": childGenesis],
+            timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+
+        let result = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
+        )
+        XCTAssertTrue(result.extendsMainChain)
+
+        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        XCTAssertEqual(nexusHeight, 1)
+
+        let _ = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1, parentBlockHeader: header1, fetcher: f
+        )
+        let childDirs = await nexusLevel.childDirectories()
+        XCTAssertTrue(childDirs.contains("Payments"))
+    }
+
+    func testTwoNodesConvergeOnMultiChainWithChildExtraction() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let chainA = ChainState.fromGenesis(block: nexusGenesis)
+        let chainB = ChainState.fromGenesis(block: nexusGenesis)
+        let levelA = ChainLevel(chain: chainA, children: [:])
+        let levelB = ChainLevel(chain: chainB, children: [:])
+
+        let nexusBlock1 = try await BlockBuilder.buildBlock(
+            previous: nexusGenesis,
+            childBlocks: ["Payments": childGenesis],
+            timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+
+        let resultA = await chainA.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
+        )
+        XCTAssertTrue(resultA.extendsMainChain)
+
+        let resultB = await chainB.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
+        )
+        XCTAssertTrue(resultB.extendsMainChain)
+
+        let tipA = await chainA.getMainChainTip()
+        let tipB = await chainB.getMainChainTip()
+        XCTAssertEqual(tipA, tipB)
+
+        let _ = await levelA.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1, parentBlockHeader: header1, fetcher: f
+        )
+        let _ = await levelB.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1, parentBlockHeader: header1, fetcher: f
+        )
+        let childDirsA = await levelA.childDirectories()
+        let childDirsB = await levelB.childDirectories()
+        XCTAssertEqual(childDirsA, childDirsB)
+        XCTAssertTrue(childDirsA.contains("Payments"))
+    }
+
+    func testChildChainBlocksPropagateViaNexusBlocks() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
+
+        let childBlock1 = try await BlockBuilder.buildBlock(
+            previous: childGenesis, timestamp: t + 1000,
+            difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let nexusBlock1 = try await BlockBuilder.buildBlock(
+            previous: nexusGenesis,
+            childBlocks: ["Payments": childBlock1],
+            timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+
+        let result = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
+        )
+        XCTAssertTrue(result.extendsMainChain)
+
+        let _ = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1, parentBlockHeader: header1, fetcher: f
+        )
+
+        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        XCTAssertEqual(nexusHeight, 1)
+
+        let childHeight = await childChain.getHighestBlockIndex()
+        XCTAssertEqual(childHeight, 1)
+    }
+
+    func testBufferedStorerFlushesAllData() async throws {
+        let f = fetcher()
+        let t = now() - 10_000
+        let spec = testSpec()
+        let genesis = try await BlockBuilder.buildGenesis(
+            spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let header = HeaderImpl<Block>(node: genesis)
+        let storer = BufferedStorer()
+        try header.storeRecursively(storer: storer)
+        XCTAssertGreaterThan(storer.entries.count, 1)
+
+        let freshFetcher = fetcher()
+        await storer.flush(to: freshFetcher)
+
+        let fetched = try await freshFetcher.fetch(rawCid: header.rawCID)
+        XCTAssertEqual(fetched, genesis.toData()!)
+
+        let specData = try await freshFetcher.fetch(rawCid: genesis.spec.rawCID)
+        XCTAssertNotNil(ChainSpec(data: specData))
+    }
+}
+
+// ============================================================================
 // MARK: - Block Storage via Acorn CAS
 // ============================================================================
 
