@@ -71,9 +71,10 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             )
         }
 
-        if let blockData = genesis.block.toData() {
-            await nexusNetwork.storeBlock(cid: genesis.blockHash, data: blockData)
-        }
+        let genesisHeader = HeaderImpl<Block>(node: genesis.block)
+        let storer = BufferedStorer()
+        try? genesisHeader.storeRecursively(storer: storer)
+        await storer.flush(to: nexusNetwork.fetcher)
 
         self.genesisResult = genesis
         let nexusLevel = ChainLevel(chain: genesis.chainState, children: [:])

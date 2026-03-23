@@ -76,12 +76,20 @@ public actor MinerLoop {
                     nexusBlock: previousBlock
                 )
 
+                let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
+                let blockDifficulty = previousBlock.nextDifficulty
+                let computedNextDifficulty = spec.calculateMinimumDifficulty(
+                    previousDifficulty: blockDifficulty,
+                    blockTimestamp: blockTimestamp,
+                    previousTimestamp: previousBlock.timestamp
+                )
                 let template = try await BlockBuilder.buildBlock(
                     previous: previousBlock,
                     transactions: transactions,
                     childBlocks: childResult.blocks,
-                    timestamp: Int64(Date().timeIntervalSince1970 * 1000),
-                    difficulty: previousBlock.nextDifficulty,
+                    timestamp: blockTimestamp,
+                    difficulty: blockDifficulty,
+                    nextDifficulty: computedNextDifficulty,
                     nonce: 0,
                     fetcher: fetcher
                 )
@@ -110,7 +118,9 @@ public actor MinerLoop {
                             await removal.mempool.removeAll(txCIDs: removal.txCIDs)
                         }
 
-                        await delegate?.minerDidProduceBlock(mined, hash: HeaderImpl<Block>(node: mined).rawCID)
+                        let delegate = self.delegate
+                        let hash = HeaderImpl<Block>(node: mined).rawCID
+                        Task.detached { await delegate?.minerDidProduceBlock(mined, hash: hash) }
                         break
                     }
 
