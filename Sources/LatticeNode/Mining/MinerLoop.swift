@@ -127,6 +127,7 @@ public actor MinerLoop {
                     await Task.yield()
                 }
             } catch {
+                print("  [miner] error: \(error)")
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
@@ -222,15 +223,10 @@ public actor MinerLoop {
     private func lookupBalance(address: String, frontier: LatticeStateHeader) async throws -> UInt64 {
         let resolved = try await frontier.resolve(fetcher: fetcher)
         guard let state = resolved.node else { return 0 }
-        let accountState = state.accountState
-        guard let accountDict = accountState.node else {
-            let resolvedAccount = try await accountState.resolve(fetcher: fetcher)
-            guard let dict = resolvedAccount.node else { return 0 }
-            guard let balanceStr = try? dict.get(key: address) else { return 0 }
-            return UInt64(balanceStr) ?? 0
-        }
-        guard let balanceStr = try? accountDict.get(key: address) else { return 0 }
-        return UInt64(balanceStr) ?? 0
+        let resolvedAccounts = try await state.accountState.resolveRecursive(fetcher: fetcher)
+        guard let accountDict = resolvedAccounts.node else { return 0 }
+        guard let balance = try? accountDict.get(key: address) else { return 0 }
+        return UInt64(balance) ?? 0
     }
 
     // MARK: - Child Block Building (Merged Mining)
