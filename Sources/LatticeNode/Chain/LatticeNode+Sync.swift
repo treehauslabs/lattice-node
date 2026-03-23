@@ -181,15 +181,51 @@ extension LatticeNode {
         await persistChainState(directory: nexusDir)
 
         if let store = stateStores[nexusDir] {
-            log.info("Rebuilding StateStore from \(result.persisted.blocks.count) synced blocks...")
-            for block in result.persisted.blocks {
-                if let data = try? await fetcher.fetch(rawCid: block.blockHash),
-                   let blk = Block(data: data) {
-                    let changeset = await extractStateChangeset(block: blk, blockHash: block.blockHash, fetcher: fetcher)
-                    if let changeset { await store.applyBlock(changeset) }
+            log.info("Rebuilding StateStore from tip state via CAS...")
+            do {
+                let tipData = try await fetcher.fetch(rawCid: result.tipBlockHash)
+                guard let tipBlock = Block(data: tipData) else { throw SyncError.invalidBlock(result.tipBlockIndex) }
+
+                let frontier = try await tipBlock.frontier.resolve(fetcher: fetcher)
+                guard let state = frontier.node else { throw SyncError.invalidBlock(result.tipBlockIndex) }
+
+                let accounts = try await state.accountState.resolveRecursive(fetcher: fetcher)
+                if let accountDict = accounts.node, let entries = try? accountDict.allKeysAndValues() {
+                    for (address, balance) in entries {
+                        await store.setAccount(
+                            address: address,
+                            balance: UInt64(balance) ?? 0,
+                            nonce: 0,
+                            atHeight: result.tipBlockIndex
+                        )
+                    }
+                    log.info("StateStore rebuilt: \(entries.count) accounts from frontier state root")
+                }
+
+                for blockMeta in result.persisted.blocks {
+                    await store.setBlock(
+                        height: blockMeta.blockIndex,
+                        hash: blockMeta.blockHash,
+                        timestamp: 0,
+                        difficulty: ""
+                    )
+                }
+
+                await store.setChainTip(
+                    hash: result.tipBlockHash,
+                    height: result.tipBlockIndex,
+                    stateRoot: tipBlock.frontier.rawCID
+                )
+            } catch {
+                log.error("CAS state rebuild failed: \(error), falling back to block replay")
+                for block in result.persisted.blocks {
+                    if let data = try? await fetcher.fetch(rawCid: block.blockHash),
+                       let blk = Block(data: data) {
+                        let changeset = await extractStateChangeset(block: blk, blockHash: block.blockHash, fetcher: fetcher)
+                        if let changeset { await store.applyBlock(changeset) }
+                    }
                 }
             }
-            log.info("StateStore rebuilt")
         }
 
         await reprocessSyncedBlocksForChildChains(persisted: result.persisted, fetcher: fetcher)

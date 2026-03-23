@@ -154,9 +154,27 @@ Current state is indexed by path in SQLite for O(1) lookups:
 | `meta:height` | UInt64 | Current block height |
 | `meta:state-root` | CID | Current frontier CID |
 
-### 4.3 Reverse Diffs
+### 4.3 CAS State Diffing
 
-For reorg recovery, each block's state changes are stored as reverse diffs:
+State changes are derived by structurally diffing the CAS merkle trees rather than replaying transactions. Each block's `homestead` (pre-execution state root) and `frontier` (post-execution state root) are diffed using cashew's `CashewDiff`:
+
+```
+diff = frontier.accountState.diff(from: homestead.accountState, fetcher: fetcher)
+diff.inserted  → new accounts (address → balance)
+diff.deleted   → removed accounts
+diff.modified  → changed accounts (old balance → new balance)
+```
+
+This is used for:
+- **Block acceptance**: Extract account changes to update PBSS StateStore
+- **Reorg recovery**: Invert diffs (swap old/new) to roll back orphaned blocks' state changes
+- **Sync state rebuild**: Resolve tip frontier directly instead of replaying blocks
+
+Advantages over transaction replay: correct by construction (captures all state changes including implicit ones from child chains), O(changed accounts) instead of O(transactions × actions), and independent of transaction execution logic.
+
+### 4.4 Reverse Diffs
+
+For reorg recovery, each block's state changes are stored as reverse diffs in SQLite:
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -164,7 +182,7 @@ For reorg recovery, each block's state changes are stored as reverse diffs:
 | path | String | State path modified |
 | old_value | Data? | Previous value (nil if new) |
 
-On reorg: apply reverse diffs from current height down to common ancestor, then re-apply new chain blocks.
+On reorg: CAS diffs reverse the orphaned blocks' state changes, then SQLite reverse diffs provide a secondary recovery path.
 
 ### 4.4 State Expiry
 
@@ -248,7 +266,15 @@ After sync, query multiple peers to confirm the synced chain tip is recognized b
 
 ### 6.4 State Rebuild
 
-After sync, the PBSS StateStore is rebuilt by replaying all synced blocks' state changesets.
+After sync, the PBSS StateStore is rebuilt directly from the tip block's frontier state root via CAS resolution:
+
+1. Resolve tip block's `frontier` → `LatticeState`
+2. Resolve `accountState` MerkleDictionary recursively
+3. Enumerate all key-value pairs (address → balance)
+4. Bulk-write to StateStore's `account:` paths
+5. Populate block index from persisted block metadata
+
+This is O(accounts) — resolving the final state once — rather than O(blocks × changes) from replaying every block's changeset. Falls back to block-by-block replay if CAS resolution fails.
 
 ---
 
