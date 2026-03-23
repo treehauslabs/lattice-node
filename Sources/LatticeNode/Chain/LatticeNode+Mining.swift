@@ -23,7 +23,8 @@ extension LatticeNode {
             spec: genesisConfig.spec,
             identity: identity,
             childContexts: childContexts,
-            batchSize: config.resources.miningBatchSize
+            batchSize: config.resources.miningBatchSize,
+            nodeMempool: network.nodeMempool
         )
         await miner.setDelegate(self)
         miners[directory] = miner
@@ -48,6 +49,7 @@ extension LatticeNode {
 
         await storeBlockRecursively(block, fetcher: network.fetcher)
         await network.publishBlock(cid: header.rawCID, data: blockData)
+        await network.cacheCompactBlock(cid: header.rawCID, block: block)
         await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
         let accepted = await processBlockAndRecoverReorg(
             header: header,
@@ -57,6 +59,7 @@ extension LatticeNode {
         )
         if accepted, let removals = pendingRemovals {
             await network.mempool.removeAll(txCIDs: removals.nexusTxCIDs)
+            await network.nodeMempool.removeAll(txCIDs: removals.nexusTxCIDs)
             for childRemoval in removals.childTxRemovals {
                 await childRemoval.mempool.removeAll(txCIDs: childRemoval.txCIDs)
             }

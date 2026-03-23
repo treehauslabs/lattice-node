@@ -69,9 +69,15 @@ enum RPCRoutes {
         api.get("fee/histogram") { _, _ in try await feeHistogram(node: node) }
         api.get("nonce/{address}") { _, ctx in try await getNonce(node: node, address: ctx.parameters.require("address")) }
 
+        api.get("receipt/{txCID}") { _, ctx in try await getReceipt(node: node, txCID: ctx.parameters.require("txCID")) }
+        api.post("orders/commit") { req, _ in try await commitOrder(node: node, request: req) }
+        api.post("orders/reveal") { req, _ in try await revealOrder(node: node, request: req) }
+
         let light = api.group("light")
         light.get("headers") { req, _ in try await lightHeaders(node: node, request: req) }
         light.get("proof/{address}") { _, ctx in try await lightProof(node: node, address: ctx.parameters.require("address")) }
+
+        router.get("metrics") { _, _ in try await metricsEndpoint(node: node) }
 
         router.get("ws") { _, _ in wsPlaceholder() }
 
@@ -300,6 +306,73 @@ enum RPCRoutes {
             timestamp: latest.timestamp
         )
         return json(proof)
+    }
+
+    // MARK: - Transaction Receipts
+
+    static func getReceipt(node: LatticeNode, txCID: String) async throws -> Response {
+        let dir = node.genesisConfig.spec.directory
+        guard let store = await node.stateStore(for: dir) else {
+            return jsonError("State store not available", status: .internalServerError)
+        }
+        let receiptStore = TransactionReceiptStore(store: store)
+        guard let receipt = await receiptStore.getReceipt(txCID: txCID) else {
+            return jsonError("Receipt not found", status: .notFound)
+        }
+        return json(receipt)
+    }
+
+    // MARK: - Batch Auction (MEV Protection)
+
+    static func commitOrder(node: LatticeNode, request: Request) async throws -> Response {
+        struct Sub: Decodable { let commitHash: String; let sender: String }
+        guard let sub = try? await JSONDecoder().decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
+            return jsonError("Expected: {commitHash, sender}")
+        }
+        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let committed = BatchAuction.CommittedOrder(commitHash: sub.commitHash, sender: sub.sender, commitHeight: height)
+        let dir = node.genesisConfig.spec.directory
+        if let store = await node.stateStore(for: dir),
+           let data = try? JSONEncoder().encode(committed) {
+            await store.setGeneral(key: "commit:\(sub.commitHash)", value: data, atHeight: height)
+        }
+        struct R: Encodable { let accepted: Bool; let commitHash: String; let revealAfterHeight: UInt64 }
+        return json(R(accepted: true, commitHash: sub.commitHash, revealAfterHeight: height + BatchAuction.auctionDuration))
+    }
+
+    static func revealOrder(node: LatticeNode, request: Request) async throws -> Response {
+        struct Sub: Decodable { let commitHash: String; let side: String; let price: UInt64; let amount: UInt64; let owner: String; let salt: String }
+        guard let sub = try? await JSONDecoder().decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
+            return jsonError("Invalid reveal format")
+        }
+        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let dir = node.genesisConfig.spec.directory
+        guard let store = await node.stateStore(for: dir),
+              let commitData = await store.getGeneral(key: "commit:\(sub.commitHash)"),
+              let committed = try? JSONDecoder().decode(BatchAuction.CommittedOrder.self, from: commitData) else {
+            return jsonError("Commit not found")
+        }
+        guard BatchAuction.canReveal(commitHeight: committed.commitHeight, currentHeight: height) else {
+            return jsonError("Cannot reveal yet. Wait until height \(committed.commitHeight + BatchAuction.auctionDuration)")
+        }
+        struct R: Encodable { let revealed: Bool; let commitHash: String }
+        return json(R(revealed: true, commitHash: sub.commitHash))
+    }
+
+    // MARK: - Prometheus Metrics
+
+    static func metricsEndpoint(node: LatticeNode) async throws -> Response {
+        let statuses = await node.chainStatus()
+        let metrics = node.metrics
+        for s in statuses {
+            await metrics.set("lattice_chain_height{chain=\"\(s.directory)\"}", value: Double(s.height))
+            await metrics.set("lattice_mempool_size{chain=\"\(s.directory)\"}", value: Double(s.mempoolCount))
+            await metrics.set("lattice_mining_active{chain=\"\(s.directory)\"}", value: s.mining ? 1 : 0)
+        }
+        let text = await metrics.prometheus()
+        var headers = HTTPFields()
+        headers.append(HTTPField(name: .contentType, value: "text/plain; version=0.0.4; charset=utf-8"))
+        return Response(status: .ok, headers: headers, body: .init(byteBuffer: .init(string: text)))
     }
 
     // MARK: - WebSocket (placeholder)

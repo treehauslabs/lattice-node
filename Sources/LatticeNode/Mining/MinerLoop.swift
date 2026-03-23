@@ -11,6 +11,7 @@ public actor MinerLoop {
     private let identity: MinerIdentity?
     private let childContexts: [ChildMiningContext]
     private let batchSize: UInt64
+    private let nodeMempool: NodeMempool?
     private var mining: Bool
     private var currentTask: Task<Void, Never>?
     private var nonceOffset: UInt64 = 0
@@ -23,7 +24,8 @@ public actor MinerLoop {
         spec: ChainSpec,
         identity: MinerIdentity? = nil,
         childContexts: [ChildMiningContext] = [],
-        batchSize: UInt64 = 10_000
+        batchSize: UInt64 = 10_000,
+        nodeMempool: NodeMempool? = nil
     ) {
         self.chainState = chainState
         self.mempool = mempool
@@ -32,6 +34,7 @@ public actor MinerLoop {
         self.identity = identity
         self.childContexts = childContexts
         self.batchSize = batchSize
+        self.nodeMempool = nodeMempool
         self.mining = false
     }
 
@@ -62,9 +65,13 @@ public actor MinerLoop {
 
                 let previousBlockHash = HeaderImpl<Block>(node: previousBlock).rawCID
 
-                var transactions = await mempool.selectTransactions(
-                    maxCount: max(0, Int(spec.maxNumberOfTransactionsPerBlock) - 1)
-                )
+                let maxTxCount = max(0, Int(spec.maxNumberOfTransactionsPerBlock) - 1)
+                var transactions: [Transaction]
+                if let nodeMempool {
+                    transactions = await nodeMempool.selectTransactions(maxCount: maxTxCount)
+                } else {
+                    transactions = await mempool.selectTransactions(maxCount: maxTxCount)
+                }
 
                 if let coinbase = try? await buildCoinbaseTransaction(
                     previousBlock: previousBlock,

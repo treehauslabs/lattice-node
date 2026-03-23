@@ -65,12 +65,26 @@ extension LatticeNode {
             )
             await persistChainState(directory: nexusDir)
 
+            if let store = stateStores[nexusDir] {
+                let log = NodeLogger("sync")
+                log.info("Rebuilding StateStore from \(result.persisted.blocks.count) synced blocks...")
+                for block in result.persisted.blocks {
+                    if let data = try? await fetcher.fetch(rawCid: block.blockHash),
+                       let blk = Block(data: data) {
+                        let changeset = await extractStateChangeset(block: blk, blockHash: block.blockHash, fetcher: fetcher)
+                        if let changeset { await store.applyBlock(changeset) }
+                    }
+                }
+                log.info("StateStore rebuilt")
+            }
+
             await reprocessSyncedBlocksForChildChains(
                 persisted: result.persisted,
                 fetcher: fetcher
             )
         } catch {
-            print("  [sync] Failed: \(error) — will retry on next peer block")
+            let log = NodeLogger("sync")
+            log.error("Sync failed: \(error) — will retry on next peer block")
         }
 
         syncTask = nil

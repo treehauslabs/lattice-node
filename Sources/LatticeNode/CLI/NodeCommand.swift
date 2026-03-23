@@ -3,6 +3,7 @@ import Foundation
 import Lattice
 import Ivy
 import ArrayTrie
+import cashew
 
 let LatticeNodeVersion = "0.1.0"
 let ProtocolVersion: UInt16 = 1
@@ -154,6 +155,13 @@ struct NodeCommand: AsyncParsableCommand {
             print("  Bootstrap:   \(allPeers.count) peer(s) (\(savedCount) persisted)")
         }
 
+        var parsedProxy: ProxyConfig? = nil
+        if tor {
+            parsedProxy = ProxyConfig.defaultTor
+        } else if let proxyStr = proxy {
+            parsedProxy = ProxyConfig.parse(proxyStr)
+        }
+
         let currentSubscriptions = await state.subscriptions
         let nodeConfig = LatticeNodeConfig(
             publicKey: identity.publicKey,
@@ -164,7 +172,8 @@ struct NodeCommand: AsyncParsableCommand {
             enableLocalDiscovery: !noDiscovery,
             persistInterval: 100,
             subscribedChains: currentSubscriptions,
-            resources: resources
+            resources: resources,
+            proxyConfig: parsedProxy
         )
 
         let node = try await LatticeNode(config: nodeConfig, genesisConfig: NexusGenesis.config)
@@ -181,6 +190,30 @@ struct NodeCommand: AsyncParsableCommand {
         try? await node.restoreChildChains()
         try await node.start()
 
+        let mempoolLoader = MempoolPersistence(dataDir: dataDirURL)
+        let savedTxs = mempoolLoader.load()
+        if !savedTxs.isEmpty {
+            let nexusDir = NexusGenesis.config.spec.directory
+            if let network = await node.network(for: nexusDir) {
+                var restored = 0
+                for serialized in savedTxs {
+                    let bodyBytes = stride(from: 0, to: serialized.bodyData.count, by: 2).compactMap { i -> UInt8? in
+                        let start = serialized.bodyData.index(serialized.bodyData.startIndex, offsetBy: i)
+                        let end = serialized.bodyData.index(start, offsetBy: min(2, serialized.bodyData.distance(from: start, to: serialized.bodyData.endIndex)))
+                        return UInt8(serialized.bodyData[start..<end], radix: 16)
+                    }
+                    let bodyData = Data(bodyBytes)
+                    guard let body = TransactionBody(data: bodyData) else { continue }
+                    let bodyHeader = HeaderImpl<TransactionBody>(node: body)
+                    await network.fetcher.store(rawCid: serialized.bodyCID, data: bodyData)
+                    let tx = Transaction(signatures: serialized.signatures, body: bodyHeader)
+                    if await network.submitTransaction(tx) { restored += 1 }
+                }
+                if restored > 0 { print("  Mempool:     \(restored)/\(savedTxs.count) transaction(s) restored") }
+            }
+            mempoolLoader.delete()
+        }
+
         let genesisHeight = await node.lattice.nexus.chain.getHighestBlockIndex()
         print("  Chain height: \(genesisHeight)")
         print()
@@ -188,10 +221,8 @@ struct NodeCommand: AsyncParsableCommand {
         let health = HealthCheck(dataDir: dataDirURL)
         await health.start()
 
-        if tor {
-            print("  Tor:         enabled (SOCKS5 on 127.0.0.1:9050)")
-        } else if let proxyStr = proxy, let proxyConfig = ProxyConfig.parse(proxyStr) {
-            print("  Proxy:       \(proxyConfig.type.rawValue)://\(proxyConfig.host):\(proxyConfig.port)")
+        if let pc = parsedProxy {
+            print("  Proxy:       \(pc.type.rawValue)://\(pc.host):\(pc.port) (pending Ivy proxy support)")
         }
 
         var rpcTask: Task<Void, any Error>? = nil
@@ -216,6 +247,7 @@ struct NodeCommand: AsyncParsableCommand {
         startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: port)
         startMempoolExpiryLoop(node: node)
         startStatePruningLoop(node: node, retentionDepth: nodeConfig.retentionDepth)
+        startStateExpiryLoop(node: node)
 
         let peerRefreshTask = Task { await node.startPeerRefresh() }
 

@@ -97,6 +97,9 @@ extension LatticeNode {
                 timestamp: block.timestamp
             ))
 
+            await metrics.increment("lattice_blocks_accepted_total")
+            await metrics.set("lattice_chain_height", value: Double(block.index))
+
             if let store = stateStores[directory] {
                 let changeset = await extractStateChangeset(
                     block: block,
@@ -105,6 +108,14 @@ extension LatticeNode {
                 )
                 if let changeset {
                     await store.applyBlock(changeset)
+                }
+
+                let receipts = await buildReceipts(block: block, blockHash: header.rawCID, fetcher: fetcher)
+                if !receipts.isEmpty {
+                    let receiptStore = TransactionReceiptStore(store: store)
+                    for receipt in receipts {
+                        await receiptStore.saveReceipt(receipt)
+                    }
                 }
             }
         }
@@ -364,6 +375,25 @@ extension LatticeNode {
             difficulty: block.difficulty.toHexString(),
             stateRoot: block.frontier.rawCID
         )
+    }
+
+    func buildReceipts(block: Block, blockHash: String, fetcher: Fetcher) async -> [TransactionReceipt] {
+        guard let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node else { return [] }
+        guard let txEntries = try? txDict.allKeysAndValues() else { return [] }
+        var receipts: [TransactionReceipt] = []
+        for (cid, txHeader) in txEntries {
+            guard let tx = txHeader.node, let body = tx.body.node else { continue }
+            let actions = body.accountActions.map { action in
+                TransactionReceipt.ReceiptAction(owner: action.owner, oldBalance: action.oldBalance, newBalance: action.newBalance)
+            }
+            receipts.append(TransactionReceipt(
+                txCID: cid, blockHash: blockHash, blockHeight: block.index,
+                timestamp: block.timestamp, fee: body.fee,
+                sender: body.signers.first ?? "", status: "confirmed",
+                accountActions: actions
+            ))
+        }
+        return receipts
     }
 
     func emitReorgEvent(directory: String, oldTip: String, newTip: String, depth: UInt64) async {

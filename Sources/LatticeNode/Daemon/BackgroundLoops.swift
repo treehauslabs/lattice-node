@@ -37,6 +37,25 @@ func startMempoolExpiryLoop(node: LatticeNode) {
     }
 }
 
+func startStateExpiryLoop(node: LatticeNode, expiryBlocks: UInt64 = 1_000_000) {
+    Task {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(3600))
+            for directory in await node.allDirectories() {
+                guard let store = await node.stateStore(for: directory) else { continue }
+                let expiry = StateExpiry(store: store, expiryBlocks: expiryBlocks)
+                let height = await store.getHeight() ?? 0
+                let expired = await expiry.findExpiredAccounts(currentHeight: height)
+                if !expired.isEmpty {
+                    await expiry.expireAccounts(expired, atHeight: height)
+                    let log = NodeLogger("expiry")
+                    log.info("Expired \(expired.count) inactive accounts in \(directory)")
+                }
+            }
+        }
+    }
+}
+
 func startStatePruningLoop(node: LatticeNode, retentionDepth: UInt64) {
     Task {
         while !Task.isCancelled {

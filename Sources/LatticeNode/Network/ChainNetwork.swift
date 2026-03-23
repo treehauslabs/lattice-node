@@ -176,6 +176,23 @@ public actor ChainNetwork: IvyDelegate {
         await nodeMempool.allTransactions()
     }
 
+    // MARK: - Compact Block Cache
+
+    private var compactBlockCache: [String: CompactBlock] = [:]
+
+    public func cacheCompactBlock(cid: String, block: Block) {
+        let sipKey = UInt64(cid.hashValue & 0x7FFFFFFFFFFFFFFF)
+        let compact = CompactBlock.from(blockCID: cid, block: block, sipKey: sipKey)
+        compactBlockCache[cid] = compact
+        if compactBlockCache.count > 32 {
+            compactBlockCache.removeValue(forKey: compactBlockCache.keys.first!)
+        }
+    }
+
+    public func getCompactBlock(cid: String) -> CompactBlock? {
+        compactBlockCache[cid]
+    }
+
     // MARK: - IvyDelegate
 
     nonisolated public func ivy(_ ivy: Ivy, didConnect peer: PeerID) {}
