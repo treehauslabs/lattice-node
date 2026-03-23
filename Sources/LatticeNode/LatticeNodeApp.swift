@@ -104,6 +104,8 @@ struct LatticeNodeApp {
         startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: args.port)
         startMempoolExpiryLoop(node: node)
 
+        let peerRefreshTask = Task { await node.startPeerRefresh() }
+
         let healthTask = Task {
             while !Task.isCancelled {
                 let height = await node.lattice.nexus.chain.getHighestBlockIndex()
@@ -143,6 +145,7 @@ struct LatticeNodeApp {
 
         print("\n  Shutting down...")
         healthTask.cancel()
+        peerRefreshTask.cancel()
         rpcTask?.cancel()
         await health.stop()
         let peers = await node.connectedPeerEndpoints()

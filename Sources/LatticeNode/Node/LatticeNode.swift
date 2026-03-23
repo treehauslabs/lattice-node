@@ -21,6 +21,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var recentPeerBlocks: [String: ContinuousClock.Instant]
     var recentPeerBlockOrder: [String]
     var syncTask: Task<Void, Never>?
+    var peerRefreshTask: Task<Void, Never>?
     var cachedOrders: (tip: String, orders: [Order])?
 
     // MARK: - Initialization
@@ -99,6 +100,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     }
 
     public func stop() async {
+        peerRefreshTask?.cancel()
+        peerRefreshTask = nil
         syncTask?.cancel()
         syncTask = nil
         for (_, miner) in miners {
