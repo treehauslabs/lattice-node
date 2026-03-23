@@ -1328,6 +1328,248 @@ final class MultiChainDiscoveryTests: XCTestCase {
         XCTAssertEqual(dirs, ["Alpha", "Beta", "Gamma"])
     }
 
+    func testFullChildValidationPipeline() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
+
+        let genesisStorer = BufferedStorer()
+        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: genesisStorer)
+        await genesisStorer.flush(to: f)
+        let childGenesisStorer = BufferedStorer()
+        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: childGenesisStorer)
+        await childGenesisStorer.flush(to: f)
+
+        // Block 1: introduce child chain genesis
+        let nexusBlock1 = try await BlockBuilder.buildBlock(
+            previous: nexusGenesis,
+            childBlocks: ["Payments": childGenesis],
+            timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+        let storer1 = BufferedStorer()
+        try header1.storeRecursively(storer: storer1)
+        await storer1.flush(to: f)
+
+        let _ = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
+        )
+        let newDirs = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1, parentBlockHeader: header1, fetcher: f
+        )
+        XCTAssertEqual(newDirs, ["Payments"])
+
+        // Block 2: child chain block 1 with shared timestamp
+        let sharedTimestamp = t + 2000
+        let childBlock1 = try await BlockBuilder.buildBlock(
+            previous: childGenesis, parentChainBlock: nexusBlock1,
+            timestamp: sharedTimestamp, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let nexusBlock2 = try await BlockBuilder.buildBlock(
+            previous: nexusBlock1,
+            childBlocks: ["Payments": childBlock1],
+            timestamp: sharedTimestamp, difficulty: UInt256(1000), nonce: 2, fetcher: f
+        )
+        let header2 = HeaderImpl<Block>(node: nexusBlock2)
+        let storer2 = BufferedStorer()
+        try header2.storeRecursively(storer: storer2)
+        await storer2.flush(to: f)
+
+        let _ = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header2, block: nexusBlock2
+        )
+        let _ = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock2, parentBlockHeader: header2, fetcher: f
+        )
+
+        // Verify both chains advanced
+        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        XCTAssertEqual(nexusHeight, 2)
+
+        let childLevel = await nexusLevel.children["Payments"]
+        XCTAssertNotNil(childLevel)
+        let childHeight = await childLevel!.chain.getHighestBlockIndex()
+        XCTAssertEqual(childHeight, 1, "Child chain should advance to height 1 after validated child block")
+    }
+
+    func testChildBlockWithMismatchedTimestampRejected() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
+
+        let genesisStorer = BufferedStorer()
+        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: genesisStorer)
+        await genesisStorer.flush(to: f)
+        let childGenesisStorer = BufferedStorer()
+        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: childGenesisStorer)
+        await childGenesisStorer.flush(to: f)
+
+        // Build child block with DIFFERENT timestamp than nexus block
+        let childBlock1 = try await BlockBuilder.buildBlock(
+            previous: childGenesis, parentChainBlock: nexusGenesis,
+            timestamp: t + 999, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let nexusBlock1 = try await BlockBuilder.buildBlock(
+            previous: nexusGenesis,
+            childBlocks: ["Payments": childBlock1],
+            timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+        let storer1 = BufferedStorer()
+        try header1.storeRecursively(storer: storer1)
+        await storer1.flush(to: f)
+
+        let _ = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
+        )
+        let _ = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1, parentBlockHeader: header1, fetcher: f
+        )
+
+        // Child block should NOT advance due to timestamp mismatch
+        let childHeight = await childChain.getHighestBlockIndex()
+        XCTAssertEqual(childHeight, 0, "Child block with mismatched timestamp should be rejected")
+    }
+
+    func testChildBlockWithCorrectTimestampAccepted() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
+
+        let genesisStorer = BufferedStorer()
+        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: genesisStorer)
+        await genesisStorer.flush(to: f)
+        let childGenesisStorer = BufferedStorer()
+        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: childGenesisStorer)
+        await childGenesisStorer.flush(to: f)
+
+        // Build child block with SAME timestamp as nexus block
+        let sharedTimestamp = t + 1000
+        let childBlock1 = try await BlockBuilder.buildBlock(
+            previous: childGenesis, parentChainBlock: nexusGenesis,
+            timestamp: sharedTimestamp, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let nexusBlock1 = try await BlockBuilder.buildBlock(
+            previous: nexusGenesis,
+            childBlocks: ["Payments": childBlock1],
+            timestamp: sharedTimestamp, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+        let storer1 = BufferedStorer()
+        try header1.storeRecursively(storer: storer1)
+        await storer1.flush(to: f)
+
+        let _ = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
+        )
+        let _ = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: nexusBlock1, parentBlockHeader: header1, fetcher: f
+        )
+
+        // Child block SHOULD advance
+        let childHeight = await childChain.getHighestBlockIndex()
+        XCTAssertEqual(childHeight, 1, "Child block with matching timestamp should be accepted")
+    }
+
+    func testMultiBlockChildChainProgression() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
+
+        for storer in [BufferedStorer(), BufferedStorer()] {
+            // Slightly wasteful but ensures both are stored
+        }
+        let gs1 = BufferedStorer()
+        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
+        await gs1.flush(to: f)
+        let gs2 = BufferedStorer()
+        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
+        await gs2.flush(to: f)
+
+        var prevNexus = nexusGenesis
+        var prevChild = childGenesis
+        for i in 1...5 {
+            let ts = t + Int64(i) * 1000
+            let childBlock = try await BlockBuilder.buildBlock(
+                previous: prevChild, parentChainBlock: prevNexus,
+                timestamp: ts, difficulty: UInt256(1000), nonce: UInt64(i), fetcher: f
+            )
+            let nexusBlock = try await BlockBuilder.buildBlock(
+                previous: prevNexus,
+                childBlocks: ["Payments": childBlock],
+                timestamp: ts, difficulty: UInt256(1000), nonce: UInt64(i), fetcher: f
+            )
+            let header = HeaderImpl<Block>(node: nexusBlock)
+            let storer = BufferedStorer()
+            try header.storeRecursively(storer: storer)
+            await storer.flush(to: f)
+
+            let _ = await nexusChain.submitBlock(
+                parentBlockHeaderAndIndex: nil, blockHeader: header, block: nexusBlock
+            )
+            let _ = await nexusLevel.extractAndProcessChildBlocks(
+                parentBlock: nexusBlock, parentBlockHeader: header, fetcher: f
+            )
+            prevNexus = nexusBlock
+            prevChild = childBlock
+        }
+
+        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        XCTAssertEqual(nexusHeight, 5)
+        let childHeight = await childChain.getHighestBlockIndex()
+        XCTAssertEqual(childHeight, 5, "Child chain should advance in lockstep with nexus")
+    }
+
     func testDuplicateChildChainDiscoveryIsIdempotent() async throws {
         let f = fetcher()
         let t = now() - 10_000
