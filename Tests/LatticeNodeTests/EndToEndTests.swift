@@ -1570,6 +1570,241 @@ final class MultiChainDiscoveryTests: XCTestCase {
         XCTAssertEqual(childHeight, 5, "Child chain should advance in lockstep with nexus")
     }
 
+}
+
+// ============================================================================
+// MARK: - Full Integration: MinerLoop → Lattice → Child Chain Validation
+// ============================================================================
+
+private actor BlockCollector: MinerDelegate {
+    var blocks: [(Block, String)] = []
+
+    func minerDidProduceBlock(_ block: Block, hash: String) async {
+        blocks.append((block, hash))
+    }
+}
+
+final class FullMiningIntegrationTests: XCTestCase {
+
+    func testMinerProducesBlockAndChainAdvances() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let spec = testSpec("Nexus")
+        let kp = CryptoUtils.generateKeyPair()
+        let identity = MinerIdentity(publicKeyHex: kp.publicKey, privateKeyHex: kp.privateKey)
+
+        let genesis = try await BlockBuilder.buildGenesis(
+            spec: spec, timestamp: t, difficulty: UInt256.max, fetcher: f
+        )
+        let chain = ChainState.fromGenesis(block: genesis)
+        let nexusLevel = ChainLevel(chain: chain, children: [:])
+        let lattice = Lattice(nexus: nexusLevel)
+        let mempool = Mempool(maxSize: 100)
+
+        let genesisStorer = BufferedStorer()
+        try HeaderImpl<Block>(node: genesis).storeRecursively(storer: genesisStorer)
+        await genesisStorer.flush(to: f)
+
+        let miner = MinerLoop(
+            chainState: chain, mempool: mempool, fetcher: f,
+            spec: spec, identity: identity, batchSize: 10_000
+        )
+
+        let collector = BlockCollector()
+        await miner.setDelegate(collector)
+        await miner.start()
+
+        try await Task.sleep(for: .seconds(3))
+        await miner.stop()
+
+        let minedBlocks = await collector.blocks
+        XCTAssertGreaterThan(minedBlocks.count, 0, "Miner should produce at least one block")
+
+        for (block, _) in minedBlocks {
+            let header = HeaderImpl<Block>(node: block)
+            let storer = BufferedStorer()
+            try header.storeRecursively(storer: storer)
+            await storer.flush(to: f)
+
+            let _ = await chain.submitBlock(
+                parentBlockHeaderAndIndex: nil, blockHeader: header, block: block
+            )
+        }
+
+        let height = await chain.getHighestBlockIndex()
+        XCTAssertGreaterThan(height, 0, "Chain should advance after submitting mined blocks")
+    }
+
+    func testMergedMiningProducesChildBlocks() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+        let kp = CryptoUtils.generateKeyPair()
+        let identity = MinerIdentity(publicKeyHex: kp.publicKey, privateKeyHex: kp.privateKey)
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256.max, fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256.max, fetcher: f
+        )
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
+
+        let gs1 = BufferedStorer()
+        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
+        await gs1.flush(to: f)
+        let gs2 = BufferedStorer()
+        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
+        await gs2.flush(to: f)
+
+        let childMempool = Mempool(maxSize: 100)
+        let childCtx = ChildMiningContext(
+            directory: "Payments", chainState: childChain,
+            mempool: childMempool, fetcher: f, spec: childSpec
+        )
+
+        let nexusMempool = Mempool(maxSize: 100)
+        let miner = MinerLoop(
+            chainState: nexusChain, mempool: nexusMempool, fetcher: f,
+            spec: nexusSpec, identity: identity, childContexts: [childCtx],
+            batchSize: 10_000
+        )
+
+        let collector = BlockCollector()
+        await miner.setDelegate(collector)
+        await miner.start()
+
+        try await Task.sleep(for: .seconds(3))
+        await miner.stop()
+
+        let minedBlocks = await collector.blocks
+        XCTAssertGreaterThan(minedBlocks.count, 0, "Miner should produce blocks")
+
+        let firstBlock = minedBlocks[0].0
+        let childBlocksDict = try? await firstBlock.childBlocks.resolve(fetcher: f).node
+        let childKeys = try? childBlocksDict?.allKeys()
+        XCTAssertNotNil(childKeys, "Mined block should contain child blocks dict")
+        XCTAssertTrue(childKeys?.contains("Payments") ?? false, "Mined block should include Payments child block")
+
+        // Submit through full pipeline
+        let header = HeaderImpl<Block>(node: firstBlock)
+        let storer = BufferedStorer()
+        try header.storeRecursively(storer: storer)
+        await storer.flush(to: f)
+
+        let _ = await nexusChain.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header, block: firstBlock
+        )
+        let _ = await nexusLevel.extractAndProcessChildBlocks(
+            parentBlock: firstBlock, parentBlockHeader: header, fetcher: f
+        )
+
+        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        XCTAssertGreaterThan(nexusHeight, 0)
+
+        let childHeight = await childChain.getHighestBlockIndex()
+        XCTAssertGreaterThan(childHeight, 0, "Child chain should advance after processing mined block with child")
+    }
+
+    func testTwoMinerConvergenceWithChildChain() async throws {
+        let f = fetcher()
+        let t = now() - 5_000
+        let nexusSpec = testSpec("Nexus")
+        let childSpec = testSpec("Payments")
+        let kp = CryptoUtils.generateKeyPair()
+        let identity = MinerIdentity(publicKeyHex: kp.publicKey, privateKeyHex: kp.privateKey)
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(
+            spec: nexusSpec, timestamp: t, difficulty: UInt256.max, fetcher: f
+        )
+        let childGenesis = try await BlockBuilder.buildGenesis(
+            spec: childSpec, timestamp: t, difficulty: UInt256.max, fetcher: f
+        )
+
+        // Node A: mines
+        let chainA = ChainState.fromGenesis(block: nexusGenesis)
+        let childChainA = ChainState.fromGenesis(block: childGenesis)
+        let childLevelA = ChainLevel(chain: childChainA, children: [:])
+        let nexusLevelA = ChainLevel(chain: chainA, children: ["Payments": childLevelA])
+
+        // Node B: receives
+        let chainB = ChainState.fromGenesis(block: nexusGenesis)
+        let childChainB = ChainState.fromGenesis(block: childGenesis)
+        let childLevelB = ChainLevel(chain: childChainB, children: [:])
+        let nexusLevelB = ChainLevel(chain: chainB, children: ["Payments": childLevelB])
+
+        let gs1 = BufferedStorer()
+        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
+        await gs1.flush(to: f)
+        let gs2 = BufferedStorer()
+        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
+        await gs2.flush(to: f)
+
+        let childCtx = ChildMiningContext(
+            directory: "Payments", chainState: childChainA,
+            mempool: Mempool(maxSize: 100), fetcher: f, spec: childSpec
+        )
+        let miner = MinerLoop(
+            chainState: chainA, mempool: Mempool(maxSize: 100), fetcher: f,
+            spec: nexusSpec, identity: identity, childContexts: [childCtx],
+            batchSize: 10_000
+        )
+
+        let collector = BlockCollector()
+        await miner.setDelegate(collector)
+        await miner.start()
+        try await Task.sleep(for: .seconds(3))
+        await miner.stop()
+
+        let minedBlocks = await collector.blocks
+        XCTAssertGreaterThan(minedBlocks.count, 0)
+
+        // Submit miner A's first block to both nodes
+        let block = minedBlocks[0].0
+        let header = HeaderImpl<Block>(node: block)
+        let storer = BufferedStorer()
+        try header.storeRecursively(storer: storer)
+        await storer.flush(to: f)
+
+        // Node A processes
+        let _ = await chainA.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header, block: block
+        )
+        let _ = await nexusLevelA.extractAndProcessChildBlocks(
+            parentBlock: block, parentBlockHeader: header, fetcher: f
+        )
+
+        // Node B processes same block (simulates receiving from peer)
+        let _ = await chainB.submitBlock(
+            parentBlockHeaderAndIndex: nil, blockHeader: header, block: block
+        )
+        let _ = await nexusLevelB.extractAndProcessChildBlocks(
+            parentBlock: block, parentBlockHeader: header, fetcher: f
+        )
+
+        // Verify convergence
+        let tipA = await chainA.getMainChainTip()
+        let tipB = await chainB.getMainChainTip()
+        XCTAssertEqual(tipA, tipB, "Both nodes should agree on nexus tip")
+
+        let childHeightA = await childChainA.getHighestBlockIndex()
+        let childHeightB = await childChainB.getHighestBlockIndex()
+        XCTAssertEqual(childHeightA, childHeightB, "Both nodes should agree on child chain height")
+        XCTAssertGreaterThan(childHeightA, 0, "Child chain should advance on both nodes")
+    }
+}
+
+// ============================================================================
+// MARK: - Remaining Discovery Tests
+// ============================================================================
+
+final class MultiChainDiscoveryRemainingTests: XCTestCase {
+
     func testDuplicateChildChainDiscoveryIsIdempotent() async throws {
         let f = fetcher()
         let t = now() - 10_000
