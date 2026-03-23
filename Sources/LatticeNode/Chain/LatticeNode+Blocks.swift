@@ -144,7 +144,7 @@ extension LatticeNode {
         fetcher: Fetcher,
         mempool: Mempool
     ) async {
-        let validator = TransactionValidator(fetcher: fetcher, chainState: chain)
+        let log = NodeLogger("reorg")
         let newChainHashes = await collectAncestors(
             from: newTip, chain: chain, limit: config.retentionDepth
         )
@@ -160,7 +160,37 @@ extension LatticeNode {
         }
 
         guard !orphanedBlockHashes.isEmpty else { return }
+        log.info("Reorg detected: \(orphanedBlockHashes.count) orphaned block(s), recovering state via CAS diff")
 
+        let dir = genesisConfig.spec.directory
+        if let store = stateStores[dir] {
+            for blockHash in orphanedBlockHashes.reversed() {
+                guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
+                      let block = Block(data: blockData) else { continue }
+
+                do {
+                    let newState = try await block.frontier.resolve(fetcher: fetcher)
+                    let oldState = try await block.homestead.resolve(fetcher: fetcher)
+                    guard let newAccounts = newState.node?.accountState,
+                          let oldAccounts = oldState.node?.accountState else { continue }
+
+                    let diff = try await newAccounts.diff(from: oldAccounts, fetcher: fetcher)
+
+                    for (address, balanceStr) in diff.inserted {
+                        await store.setAccount(address: address, balance: 0, nonce: 0, atHeight: block.index)
+                    }
+                    for (address, entry) in diff.modified {
+                        if let oldBalance = UInt64(entry.old) {
+                            await store.setAccount(address: address, balance: oldBalance, nonce: 0, atHeight: block.index)
+                        }
+                    }
+                } catch {
+                    log.error("CAS diff failed for orphaned block \(blockHash): \(error)")
+                }
+            }
+        }
+
+        let validator = TransactionValidator(fetcher: fetcher, chainState: chain)
         for blockHash in orphanedBlockHashes {
             guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
                   let block = Block(data: blockData) else { continue }
@@ -169,15 +199,21 @@ extension LatticeNode {
 
             for (_, txHeader) in txEntries {
                 guard let tx = txHeader.node else { continue }
-                if tx.body.node?.fee == 0 && tx.body.node?.nonce == block.index {
-                    continue
-                }
-                let validationResult = await validator.validate(tx)
-                if case .success = validationResult {
+                if tx.body.node?.fee == 0 && tx.body.node?.nonce == block.index { continue }
+                let result = await validator.validate(tx)
+                if case .success = result {
                     let _ = await mempool.add(transaction: tx)
                 }
             }
         }
+
+        log.info("Reorg recovery complete: state rolled back, orphaned txs re-validated")
+        await emitReorgEvent(
+            directory: dir,
+            oldTip: oldTip,
+            newTip: newTip,
+            depth: UInt64(orphanedBlockHashes.count)
+        )
     }
 
     private func collectAncestors(
@@ -350,31 +386,41 @@ extension LatticeNode {
         blockHash: String,
         fetcher: Fetcher
     ) async -> StateChangeset? {
-        guard let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node else {
+        do {
+            let oldState = try await block.homestead.resolve(fetcher: fetcher)
+            let newState = try await block.frontier.resolve(fetcher: fetcher)
+            guard let oldAccounts = oldState.node?.accountState,
+                  let newAccounts = newState.node?.accountState else { return nil }
+
+            let accountDiff = try await newAccounts.diff(from: oldAccounts, fetcher: fetcher)
+
+            var accountUpdates: [(address: String, balance: UInt64, nonce: UInt64)] = []
+
+            for (address, balanceStr) in accountDiff.inserted {
+                if let balance = UInt64(balanceStr) {
+                    accountUpdates.append((address: address, balance: balance, nonce: 0))
+                }
+            }
+
+            for (address, entry) in accountDiff.modified {
+                if let balance = UInt64(entry.new) {
+                    accountUpdates.append((address: address, balance: balance, nonce: 0))
+                }
+            }
+
+            return StateChangeset(
+                height: block.index,
+                blockHash: blockHash,
+                accountUpdates: accountUpdates,
+                timestamp: block.timestamp,
+                difficulty: block.difficulty.toHexString(),
+                stateRoot: block.frontier.rawCID
+            )
+        } catch {
+            let log = NodeLogger("blocks")
+            log.error("CAS diff failed for block \(blockHash): \(error)")
             return nil
         }
-        guard let txEntries = try? txDict.allKeysAndValues() else { return nil }
-
-        var accountUpdates: [(address: String, balance: UInt64, nonce: UInt64)] = []
-        for (_, txHeader) in txEntries {
-            guard let tx = txHeader.node, let body = tx.body.node else { continue }
-            for action in body.accountActions {
-                accountUpdates.append((
-                    address: action.owner,
-                    balance: action.newBalance,
-                    nonce: body.nonce
-                ))
-            }
-        }
-
-        return StateChangeset(
-            height: block.index,
-            blockHash: blockHash,
-            accountUpdates: accountUpdates,
-            timestamp: block.timestamp,
-            difficulty: block.difficulty.toHexString(),
-            stateRoot: block.frontier.rawCID
-        )
     }
 
     func buildReceipts(block: Block, blockHash: String, fetcher: Fetcher) async -> [TransactionReceipt] {
