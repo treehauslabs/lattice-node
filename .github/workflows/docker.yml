@@ -50,7 +50,8 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          no-cache: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     needs: docker
@@ -62,7 +63,11 @@ jobs:
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
-      - name: Deploy to Fly.io
-        run: flyctl deploy --config deploy/fly/fly.toml --remote-only
+      - name: Deploy to Fly.io bootstrap miners
+        run: |
+          for app in lattice-bootstrap-iad lattice-bootstrap-ams lattice-bootstrap-sjc; do
+            echo "Deploying to $app..."
+            flyctl deploy --app "$app" --image ghcr.io/treehauslabs/lattice-node:main --config deploy/fly/fly.toml --yes || true
+          done
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
