@@ -82,7 +82,12 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
         let genesisHeader = HeaderImpl<Block>(node: genesis.block)
         let storer = BufferedStorer()
-        try? genesisHeader.storeRecursively(storer: storer)
+        do {
+            try genesisHeader.storeRecursively(storer: storer)
+        } catch {
+            let log = NodeLogger("genesis")
+            log.error("Failed to store genesis block recursively: \(error)")
+        }
         await storer.flush(to: nexusNetwork.fetcher)
 
         self.genesisResult = genesis

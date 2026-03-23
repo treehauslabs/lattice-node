@@ -8,9 +8,12 @@ import UInt256
 public struct RPCServer: Sendable {
     private let app: Application<RouterResponder<BasicRequestContext>>
 
-    public init(node: LatticeNode, port: UInt16 = 8080, bindAddress: String = "127.0.0.1", allowedOrigin: String = "http://127.0.0.1", auth: CookieAuth? = nil) {
+    public init(node: LatticeNode, port: UInt16 = 8080, bindAddress: String = "127.0.0.1", allowedOrigin: String = "http://127.0.0.1", auth: CookieAuth? = nil, rateLimiter: RPCRateLimiter? = nil) {
         let router = RPCRoutes.build(node: node)
         router.add(middleware: CORSMiddleware(allowedOrigin: allowedOrigin))
+        if let rateLimiter {
+            router.add(middleware: RPCRateLimitMiddleware<BasicRequestContext>(rateLimiter: rateLimiter))
+        }
         if auth != nil {
             router.add(middleware: RPCAuthMiddleware<BasicRequestContext>(auth: auth))
         }
@@ -65,6 +68,10 @@ enum RPCRoutes {
         api.get("fee/estimate") { req, _ in try await feeEstimate(node: node, request: req) }
         api.get("fee/histogram") { _, _ in try await feeHistogram(node: node) }
         api.get("nonce/{address}") { _, ctx in try await getNonce(node: node, address: ctx.parameters.require("address")) }
+
+        let light = api.group("light")
+        light.get("headers") { req, _ in try await lightHeaders(node: node, request: req) }
+        light.get("proof/{address}") { _, ctx in try await lightProof(node: node, address: ctx.parameters.require("address")) }
 
         router.get("ws") { _, _ in wsPlaceholder() }
 
@@ -248,6 +255,51 @@ enum RPCRoutes {
         }
         struct R: Encodable { let address: String; let nonce: UInt64 }
         return json(R(address: address, nonce: nonce))
+    }
+
+    // MARK: - Light Client
+
+    static func lightHeaders(node: LatticeNode, request: Request) async throws -> Response {
+        let fromStr = request.uri.queryParameters["from"].map(String.init) ?? "0"
+        let toStr = request.uri.queryParameters["to"].map(String.init) ?? "100"
+        let from = UInt64(fromStr) ?? 0
+        let to = UInt64(toStr) ?? 100
+
+        let dir = node.genesisConfig.spec.directory
+        guard let store = await node.stateStore(for: dir) else {
+            return jsonError("State store not available", status: .internalServerError)
+        }
+
+        let headers = await LightClientProtocol.buildChainHeaders(
+            stateStore: store,
+            fromHeight: from,
+            toHeight: to
+        )
+        struct R: Encodable { let headers: [ChainHeader]; let count: Int }
+        return json(R(headers: headers, count: headers.count))
+    }
+
+    static func lightProof(node: LatticeNode, address: String) async throws -> Response {
+        let dir = node.genesisConfig.spec.directory
+        guard let store = await node.stateStore(for: dir) else {
+            return jsonError("State store not available", status: .internalServerError)
+        }
+
+        guard let latest = await store.getLatestBlock() else {
+            return jsonError("No blocks available", status: .notFound)
+        }
+
+        let stateRoot = await store.getChainTip() ?? ""
+
+        let proof = await LightClientProtocol.buildAccountProof(
+            address: address,
+            stateStore: store,
+            blockHash: latest.hash,
+            blockHeight: latest.height,
+            stateRoot: stateRoot,
+            timestamp: latest.timestamp
+        )
+        return json(proof)
     }
 
     // MARK: - WebSocket (placeholder)

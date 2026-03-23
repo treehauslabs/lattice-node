@@ -14,7 +14,12 @@ extension LatticeNode {
             return
         }
         let persisted = await chainState.persist()
-        try? await persister.save(persisted)
+        do {
+            try await persister.save(persisted)
+        } catch {
+            let log = NodeLogger("persistence")
+            log.error("Failed to persist chain state for \(directory): \(error)")
+        }
         blocksSinceLastPersist[directory] = 0
     }
 

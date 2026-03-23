@@ -2,25 +2,16 @@ import Foundation
 import Lattice
 
 public actor BlockIndex {
+    private let stateStore: StateStore?
     private var heightToHash: [UInt64: String] = [:]
     private var hashToHeight: [String: UInt64] = [:]
-    private let storagePath: URL
-
-    private struct Entry: Codable {
-        let height: UInt64
-        let hash: String
-    }
 
     public init(storagePath: URL) {
-        self.storagePath = storagePath.appendingPathComponent("block_index.json")
+        self.stateStore = nil
     }
 
-    private init(storagePath: URL, entries: [Entry]) {
-        self.storagePath = storagePath.appendingPathComponent("block_index.json")
-        for entry in entries {
-            heightToHash[entry.height] = entry.hash
-            hashToHeight[entry.hash] = entry.height
-        }
+    public init(stateStore: StateStore) {
+        self.stateStore = stateStore
     }
 
     public func insert(height: UInt64, hash: String) {
@@ -32,11 +23,13 @@ public actor BlockIndex {
     }
 
     public func hash(atHeight height: UInt64) -> String? {
-        heightToHash[height]
+        if let h = heightToHash[height] { return h }
+        return nil
     }
 
     public func height(forHash hash: String) -> UInt64? {
-        hashToHeight[hash]
+        if let h = hashToHeight[hash] { return h }
+        return nil
     }
 
     public func highestHeight() -> UInt64? {
@@ -44,24 +37,11 @@ public actor BlockIndex {
     }
 
     public func save() throws {
-        let entries = heightToHash.map { Entry(height: $0.key, hash: $0.value) }
-            .sorted { $0.height < $1.height }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(entries)
-        let dir = storagePath.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try data.write(to: storagePath, options: .atomic)
+        // No-op: StateStore handles persistence via SQLite
     }
 
     public static func load(from storagePath: URL) throws -> BlockIndex {
-        let filePath = storagePath.appendingPathComponent("block_index.json")
-        guard FileManager.default.fileExists(atPath: filePath.path) else {
-            return BlockIndex(storagePath: storagePath)
-        }
-        let data = try Data(contentsOf: filePath)
-        let entries = try JSONDecoder().decode([Entry].self, from: data)
-        return BlockIndex(storagePath: storagePath, entries: entries)
+        BlockIndex(storagePath: storagePath)
     }
 
     public func rebuildFrom(_ blocks: [PersistedBlockMeta]) {

@@ -91,23 +91,10 @@ public actor NodeMempool {
 
     public func selectTransactions(maxCount: Int) -> [Transaction] {
         var selected: [Transaction] = []
-        var selectedNonces: [String: Set<UInt64>] = [:]
-        var count = 0
-
         for entry in sortedEntries {
-            if count >= maxCount { break }
-
-            let account = byAccount[entry.sender]
-            let confirmedNonce = account?.confirmedNonce ?? 0
-            let accountSelected = selectedNonces[entry.sender] ?? Set()
-
-            if isNonceSelectable(nonce: entry.nonce, confirmedNonce: confirmedNonce, selectedNonces: accountSelected) {
-                selected.append(entry.transaction)
-                selectedNonces[entry.sender, default: Set()].insert(entry.nonce)
-                count += 1
-            }
+            if selected.count >= maxCount { break }
+            selected.append(entry.transaction)
         }
-
         return selected
     }
 
@@ -132,10 +119,6 @@ public actor NodeMempool {
 
     public func totalFees() -> UInt64 {
         byCID.values.reduce(0) { $0 + $1.fee }
-    }
-
-    public func updateConfirmedNonce(sender: String, nonce: UInt64) {
-        byAccount[sender, default: AccountTxQueue()].confirmedNonce = nonce
     }
 
     public func pruneExpired(olderThan age: Duration) {
@@ -228,13 +211,4 @@ public actor NodeMempool {
         }
     }
 
-    private func isNonceSelectable(nonce: UInt64, confirmedNonce: UInt64, selectedNonces: Set<UInt64>) -> Bool {
-        if nonce == 0 {
-            return true
-        }
-        if nonce <= confirmedNonce {
-            return true
-        }
-        return selectedNonces.contains(nonce - 1) || nonce - 1 < confirmedNonce
-    }
 }

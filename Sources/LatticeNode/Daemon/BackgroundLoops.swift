@@ -36,3 +36,19 @@ func startMempoolExpiryLoop(node: LatticeNode) {
         }
     }
 }
+
+func startStatePruningLoop(node: LatticeNode, retentionDepth: UInt64) {
+    Task {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(300))
+            for directory in await node.allDirectories() {
+                if let store = await node.stateStore(for: directory) {
+                    let height = await store.getHeight() ?? 0
+                    if height > retentionDepth {
+                        await store.pruneDiffs(belowHeight: height - retentionDepth)
+                    }
+                }
+            }
+        }
+    }
+}

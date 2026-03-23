@@ -1,6 +1,7 @@
 import Lattice
 import Foundation
 import cashew
+import UInt256
 
 extension LatticeNode {
 
@@ -30,7 +31,12 @@ extension LatticeNode {
     func startSync(peerTipCID: String, network: ChainNetwork) {
         syncTask = Task { [weak self] in
             guard let self = self else { return }
-            await self.performSync(peerTipCID: peerTipCID, network: network)
+            switch self.config.syncStrategy {
+            case .headersFirst:
+                await self.performHeadersFirstSync(peerTipCID: peerTipCID, network: network)
+            case .full, .snapshot:
+                await self.performSync(peerTipCID: peerTipCID, network: network)
+            }
         }
     }
 
@@ -48,7 +54,7 @@ extension LatticeNode {
             switch config.syncStrategy {
             case .full:
                 result = try await syncer.syncFull(peerTipCID: peerTipCID)
-            case .snapshot:
+            case .snapshot, .headersFirst:
                 result = try await syncer.syncSnapshot(peerTipCID: peerTipCID)
             }
 
@@ -68,6 +74,120 @@ extension LatticeNode {
         }
 
         syncTask = nil
+    }
+
+    func performHeadersFirstSync(peerTipCID: String, network: ChainNetwork) async {
+        print("  [sync] Starting headers-first sync from \(String(peerTipCID.prefix(16)))...")
+
+        let fetcher = await network.fetcher
+        let headerChain = HeaderChain()
+
+        do {
+            let headers = try await headerChain.downloadHeaders(
+                peerTipCID: peerTipCID,
+                fetcher: fetcher,
+                genesisBlockHash: genesisResult.blockHash,
+                localWork: UInt256.zero,
+                progress: { current, total in
+                    if current % 100 == 0 {
+                        print("  [sync] Headers: \(current)/\(total)")
+                    }
+                }
+            )
+
+            print("  [sync] Downloaded \(headers.count) headers, fetching full blocks...")
+
+            let blockFetcher = ParallelBlockFetcher(fetcher: fetcher)
+            let cids = headers.map { $0.cid }
+
+            try await blockFetcher.fetchBlocks(
+                cids: cids,
+                storeFn: { [network] cid, data in
+                    await network.storeBlock(cid: cid, data: data)
+                },
+                progress: { current, total in
+                    if current % 50 == 0 {
+                        print("  [sync] Blocks: \(current)/\(total)")
+                    }
+                }
+            )
+
+            if let tipHeader = headers.last {
+                let tipData = try await fetcher.fetch(rawCid: tipHeader.cid)
+                if let tipBlock = Block(data: tipData) {
+                    let stateValid = await verifyTipStateRoot(tipBlock, fetcher: fetcher)
+                    if !stateValid {
+                        print("  [sync] Tip block state root verification failed, falling back to standard sync")
+                        await performSync(peerTipCID: peerTipCID, network: network)
+                        return
+                    }
+                    print("  [sync] State root verified for tip block at height \(tipHeader.index)")
+                }
+            }
+
+            let syncer = ChainSyncer(
+                fetcher: fetcher,
+                store: { _, _ in },
+                genesisBlockHash: genesisResult.blockHash,
+                retentionDepth: config.retentionDepth
+            )
+
+            let result = try await syncer.syncSnapshot(
+                peerTipCID: peerTipCID
+            )
+
+            print("  [sync] Sync complete: height \(result.tipBlockIndex), applying to chain...")
+
+            let nexusDir = genesisConfig.spec.directory
+            await lattice.nexus.chain.resetFrom(
+                result.persisted,
+                retentionDepth: config.retentionDepth
+            )
+
+            await persistChainState(directory: nexusDir)
+            await reprocessSyncedBlocksForChildChains(
+                persisted: result.persisted,
+                fetcher: fetcher
+            )
+
+            if let store = stateStores[genesisConfig.spec.directory] {
+                for header in headers {
+                    if let data = try? await fetcher.fetch(rawCid: header.cid),
+                       let block = Block(data: data) {
+                        let changeset = await extractStateChangeset(
+                            block: block, blockHash: header.cid, fetcher: fetcher
+                        )
+                        if let changeset {
+                            await store.applyBlock(changeset)
+                        }
+                    }
+                }
+                print("  [sync] StateStore rebuilt with \(headers.count) blocks")
+            }
+
+            syncTask = nil
+            print("  [sync] Headers-first sync complete")
+
+        } catch {
+            print("  [sync] Headers-first sync failed: \(error), falling back to standard sync")
+            await performSync(peerTipCID: peerTipCID, network: network)
+        }
+    }
+
+    private func verifyTipStateRoot(_ block: Block, fetcher: Fetcher) async -> Bool {
+        let basicValid = (try? await block.validateFrontierState(
+            transactionBodies: [], fetcher: fetcher
+        )) ?? false
+        if basicValid { return true }
+
+        guard let transactionsNode = try? await block.transactions.resolveRecursive(fetcher: fetcher).node else {
+            return false
+        }
+        guard let txKeysAndValues = try? transactionsNode.allKeysAndValues() else {
+            return false
+        }
+        let bodies = txKeysAndValues.values.compactMap { $0.node?.body.node }
+        return (try? await block.validateFrontierState(transactionBodies: bodies, fetcher: fetcher)) ?? false
     }
 
     private func reprocessSyncedBlocksForChildChains(

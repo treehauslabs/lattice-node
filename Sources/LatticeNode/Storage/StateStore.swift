@@ -258,6 +258,56 @@ public actor StateStore {
         )
     }
 
+    // MARK: - State Expiry
+
+    public func queryAccountsBelowHeight(_ cutoff: UInt64) throws -> [StateExpiry.ExpiredAccount] {
+        let rows = try db.query(
+            "SELECT path, value, height FROM state WHERE path LIKE 'account:%' AND height < ?1",
+            params: [.int(Int64(cutoff))]
+        )
+
+        return rows.compactMap { row in
+            guard let path = row["path"]?.textValue,
+                  let data = row["value"]?.blobValue,
+                  let h = row["height"]?.intValue,
+                  let account = decodeAccount(data) else { return nil }
+            let address = String(path.dropFirst("account:".count))
+            return StateExpiry.ExpiredAccount(
+                address: address, balance: account.balance,
+                nonce: account.nonce, lastActiveHeight: UInt64(h)
+            )
+        }
+    }
+
+    public func expireAccount(address: String, atHeight: UInt64) {
+        let path = "account:\(address)"
+        let expiredPath = "expired:\(address)"
+        if let value = currentValue(forPath: path) {
+            try? db.execute(
+                "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
+                params: [.text(expiredPath), .blob(value), .int(Int64(atHeight))]
+            )
+            try? db.execute("DELETE FROM state WHERE path = ?1", params: [.text(path)])
+        }
+    }
+
+    public func reviveAccount(address: String, proof: Data, atHeight: UInt64) -> Bool {
+        let expiredPath = "expired:\(address)"
+        let path = "account:\(address)"
+        guard let rows = try? db.query(
+            "SELECT value FROM state WHERE path = ?1",
+            params: [.text(expiredPath)]
+        ), let row = rows.first, let value = row["value"]?.blobValue else {
+            return false
+        }
+        try? db.execute(
+            "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
+            params: [.text(path), .blob(value), .int(Int64(atHeight))]
+        )
+        try? db.execute("DELETE FROM state WHERE path = ?1", params: [.text(expiredPath)])
+        return true
+    }
+
     // MARK: - Helpers
 
     private func currentValue(forPath path: String) -> Data? {

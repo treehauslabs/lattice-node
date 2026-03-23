@@ -6,6 +6,7 @@ import UInt256
 public enum SyncStrategy: Sendable {
     case full
     case snapshot
+    case headersFirst
 }
 
 public enum SyncError: Error, Sendable {

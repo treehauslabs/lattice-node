@@ -21,7 +21,12 @@ extension LatticeNode {
     func storeBlockRecursively(_ block: Block, fetcher: AcornFetcher) async {
         let header = HeaderImpl<Block>(node: block)
         let storer = BufferedStorer()
-        try? header.storeRecursively(storer: storer)
+        do {
+            try header.storeRecursively(storer: storer)
+        } catch {
+            let log = NodeLogger("blocks")
+            log.error("Failed to store block recursively: \(error)")
+        }
         await storer.flush(to: fetcher)
     }
 
@@ -54,7 +59,12 @@ extension LatticeNode {
         guard let block = Block(data: data) else { return }
         let storer = BufferedStorer()
         let header = HeaderImpl<Block>(node: block)
-        try? header.storeRecursively(storer: storer)
+        do {
+            try header.storeRecursively(storer: storer)
+        } catch {
+            let log = NodeLogger("blocks")
+            log.error("Failed to store received block \(cid) recursively: \(error)")
+        }
         await storer.flush(to: fetcher)
     }
 
