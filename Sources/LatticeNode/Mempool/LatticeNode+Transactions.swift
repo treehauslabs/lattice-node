@@ -71,6 +71,8 @@ extension LatticeNode {
             return "Balance not conserved: debits \(debits) != credits \(credits) + fee \(fee)"
         case .transactionTooLarge(let size, let max):
             return "Transaction too large: \(size) bytes (max \(max))"
+        case .feeTooHigh(let actual, let maximum):
+            return "Fee too high: \(actual) > maximum \(maximum)"
         }
     }
 

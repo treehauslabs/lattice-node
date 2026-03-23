@@ -1598,7 +1598,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
 private actor BlockCollector: MinerDelegate {
     var blocks: [(Block, String)] = []
 
-    func minerDidProduceBlock(_ block: Block, hash: String) async {
+    func minerDidProduceBlock(_ block: Block, hash: String, pendingRemovals: MinedBlockPendingRemovals) async {
         blocks.append((block, hash))
     }
 }
