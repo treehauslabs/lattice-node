@@ -86,6 +86,17 @@ extension LatticeNode {
                 directory: directory,
                 timestamp: block.timestamp
             ))
+
+            if let store = stateStores[directory] {
+                let changeset = await extractStateChangeset(
+                    block: block,
+                    blockHash: header.rawCID,
+                    fetcher: fetcher
+                )
+                if let changeset {
+                    await store.applyBlock(changeset)
+                }
+            }
         }
 
         let tipAfter = await chain.getMainChainTip()
@@ -311,6 +322,38 @@ extension LatticeNode {
             let oldest = recentPeerBlockOrder.removeFirst()
             recentPeerBlocks.removeValue(forKey: oldest)
         }
+    }
+
+    func extractStateChangeset(
+        block: Block,
+        blockHash: String,
+        fetcher: Fetcher
+    ) async -> StateChangeset? {
+        guard let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node else {
+            return nil
+        }
+        guard let txEntries = try? txDict.allKeysAndValues() else { return nil }
+
+        var accountUpdates: [(address: String, balance: UInt64, nonce: UInt64)] = []
+        for (_, txHeader) in txEntries {
+            guard let tx = txHeader.node, let body = tx.body.node else { continue }
+            for action in body.accountActions {
+                accountUpdates.append((
+                    address: action.owner,
+                    balance: action.newBalance,
+                    nonce: body.nonce
+                ))
+            }
+        }
+
+        return StateChangeset(
+            height: block.index,
+            blockHash: blockHash,
+            accountUpdates: accountUpdates,
+            timestamp: block.timestamp,
+            difficulty: block.difficulty.toHexString(),
+            stateRoot: block.frontier.rawCID
+        )
     }
 
     func emitReorgEvent(directory: String, oldTip: String, newTip: String, depth: UInt64) async {

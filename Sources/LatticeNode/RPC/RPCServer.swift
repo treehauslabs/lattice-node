@@ -239,8 +239,15 @@ enum RPCRoutes {
     // MARK: - Nonce
 
     static func getNonce(node: LatticeNode, address: String) async throws -> Response {
+        let dir = node.genesisConfig.spec.directory
+        let nonce: UInt64
+        if let store = await node.stateStore(for: dir) {
+            nonce = await store.getNonce(address: address) ?? 0
+        } else {
+            nonce = 0
+        }
         struct R: Encodable { let address: String; let nonce: UInt64 }
-        return json(R(address: address, nonce: 0))
+        return json(R(address: address, nonce: nonce))
     }
 
     // MARK: - WebSocket (placeholder)

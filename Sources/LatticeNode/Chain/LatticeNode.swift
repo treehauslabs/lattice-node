@@ -30,6 +30,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public let feeEstimator: FeeEstimator
     public let subscriptions: SubscriptionManager
     public let anchorPeers: AnchorPeers
+    public var stateStores: [String: StateStore]
 
     // MARK: - Initialization
 
@@ -100,6 +101,16 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         self.feeEstimator = FeeEstimator()
         self.subscriptions = SubscriptionManager()
         self.anchorPeers = AnchorPeers(dataDir: config.storagePath)
+        let nexusStore = try? StateStore(storagePath: config.storagePath, chain: genesisConfig.spec.directory)
+        if let nexusStore {
+            self.stateStores = [genesisConfig.spec.directory: nexusStore]
+        } else {
+            self.stateStores = [:]
+        }
+    }
+
+    public func stateStore(for directory: String) -> StateStore? {
+        stateStores[directory]
     }
 
     // MARK: - Lifecycle
