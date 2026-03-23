@@ -313,10 +313,6 @@ extension LatticeNode {
 
         let fetcher = await network.fetcher
 
-        if let blockData = try? await fetcher.fetch(rawCid: cid) {
-            await storeReceivedBlockRecursively(cid: cid, data: blockData, fetcher: fetcher as! AcornFetcher)
-        }
-
         let header = HeaderImpl<Block>(rawCID: cid)
 
         if let block = try? await header.resolve(fetcher: fetcher).node {

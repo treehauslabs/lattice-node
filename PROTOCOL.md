@@ -222,7 +222,15 @@ On startup, peers are discovered from (in order):
 
 ### 5.4 Block Propagation
 
-Blocks are propagated as full block data. A CompactBlock module exists for future bandwidth optimization using short transaction IDs and mempool reconstruction (BIP 152-style).
+Blocks are propagated as **header-only announcements**. When a miner produces a block:
+
+1. The full block (header + transactions + state) is stored in the miner's local CAS
+2. Only the block CID is announced to peers via Ivy
+3. Receiving peers resolve the block CID through the 3-tier CAS (memory → disk → network)
+4. Transaction bodies within the block are typically already in the receiver's local CAS from prior transaction gossip
+5. Only genuinely missing data is fetched from the network
+
+This is bandwidth-optimal: most transaction data is already distributed via mempool gossip before the block is mined. The CAS deduplicates automatically — if a peer already has a transaction body (from mempool submission), it never re-fetches it during block resolution. Full block data is only transferred for truly new content (coinbase transaction, state roots).
 
 ### 5.5 Rate Limiting
 

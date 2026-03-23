@@ -144,7 +144,7 @@ public actor ChainNetwork: IvyDelegate {
     public func publishBlock(cid: String, data: Data) async {
         await protectionPolicy.pin(cid)
         await verifiedStore.storeVerified(cid: ContentIdentifier(rawValue: cid), data: data)
-        await ivy.publishBlock(cid: cid, data: data)
+        await ivy.announceBlock(cid: cid)
     }
 
     public func announceBlock(cid: String) async {
