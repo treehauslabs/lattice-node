@@ -226,8 +226,7 @@ Blocks are propagated as full block data. A CompactBlock module exists for futur
 
 ### 5.5 Rate Limiting
 
-Per-peer: max 20 blocks per 10-second window (Tally reputation).
-Per-IP RPC: max 100 requests per 60-second window, bad requests penalized 10x.
+Per-peer: max 20 blocks per 10-second window. Peer reputation managed by the Tally system — peers delivering invalid blocks, timing out, or exceeding rate limits are penalized and eventually disconnected.
 
 ---
 
@@ -422,7 +421,7 @@ The batch auction mechanism prevents front-running of DEX orders through commit-
 ├──────────┬──────────┬───────────┬───────────────────┤
 │  Chain   │  Mempool │  Network  │  RPC              │
 │  Blocks  │  NodeMem │  Ivy P2P  │  Hummingbird HTTP │
-│  Sync    │  Validat │  Peers    │  Auth + Rate Limit│
+│  Sync    │  Validat │  Peers    │  Auth             │
 │  State   │  Persist │  Diversity│  Prometheus       │
 │  Persist │  RBF     │  Anchors  │  WebSocket (plan) │
 ├──────────┼──────────┼───────────┼───────────────────┤
