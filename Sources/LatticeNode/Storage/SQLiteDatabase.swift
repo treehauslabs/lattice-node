@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(SQLite3)
 import SQLite3
+#else
+import CSQLite
+#endif
 
 public final class SQLiteDatabase: @unchecked Sendable {
     private let db: OpaquePointer
