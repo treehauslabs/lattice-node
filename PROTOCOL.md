@@ -142,6 +142,13 @@ All blocks, transactions, and state objects are stored by their content identifi
 2. **Disk**: Persistent key-value store (Acorn DiskCASWorker)
 3. **Network**: Peer-to-peer fetch via Ivy protocol
 
+The CAS is the single source of truth for all blockchain data. Higher-level systems (PBSS, receipts, mempool persistence) store only CID references and derive full data on-demand via CAS resolution. This eliminates data duplication and ensures consistency:
+
+- **Mempool persistence**: Saves only `{signatures, bodyCID}` per transaction. On startup, bodies are resolved from CAS (already stored locally from prior gossip).
+- **Transaction receipts**: Stores only a lightweight index `{txCID → blockHash, height}`. Full receipts are derived on-demand by resolving the block from CAS and extracting the transaction.
+- **Block propagation**: Only block CIDs are gossiped. Peers resolve full blocks from CAS, finding most transaction bodies already local from mempool gossip.
+- **State queries**: PBSS (SQLite) serves as a fast O(1) read cache over the CAS merkle trees. The CAS remains authoritative; PBSS is rebuilt from CAS after sync.
+
 ### 4.2 Path-Based State Storage (PBSS)
 
 Current state is indexed by path in SQLite for O(1) lookups:
@@ -178,18 +185,19 @@ Accounts inactive for >1,000,000 blocks are moved from `account:<address>` to `e
 
 ### 4.5 Transaction Receipts
 
-On block acceptance, a receipt is generated per transaction:
+On block acceptance, a lightweight receipt index is stored per transaction: `{txCID → blockHash, blockHeight}`. Full receipts are derived on-demand from CAS by resolving the block and extracting the transaction data:
 
-| Field | Type |
-|-------|------|
-| txCID | String |
-| blockHash | String |
-| blockHeight | UInt64 |
-| timestamp | Int64 |
-| fee | UInt64 |
-| sender | String |
-| status | "confirmed" |
-| accountActions | [{owner, oldBalance, newBalance}] |
+| Field | Source | Description |
+|-------|--------|-------------|
+| txCID | index | Transaction content identifier |
+| blockHash | index | Block containing this transaction |
+| blockHeight | index | Block height |
+| timestamp | CAS (block) | Block timestamp |
+| fee | CAS (tx body) | Transaction fee |
+| sender | CAS (tx body) | First signer address |
+| accountActions | CAS (tx body) | Balance changes per account |
+
+This CAS-derived approach stores ~16 bytes per receipt (index only) instead of ~500 bytes (full receipt), with receipts reconstructed from the immutable block data when queried.
 
 ---
 

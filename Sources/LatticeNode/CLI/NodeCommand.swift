@@ -197,19 +197,12 @@ struct NodeCommand: AsyncParsableCommand {
             if let network = await node.network(for: nexusDir) {
                 var restored = 0
                 for serialized in savedTxs {
-                    let bodyBytes = stride(from: 0, to: serialized.bodyData.count, by: 2).compactMap { i -> UInt8? in
-                        let start = serialized.bodyData.index(serialized.bodyData.startIndex, offsetBy: i)
-                        let end = serialized.bodyData.index(start, offsetBy: min(2, serialized.bodyData.distance(from: start, to: serialized.bodyData.endIndex)))
-                        return UInt8(serialized.bodyData[start..<end], radix: 16)
-                    }
-                    let bodyData = Data(bodyBytes)
-                    guard let body = TransactionBody(data: bodyData) else { continue }
-                    let bodyHeader = HeaderImpl<TransactionBody>(node: body)
-                    await network.fetcher.store(rawCid: serialized.bodyCID, data: bodyData)
+                    let bodyHeader = HeaderImpl<TransactionBody>(rawCID: serialized.bodyCID)
+                    guard let _ = try? await bodyHeader.resolve(fetcher: network.fetcher).node else { continue }
                     let tx = Transaction(signatures: serialized.signatures, body: bodyHeader)
                     if await network.submitTransaction(tx) { restored += 1 }
                 }
-                if restored > 0 { print("  Mempool:     \(restored)/\(savedTxs.count) transaction(s) restored") }
+                if restored > 0 { print("  Mempool:     \(restored)/\(savedTxs.count) transaction(s) restored from CAS") }
             }
             mempoolLoader.delete()
         }

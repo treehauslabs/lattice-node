@@ -309,10 +309,11 @@ enum RPCRoutes {
 
     static func getReceipt(node: LatticeNode, txCID: String) async throws -> Response {
         let dir = node.genesisConfig.spec.directory
-        guard let store = await node.stateStore(for: dir) else {
+        guard let store = await node.stateStore(for: dir),
+              let network = await node.network(for: dir) else {
             return jsonError("State store not available", status: .internalServerError)
         }
-        let receiptStore = TransactionReceiptStore(store: store)
+        let receiptStore = TransactionReceiptStore(store: store, fetcher: network.fetcher)
         guard let receipt = await receiptStore.getReceipt(txCID: txCID) else {
             return jsonError("Receipt not found", status: .notFound)
         }
