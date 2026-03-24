@@ -19,7 +19,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var persisters: [String: ChainStatePersister]
     var blocksSinceLastPersist: [String: UInt64]
     var recentPeerBlocks: [String: ContinuousClock.Instant]
-    var recentPeerBlockOrder: [String]
     var peerBlockCounts: [PeerID: (count: Int, windowStart: ContinuousClock.Instant)]
     static let maxBlocksPerPeerPerWindow = 20
     static let peerRateWindow: Duration = .seconds(10)
@@ -100,7 +99,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         self.persisters = [genesisConfig.spec.directory: persister]
         self.blocksSinceLastPersist = [:]
         self.recentPeerBlocks = [:]
-        self.recentPeerBlockOrder = []
         self.peerBlockCounts = [:]
         let loadedIndex = try? BlockIndex.load(from: config.storagePath)
         self.blockIndex = loadedIndex ?? BlockIndex(storagePath: config.storagePath)
