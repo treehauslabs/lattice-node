@@ -428,9 +428,10 @@ extension LatticeNode {
     static let maxRecentPeerBlocks = 4096
 
     func recordBlockTime(key: String, time: ContinuousClock.Instant) {
-        if recentPeerBlocks[key] == nil {
-            recentPeerBlockOrder.append(key)
+        if let idx = recentPeerBlockOrder.firstIndex(of: key) {
+            recentPeerBlockOrder.remove(at: idx)
         }
+        recentPeerBlockOrder.append(key)
         recentPeerBlocks[key] = time
         while recentPeerBlockOrder.count > Self.maxRecentPeerBlocks {
             let oldest = recentPeerBlockOrder.removeFirst()
