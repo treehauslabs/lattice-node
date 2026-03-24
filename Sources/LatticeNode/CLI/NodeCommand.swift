@@ -5,8 +5,8 @@ import Ivy
 import ArrayTrie
 import cashew
 
-let LatticeNodeVersion = "0.1.0"
-let ProtocolVersion: UInt16 = 1
+let LatticeNodeVersion = LatticeProtocol.nodeVersion
+let ProtocolVersion = LatticeProtocol.version
 
 struct NodeCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(

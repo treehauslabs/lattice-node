@@ -3,13 +3,15 @@ import Ivy
 import Tally
 
 public struct ChainAnnounceData: Sendable, Equatable {
+    public let protocolVersion: UInt16
     public let chainDirectory: String
     public let tipIndex: UInt64
     public let tipCID: String
     public let specCID: String
     public let capabilities: ChainCapabilities
 
-    public init(chainDirectory: String, tipIndex: UInt64, tipCID: String, specCID: String, capabilities: ChainCapabilities = .default) {
+    public init(chainDirectory: String, tipIndex: UInt64, tipCID: String, specCID: String, capabilities: ChainCapabilities = .default, protocolVersion: UInt16 = LatticeProtocol.version) {
+        self.protocolVersion = protocolVersion
         self.chainDirectory = chainDirectory
         self.tipIndex = tipIndex
         self.tipCID = tipCID
@@ -19,6 +21,8 @@ public struct ChainAnnounceData: Sendable, Equatable {
 
     public func serialize() -> Data {
         var buf = Data()
+        var pv = protocolVersion.bigEndian
+        buf.append(contentsOf: Swift.withUnsafeBytes(of: &pv) { Array($0) })
         var v1 = UInt16(chainDirectory.utf8.count).bigEndian
         buf.append(contentsOf: Swift.withUnsafeBytes(of: &v1) { Array($0) })
         buf.append(contentsOf: chainDirectory.utf8)
@@ -59,7 +63,8 @@ public struct ChainAnnounceData: Sendable, Equatable {
             return str
         }
 
-        guard let dir = readString(),
+        guard let protoVer = readUInt16(),
+              let dir = readString(),
               let tipIdx = readUInt64(),
               let tipCID = readString(),
               let specCID = readString(),
@@ -70,7 +75,8 @@ public struct ChainAnnounceData: Sendable, Equatable {
             tipIndex: tipIdx,
             tipCID: tipCID,
             specCID: specCID,
-            capabilities: ChainCapabilities(rawValue: capRaw)
+            capabilities: ChainCapabilities(rawValue: capRaw),
+            protocolVersion: protoVer
         )
     }
 }
