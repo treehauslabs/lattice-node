@@ -204,7 +204,7 @@ final class LatticeNodeTests: XCTestCase {
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
         let chain = ChainState.fromGenesis(block: genesis)
-        let mempool = Mempool(maxSize: 100)
+        let mempool = NodeMempool(maxSize: 100)
         let miner = MinerLoop(chainState: chain, mempool: mempool, fetcher: fetcher, spec: spec)
 
         let before = await miner.isMining

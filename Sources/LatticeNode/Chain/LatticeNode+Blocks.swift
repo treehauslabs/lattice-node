@@ -73,8 +73,7 @@ extension LatticeNode {
     func processBlockAndRecoverReorg(
         header: BlockHeader,
         directory: String,
-        fetcher: Fetcher,
-        mempool: Mempool
+        fetcher: Fetcher
     ) async -> Bool {
         let chain = await lattice.nexus.chain
         let tipBefore = await chain.getMainChainTip()
@@ -142,8 +141,7 @@ extension LatticeNode {
                     oldTip: tipBefore,
                     newTip: tipAfter,
                     chain: chain,
-                    fetcher: fetcher,
-                    mempool: mempool
+                    fetcher: fetcher
                 )
             }
         }
@@ -155,8 +153,7 @@ extension LatticeNode {
         oldTip: String,
         newTip: String,
         chain: ChainState,
-        fetcher: Fetcher,
-        mempool: Mempool
+        fetcher: Fetcher
     ) async {
         let log = NodeLogger("reorg")
         let dir = genesisConfig.spec.directory
@@ -231,15 +228,12 @@ extension LatticeNode {
             }
         }
 
-        // Step 3: Remove new chain's confirmed txs from both mempools
-        if !newChainTxCIDs.isEmpty {
-            await mempool.removeAll(txCIDs: newChainTxCIDs)
-            if let network {
-                await network.nodeMempool.removeAll(txCIDs: newChainTxCIDs)
-            }
+        // Step 3: Remove new chain's confirmed txs from mempool
+        if !newChainTxCIDs.isEmpty, let network {
+            await network.nodeMempool.removeAll(txCIDs: newChainTxCIDs)
         }
 
-        // Step 4: Re-validate orphaned txs and add to BOTH mempools
+        // Step 4: Re-validate orphaned txs and return to mempool
         let validator = TransactionValidator(fetcher: fetcher, chainState: chain)
         var recovered = 0
         for blockHash in orphanedBlockHashes {
@@ -253,11 +247,8 @@ extension LatticeNode {
                 if tx.body.node?.fee == 0 && tx.body.node?.nonce == block.index { continue }
                 if newChainTxCIDs.contains(cid) { continue }
                 let result = await validator.validate(tx)
-                if case .success = result {
-                    let _ = await mempool.add(transaction: tx)
-                    if let network {
-                        let _ = await network.nodeMempool.add(transaction: tx)
-                    }
+                if case .success = result, let network {
+                    let _ = await network.nodeMempool.add(transaction: tx)
                     recovered += 1
                 }
             }
@@ -346,9 +337,8 @@ extension LatticeNode {
 
         let directory = await network.directory
         let header = HeaderImpl<Block>(rawCID: cid)
-        let mempool = await network.mempool
         let accepted = await processBlockAndRecoverReorg(
-            header: header, directory: directory, fetcher: fetcher, mempool: mempool
+            header: header, directory: directory, fetcher: fetcher
         )
         if accepted {
             tally.recordSuccess(peer: peer)
@@ -396,9 +386,8 @@ extension LatticeNode {
         }
 
         let directory = await network.directory
-        let mempool = await network.mempool
         let accepted = await processBlockAndRecoverReorg(
-            header: header, directory: directory, fetcher: fetcher, mempool: mempool
+            header: header, directory: directory, fetcher: fetcher
         )
         if accepted {
             tally.recordSuccess(peer: peer)

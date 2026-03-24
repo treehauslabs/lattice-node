@@ -44,9 +44,10 @@ public actor HealthCheck {
         chain_height: \(chainHeight)
         peers: \(peerCount)
         last_block: \(lastBlockTime.map { ISO8601DateFormatter().string(from: $0) } ?? "never")
-        pid: \(ProcessInfo.processInfo.processIdentifier)
         """
-        try? content.data(using: .utf8)?.write(to: path)
+        if let data = content.data(using: .utf8) {
+            FileManager.default.createFile(atPath: path.path, contents: data, attributes: [.posixPermissions: 0o600])
+        }
     }
 
     private func isStale() -> Bool {

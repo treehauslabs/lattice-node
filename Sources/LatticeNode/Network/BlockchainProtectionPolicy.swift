@@ -3,19 +3,33 @@ import Ivy
 
 public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
     private var pinnedCIDs: Set<String> = []
+    private var pinnedOrder: [String] = []
     private var chainTipCIDs: Set<String> = []
     private var chainTipsByCID: [String: String] = [:]
+    private let maxPinnedCount: Int
 
-    public init() {}
+    public init(maxPinnedCount: Int = 10_000) {
+        self.maxPinnedCount = maxPinnedCount
+    }
 
     // MARK: - Pinning (miner's own content)
 
     public func pin(_ cid: String) {
-        pinnedCIDs.insert(cid)
+        if pinnedCIDs.insert(cid).inserted {
+            pinnedOrder.append(cid)
+            evictPinnedIfNeeded()
+        }
     }
 
     public func pinAll(_ cids: [String]) {
-        for cid in cids { pinnedCIDs.insert(cid) }
+        for cid in cids { pin(cid) }
+    }
+
+    private func evictPinnedIfNeeded() {
+        while pinnedOrder.count > maxPinnedCount {
+            let oldest = pinnedOrder.removeFirst()
+            pinnedCIDs.remove(oldest)
+        }
     }
 
     public func unpin(_ cid: String) {

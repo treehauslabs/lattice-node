@@ -190,7 +190,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
     public func pruneExpiredTransactions(olderThan age: Duration = .seconds(600)) async {
         for (_, network) in networks {
-            await network.mempool.pruneExpired(olderThan: age)
             await network.nodeMempool.pruneExpired(olderThan: age)
         }
     }

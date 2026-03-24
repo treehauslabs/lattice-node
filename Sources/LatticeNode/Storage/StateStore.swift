@@ -236,38 +236,58 @@ public actor StateStore {
     // MARK: - Batch Apply (Atomic)
 
     public func applyBlock(_ changes: StateChangeset) {
+        let log = NodeLogger("statestore")
         do {
             try db.beginTransaction()
 
-            setBlock(
-                height: changes.height,
-                hash: changes.blockHash,
-                timestamp: changes.timestamp,
-                difficulty: changes.difficulty
+            try db.execute(
+                "INSERT OR REPLACE INTO blocks (height, hash, timestamp, difficulty) VALUES (?1, ?2, ?3, ?4)",
+                params: [.int(Int64(changes.height)), .text(changes.blockHash), .int(changes.timestamp), .text(changes.difficulty)]
             )
 
             for update in changes.accountUpdates {
-                setAccount(
-                    address: update.address,
-                    balance: update.balance,
-                    nonce: update.nonce,
-                    atHeight: changes.height
+                let path = "account:\(update.address)"
+                let account = AccountState(balance: update.balance, nonce: update.nonce)
+                guard let data = encodeAccount(account) else { continue }
+                let oldValue = currentValue(forPath: path)
+                try db.execute(
+                    "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
+                    params: [.text(path), .blob(data), .int(Int64(changes.height))]
                 )
+                recordDiff(height: changes.height, path: path, oldValue: oldValue)
             }
 
             for update in changes.generalUpdates {
-                setGeneral(key: update.key, value: update.value, atHeight: changes.height)
+                let path = "general:\(update.key)"
+                let oldValue = currentValue(forPath: path)
+                try db.execute(
+                    "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
+                    params: [.text(path), .blob(update.value), .int(Int64(changes.height))]
+                )
+                recordDiff(height: changes.height, path: path, oldValue: oldValue)
             }
 
-            setChainTip(
-                hash: changes.blockHash,
-                height: changes.height,
-                stateRoot: changes.stateRoot
+            try db.execute(
+                "INSERT OR REPLACE INTO state (path, value, height) VALUES ('meta:chain-tip', ?1, ?2)",
+                params: [.blob(Data(changes.blockHash.utf8)), .int(Int64(changes.height))]
+            )
+            try db.execute(
+                "INSERT OR REPLACE INTO state (path, value, height) VALUES ('meta:height', ?1, ?2)",
+                params: [.blob(Data(String(changes.height).utf8)), .int(Int64(changes.height))]
+            )
+            try db.execute(
+                "INSERT OR REPLACE INTO state (path, value, height) VALUES ('meta:state-root', ?1, ?2)",
+                params: [.blob(Data(changes.stateRoot.utf8)), .int(Int64(changes.height))]
             )
 
             try db.commit()
         } catch {
-            try? db.rollbackTransaction()
+            log.error("applyBlock failed at height \(changes.height): \(error)")
+            do {
+                try db.rollbackTransaction()
+            } catch {
+                log.error("CRITICAL: rollback also failed — database may be corrupted: \(error)")
+            }
         }
     }
 

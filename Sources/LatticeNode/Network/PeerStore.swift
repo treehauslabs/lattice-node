@@ -20,7 +20,18 @@ public actor PeerStore {
               let entries = try? JSONDecoder().decode([PeerEntry].self, from: data) else {
             return []
         }
-        return entries.map { PeerEndpoint(publicKey: $0.publicKey, host: $0.host, port: $0.port) }
+        return entries.compactMap { entry -> PeerEndpoint? in
+            guard isValidPeerEntry(entry) else { return nil }
+            return PeerEndpoint(publicKey: entry.publicKey, host: entry.host, port: entry.port)
+        }
+    }
+
+    private func isValidPeerEntry(_ entry: PeerEntry) -> Bool {
+        guard entry.port >= 1 && entry.port <= 65535 else { return false }
+        guard !entry.host.isEmpty else { return false }
+        guard entry.publicKey.count >= 64,
+              entry.publicKey.allSatisfy({ $0.isHexDigit }) else { return false }
+        return true
     }
 }
 

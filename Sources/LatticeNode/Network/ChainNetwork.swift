@@ -17,7 +17,6 @@ public actor ChainNetwork: IvyDelegate {
     public let directory: String
     public let ivy: Ivy
     public let fetcher: AcornFetcher
-    public let mempool: Mempool
     public let nodeMempool: NodeMempool
     private let storage: any AcornCASWorker
     private let memoryWorker: MemoryCASWorker
@@ -39,7 +38,6 @@ public actor ChainNetwork: IvyDelegate {
         self.subscribedChains = Set([directory])
         self.resources = resources
         let mempoolSize = resources.mempoolSizePerChain(chainCount: chainCount)
-        self.mempool = Mempool(maxSize: mempoolSize)
         self.nodeMempool = NodeMempool(maxSize: mempoolSize)
 
         let memoryBytes = resources.memoryBytesPerChain(chainCount: chainCount)
@@ -158,9 +156,7 @@ public actor ChainNetwork: IvyDelegate {
     // MARK: - Mempool Operations
 
     public func submitTransaction(_ transaction: Transaction) async -> Bool {
-        let ivyResult = await mempool.add(transaction: transaction)
-        _ = await nodeMempool.add(transaction: transaction)
-        return ivyResult
+        await nodeMempool.add(transaction: transaction)
     }
 
     public func selectTransactionsForBlock(maxCount: Int) async -> [Transaction] {
@@ -168,7 +164,6 @@ public actor ChainNetwork: IvyDelegate {
     }
 
     public func pruneConfirmedTransactions(txCIDs: Set<String>) async {
-        await mempool.removeAll(txCIDs: txCIDs)
         await nodeMempool.removeAll(txCIDs: txCIDs)
     }
 

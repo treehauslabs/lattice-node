@@ -18,13 +18,12 @@ extension LatticeNode {
         let childContexts = await buildChildMiningContexts()
         let miner = MinerLoop(
             chainState: chainState,
-            mempool: network.mempool,
+            mempool: network.nodeMempool,
             fetcher: network.fetcher,
             spec: genesisConfig.spec,
             identity: identity,
             childContexts: childContexts,
-            batchSize: config.resources.miningBatchSize,
-            nodeMempool: network.nodeMempool
+            batchSize: config.resources.miningBatchSize
         )
         await miner.setDelegate(self)
         miners[directory] = miner
@@ -53,12 +52,10 @@ extension LatticeNode {
         let accepted = await processBlockAndRecoverReorg(
             header: header,
             directory: directory,
-            fetcher: network.fetcher,
-            mempool: network.mempool
+            fetcher: network.fetcher
         )
         if accepted, let removals = pendingRemovals {
-            await network.mempool.removeAll(txCIDs: removals.nexusTxCIDs)
-            await network.nodeMempool.removeAll(txCIDs: removals.nexusTxCIDs)
+            await network.pruneConfirmedTransactions(txCIDs: removals.nexusTxCIDs)
             for childRemoval in removals.childTxRemovals {
                 await childRemoval.mempool.removeAll(txCIDs: childRemoval.txCIDs)
             }
@@ -81,7 +78,7 @@ extension LatticeNode {
             contexts.append(ChildMiningContext(
                 directory: dir,
                 chainState: childChainState,
-                mempool: network.mempool,
+                mempool: network.nodeMempool,
                 fetcher: network.fetcher,
                 spec: childSpec
             ))

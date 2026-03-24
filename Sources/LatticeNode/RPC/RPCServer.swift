@@ -174,7 +174,7 @@ enum RPCRoutes {
         let dir = node.genesisConfig.spec.directory
         guard let net = await node.network(for: dir) else { return jsonError("Network not available", status: .internalServerError) }
         struct R: Encodable { let count: Int; let totalFees: UInt64 }
-        return json(R(count: await net.mempool.count, totalFees: await net.mempool.totalFees()))
+        return json(R(count: await net.nodeMempool.count, totalFees: await net.nodeMempool.totalFees()))
     }
 
     static func balanceProof(node: LatticeNode, address: String) async throws -> Response {

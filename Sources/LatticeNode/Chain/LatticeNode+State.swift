@@ -19,7 +19,7 @@ extension LatticeNode {
         let nexusDir = genesisConfig.spec.directory
         let nexusHeight = await lattice.nexus.chain.getHighestBlockIndex()
         let nexusTip = await lattice.nexus.chain.getMainChainTip()
-        let nexusMempoolCount = await networks[nexusDir]?.mempool.count ?? 0
+        let nexusMempoolCount = await networks[nexusDir]?.nodeMempool.count ?? 0
         result.append(ChainInfo(
             directory: nexusDir, height: nexusHeight, tip: nexusTip,
             mining: miners[nexusDir] != nil, mempoolCount: nexusMempoolCount,
@@ -30,7 +30,7 @@ extension LatticeNode {
             if let childLevel = await lattice.nexus.children[dir] {
                 let h = await childLevel.chain.getHighestBlockIndex()
                 let t = await childLevel.chain.getMainChainTip()
-                let mc = await networks[dir]?.mempool.count ?? 0
+                let mc = await networks[dir]?.nodeMempool.count ?? 0
                 result.append(ChainInfo(
                     directory: dir, height: h, tip: t,
                     mining: miners[dir] != nil, mempoolCount: mc,

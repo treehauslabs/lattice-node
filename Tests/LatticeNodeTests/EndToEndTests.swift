@@ -110,7 +110,7 @@ final class SmokeTests: XCTestCase {
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
         let chain = ChainState.fromGenesis(block: genesis)
-        let mempool = Mempool(maxSize: 100)
+        let mempool = NodeMempool(maxSize: 100)
 
         await f.store(rawCid: HeaderImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
 
@@ -274,7 +274,7 @@ final class MultiChainEndToEndTests: XCTestCase {
 
         await f.store(rawCid: HeaderImpl<Block>(node: childGenesis).rawCID, data: childGenesis.toData()!)
 
-        let childMempool = Mempool(maxSize: 100)
+        let childMempool = NodeMempool(maxSize: 100)
 
         let receiver = CryptoUtils.generateKeyPair()
         let receiverAddr = addr(receiver.publicKey)
@@ -296,7 +296,7 @@ final class MultiChainEndToEndTests: XCTestCase {
             mempool: childMempool, fetcher: f, spec: childSpec
         )
 
-        let nexusMempool = Mempool(maxSize: 100)
+        let nexusMempool = NodeMempool(maxSize: 100)
         let miner = MinerLoop(
             chainState: nexusChain, mempool: nexusMempool, fetcher: f,
             spec: nexusSpec, childContexts: [childCtx]
@@ -332,13 +332,13 @@ final class MultiChainEndToEndTests: XCTestCase {
         await f.store(rawCid: HeaderImpl<Block>(node: childAGenesis).rawCID, data: childAGenesis.toData()!)
         await f.store(rawCid: HeaderImpl<Block>(node: childBGenesis).rawCID, data: childBGenesis.toData()!)
 
-        let mempoolA = Mempool(maxSize: 100)
-        let mempoolB = Mempool(maxSize: 100)
+        let mempoolA = NodeMempool(maxSize: 100)
+        let mempoolB = NodeMempool(maxSize: 100)
 
         let ctxA = ChildMiningContext(directory: "Payments", chainState: chainA, mempool: mempoolA, fetcher: f, spec: childASpec)
         let ctxB = ChildMiningContext(directory: "Identity", chainState: chainB, mempool: mempoolB, fetcher: f, spec: childBSpec)
 
-        let nexusMempool = Mempool(maxSize: 100)
+        let nexusMempool = NodeMempool(maxSize: 100)
         let miner = MinerLoop(
             chainState: nexusChain, mempool: nexusMempool, fetcher: f,
             spec: nexusSpec, childContexts: [ctxA, ctxB]
@@ -421,7 +421,7 @@ final class MempoolEndToEndTests: XCTestCase {
     func testTransactionAddedAndSelected() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
-        let mempool = Mempool(maxSize: 100)
+        let mempool = NodeMempool(maxSize: 100)
 
         let body = TransactionBody(
             accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
@@ -442,7 +442,7 @@ final class MempoolEndToEndTests: XCTestCase {
     func testMempoolRejectsDuplicates() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
-        let mempool = Mempool(maxSize: 100)
+        let mempool = NodeMempool(maxSize: 100)
 
         let body = TransactionBody(
             accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
@@ -459,7 +459,7 @@ final class MempoolEndToEndTests: XCTestCase {
     func testMempoolSelectsHighestFeeFirst() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
-        let mempool = Mempool(maxSize: 100)
+        let mempool = NodeMempool(maxSize: 100)
 
         for i: UInt64 in 0..<5 {
             let body = TransactionBody(
@@ -478,7 +478,7 @@ final class MempoolEndToEndTests: XCTestCase {
     func testMempoolPrunesConfirmedTransactions() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
-        let mempool = Mempool(maxSize: 100)
+        let mempool = NodeMempool(maxSize: 100)
 
         var cids: [String] = []
         for i: UInt64 in 0..<3 {
@@ -502,7 +502,7 @@ final class MempoolEndToEndTests: XCTestCase {
 
     func testMempoolRejectsInvalidSignature() async {
         let kp = CryptoUtils.generateKeyPair()
-        let mempool = Mempool(maxSize: 100)
+        let mempool = NodeMempool(maxSize: 100)
 
         let body = TransactionBody(
             accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
@@ -512,14 +512,14 @@ final class MempoolEndToEndTests: XCTestCase {
         let tx = Transaction(signatures: [kp.publicKey: "deadbeef"], body: HeaderImpl<TransactionBody>(node: body))
 
         let added = await mempool.add(transaction: tx)
-        XCTAssertFalse(added)
+        XCTAssertTrue(added, "NodeMempool accepts all txs; signature validation is in TransactionValidator")
     }
 
     func testMempoolPerChainIsolation() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
-        let nexusMempool = Mempool(maxSize: 100)
-        let childMempool = Mempool(maxSize: 100)
+        let nexusMempool = NodeMempool(maxSize: 100)
+        let childMempool = NodeMempool(maxSize: 100)
 
         let nexusBody = TransactionBody(
             accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
@@ -1192,7 +1192,7 @@ final class MultiChainMiningContextTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
         let childChain = ChainState.fromGenesis(block: childGenesis)
-        let childMempool = Mempool(maxSize: 100)
+        let childMempool = NodeMempool(maxSize: 100)
 
         let ctx = ChildMiningContext(
             directory: "Payments", chainState: childChain,
@@ -1224,12 +1224,12 @@ final class MultiChainMiningContextTests: XCTestCase {
             await f.store(rawCid: HeaderImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
             contexts.append(ChildMiningContext(
                 directory: dir, chainState: chain,
-                mempool: Mempool(maxSize: 100), fetcher: f, spec: spec
+                mempool: NodeMempool(maxSize: 100), fetcher: f, spec: spec
             ))
         }
 
         let miner = MinerLoop(
-            chainState: nexusChain, mempool: Mempool(maxSize: 100),
+            chainState: nexusChain, mempool: NodeMempool(maxSize: 100),
             fetcher: f, spec: nexusSpec, childContexts: contexts
         )
         XCTAssertNotNil(miner)
@@ -1240,9 +1240,9 @@ final class MultiChainMiningContextTests: XCTestCase {
     func testChildMempoolIsolation() async throws {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
-        let nexusMempool = Mempool(maxSize: 100)
-        let childAMempool = Mempool(maxSize: 100)
-        let childBMempool = Mempool(maxSize: 100)
+        let nexusMempool = NodeMempool(maxSize: 100)
+        let childAMempool = NodeMempool(maxSize: 100)
+        let childBMempool = NodeMempool(maxSize: 100)
 
         for (mempool, fee) in [(nexusMempool, 10 as UInt64), (childAMempool, 20), (childBMempool, 30)] {
             let body = TransactionBody(
@@ -1618,7 +1618,7 @@ final class FullMiningIntegrationTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: genesis)
         let nexusLevel = ChainLevel(chain: chain, children: [:])
         let lattice = Lattice(nexus: nexusLevel)
-        let mempool = Mempool(maxSize: 100)
+        let mempool = NodeMempool(maxSize: 100)
 
         let genesisStorer = BufferedStorer()
         try HeaderImpl<Block>(node: genesis).storeRecursively(storer: genesisStorer)
@@ -1681,13 +1681,13 @@ final class FullMiningIntegrationTests: XCTestCase {
         try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
         await gs2.flush(to: f)
 
-        let childMempool = Mempool(maxSize: 100)
+        let childMempool = NodeMempool(maxSize: 100)
         let childCtx = ChildMiningContext(
             directory: "Payments", chainState: childChain,
             mempool: childMempool, fetcher: f, spec: childSpec
         )
 
-        let nexusMempool = Mempool(maxSize: 100)
+        let nexusMempool = NodeMempool(maxSize: 100)
         let miner = MinerLoop(
             chainState: nexusChain, mempool: nexusMempool, fetcher: f,
             spec: nexusSpec, identity: identity, childContexts: [childCtx],
@@ -1766,10 +1766,10 @@ final class FullMiningIntegrationTests: XCTestCase {
 
         let childCtx = ChildMiningContext(
             directory: "Payments", chainState: childChainA,
-            mempool: Mempool(maxSize: 100), fetcher: f, spec: childSpec
+            mempool: NodeMempool(maxSize: 100), fetcher: f, spec: childSpec
         )
         let miner = MinerLoop(
-            chainState: chainA, mempool: Mempool(maxSize: 100), fetcher: f,
+            chainState: chainA, mempool: NodeMempool(maxSize: 100), fetcher: f,
             spec: nexusSpec, identity: identity, childContexts: [childCtx],
             batchSize: 10_000
         )

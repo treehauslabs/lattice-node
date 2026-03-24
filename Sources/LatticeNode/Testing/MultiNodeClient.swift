@@ -262,7 +262,7 @@ public actor MultiNodeClient {
 
         var mempoolCount = 0
         if let network = await node.network(for: genesisConfig.spec.directory) {
-            mempoolCount = await network.mempool.count
+            mempoolCount = await network.nodeMempool.count
         }
 
         return NodeStatus(

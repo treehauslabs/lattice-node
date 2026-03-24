@@ -5,13 +5,12 @@ import UInt256
 
 public actor MinerLoop {
     private let chainState: ChainState
-    private let mempool: Mempool
+    private let mempool: NodeMempool
     private let fetcher: Fetcher
     private let spec: ChainSpec
     private let identity: MinerIdentity?
     private let childContexts: [ChildMiningContext]
     private let batchSize: UInt64
-    private let nodeMempool: NodeMempool?
     private var mining: Bool
     private var currentTask: Task<Void, Never>?
     private var nonceOffset: UInt64 = 0
@@ -19,13 +18,12 @@ public actor MinerLoop {
 
     public init(
         chainState: ChainState,
-        mempool: Mempool,
+        mempool: NodeMempool,
         fetcher: Fetcher,
         spec: ChainSpec,
         identity: MinerIdentity? = nil,
         childContexts: [ChildMiningContext] = [],
-        batchSize: UInt64 = 10_000,
-        nodeMempool: NodeMempool? = nil
+        batchSize: UInt64 = 10_000
     ) {
         self.chainState = chainState
         self.mempool = mempool
@@ -34,7 +32,6 @@ public actor MinerLoop {
         self.identity = identity
         self.childContexts = childContexts
         self.batchSize = batchSize
-        self.nodeMempool = nodeMempool
         self.mining = false
     }
 
@@ -66,12 +63,7 @@ public actor MinerLoop {
                 let previousBlockHash = HeaderImpl<Block>(node: previousBlock).rawCID
 
                 let maxTxCount = max(0, Int(spec.maxNumberOfTransactionsPerBlock) - 1)
-                var transactions: [Transaction]
-                if let nodeMempool {
-                    transactions = await nodeMempool.selectTransactions(maxCount: maxTxCount)
-                } else {
-                    transactions = await mempool.selectTransactions(maxCount: maxTxCount)
-                }
+                var transactions = await mempool.selectTransactions(maxCount: maxTxCount)
 
                 if let coinbase = try? await buildCoinbaseTransaction(
                     previousBlock: previousBlock,
@@ -282,12 +274,12 @@ public actor MinerLoop {
 
     private struct ChildBlockResult {
         let blocks: [String: Block]
-        let pendingChildTxRemovals: [(mempool: Mempool, txCIDs: Set<String>)]
+        let pendingChildTxRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)]
     }
 
     private func buildChildBlocks(nexusBlock: Block, timestamp: Int64) async -> ChildBlockResult {
         var blocks: [String: Block] = [:]
-        var pendingRemovals: [(mempool: Mempool, txCIDs: Set<String>)] = []
+        var pendingRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)] = []
 
         for ctx in childContexts {
             do {

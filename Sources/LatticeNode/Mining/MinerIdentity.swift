@@ -16,11 +16,11 @@ public struct MinerIdentity: Sendable {
 public struct ChildMiningContext: Sendable {
     public let directory: String
     public let chainState: ChainState
-    public let mempool: Mempool
+    public let mempool: NodeMempool
     public let fetcher: Fetcher
     public let spec: ChainSpec
 
-    public init(directory: String, chainState: ChainState, mempool: Mempool, fetcher: Fetcher, spec: ChainSpec) {
+    public init(directory: String, chainState: ChainState, mempool: NodeMempool, fetcher: Fetcher, spec: ChainSpec) {
         self.directory = directory
         self.chainState = chainState
         self.mempool = mempool
@@ -31,7 +31,7 @@ public struct ChildMiningContext: Sendable {
 
 public struct MinedBlockPendingRemovals: Sendable {
     public let nexusTxCIDs: Set<String>
-    public let childTxRemovals: [(directory: String, mempool: Mempool, txCIDs: Set<String>)]
+    public let childTxRemovals: [(directory: String, mempool: NodeMempool, txCIDs: Set<String>)]
 }
 
 public protocol MinerDelegate: AnyObject, Sendable {
