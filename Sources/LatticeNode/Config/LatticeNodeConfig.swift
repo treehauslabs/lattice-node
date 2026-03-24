@@ -16,6 +16,7 @@ public struct LatticeNodeConfig: Sendable {
     public let retentionDepth: UInt64
     public let resources: NodeResourceConfig
     public let proxyConfig: ProxyConfig?
+    public let finality: FinalityConfig
 
     public init(
         publicKey: String,
@@ -33,7 +34,8 @@ public struct LatticeNodeConfig: Sendable {
         syncStrategy: SyncStrategy = .snapshot,
         retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE,
         resources: NodeResourceConfig = .default,
-        proxyConfig: ProxyConfig? = nil
+        proxyConfig: ProxyConfig? = nil,
+        finality: FinalityConfig = FinalityConfig()
     ) {
         self.publicKey = publicKey
         self.privateKey = privateKey
@@ -49,6 +51,7 @@ public struct LatticeNodeConfig: Sendable {
         self.retentionDepth = retentionDepth
         self.resources = resources
         self.proxyConfig = proxyConfig
+        self.finality = finality
     }
 
     public func isSubscribed(chainPath: [String]) -> Bool {

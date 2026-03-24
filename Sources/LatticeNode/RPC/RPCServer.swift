@@ -68,6 +68,8 @@ enum RPCRoutes {
 
         api.get("receipt/{txCID}") { _, ctx in try await getReceipt(node: node, txCID: ctx.parameters.require("txCID")) }
         api.get("transactions/{address}") { _, ctx in try await getTransactionHistory(node: node, address: ctx.parameters.require("address")) }
+        api.get("finality/{height}") { _, ctx in try await getFinality(node: node, height: ctx.parameters.require("height")) }
+        api.get("finality/config") { _, _ in try await getFinalityConfig(node: node) }
         api.post("orders/commit") { req, _ in try await commitOrder(node: node, request: req) }
         api.post("orders/reveal") { req, _ in try await revealOrder(node: node, request: req) }
 
@@ -336,6 +338,44 @@ enum RPCRoutes {
             transactions: history.map { Entry(txCID: $0.txCID, blockHash: $0.blockHash, height: $0.height) },
             count: history.count
         ))
+    }
+
+    // MARK: - Finality
+
+    static func getFinality(node: LatticeNode, height: String) async throws -> Response {
+        guard let blockHeight = UInt64(height) else {
+            return jsonError("Invalid height", status: .badRequest)
+        }
+        let dir = node.genesisConfig.spec.directory
+        let currentHeight = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let finality = node.config.finality
+        let isFinal = finality.isFinal(chain: dir, blockHeight: blockHeight, currentHeight: currentHeight)
+        let confirmations = currentHeight >= blockHeight ? currentHeight - blockHeight : 0
+        let required = finality.confirmations(for: dir)
+
+        struct R: Encodable {
+            let height: UInt64; let currentHeight: UInt64
+            let confirmations: UInt64; let required: UInt64
+            let isFinal: Bool; let chain: String
+        }
+        return json(R(
+            height: blockHeight, currentHeight: currentHeight,
+            confirmations: confirmations, required: required,
+            isFinal: isFinal, chain: dir
+        ))
+    }
+
+    static func getFinalityConfig(node: LatticeNode) async throws -> Response {
+        let finality = node.config.finality
+        let chains = await node.chainStatus()
+        struct ChainFinality: Encodable {
+            let chain: String; let confirmations: UInt64; let currentHeight: UInt64
+        }
+        let configs = chains.map {
+            ChainFinality(chain: $0.directory, confirmations: finality.confirmations(for: $0.directory), currentHeight: $0.height)
+        }
+        struct R: Encodable { let chains: [ChainFinality]; let defaultConfirmations: UInt64 }
+        return json(R(chains: configs, defaultConfirmations: finality.defaultConfirmations))
     }
 
     // MARK: - Batch Auction (MEV Protection)

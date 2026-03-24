@@ -74,6 +74,12 @@ struct NodeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Disable DNS seed resolution")
     var noDnsSeeds: Bool = false
 
+    @Option(name: .long, help: "Default finality confirmations for all chains")
+    var finalityConfirmations: UInt64 = 6
+
+    @Option(name: .long, parsing: .singleValue, help: "Per-chain finality (chain:confirmations, repeatable)")
+    var finalityPolicy: [String] = []
+
     func run() async throws {
         #if canImport(Darwin)
         setbuf(Darwin.stdout, nil)
@@ -162,6 +168,11 @@ struct NodeCommand: AsyncParsableCommand {
             parsedProxy = ProxyConfig.parse(proxyStr)
         }
 
+        let parsedFinality = FinalityConfig(
+            policies: finalityPolicy.compactMap { FinalityPolicy.parse($0) },
+            defaultConfirmations: finalityConfirmations
+        )
+
         let currentSubscriptions = await state.subscriptions
         let nodeConfig = LatticeNodeConfig(
             publicKey: identity.publicKey,
@@ -173,7 +184,8 @@ struct NodeCommand: AsyncParsableCommand {
             persistInterval: 100,
             subscribedChains: currentSubscriptions,
             resources: resources,
-            proxyConfig: parsedProxy
+            proxyConfig: parsedProxy,
+            finality: parsedFinality
         )
 
         let node = try await LatticeNode(config: nodeConfig, genesisConfig: NexusGenesis.config)
