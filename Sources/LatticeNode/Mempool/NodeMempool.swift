@@ -166,7 +166,9 @@ public actor NodeMempool {
         sender: String,
         nonce: UInt64
     ) -> AddResult {
-        let requiredFee = existing.fee + existing.fee / 10 + 1
+        let bump = existing.fee / 10 + 1
+        let (requiredFee, overflow) = existing.fee.addingReportingOverflow(bump)
+        if overflow { return .rejected(reason: "RBF fee calculation overflow") }
         guard fee >= requiredFee else {
             return .rejected(reason: "RBF fee too low: need at least \(requiredFee), got \(fee)")
         }

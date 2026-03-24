@@ -234,21 +234,22 @@ extension LatticeNode {
 
     func verifySyncWithPeers(tipCID: String, tipHeight: UInt64, network: ChainNetwork) async {
         let log = NodeLogger("sync")
-        let peers = await network.ivy.router.allPeers()
-        guard peers.count >= 2 else {
-            log.warn("Insufficient peers for sync verification (\(peers.count) available)")
+        let peerCount = await network.ivy.directPeerCount
+        if peerCount < 2 {
+            log.warn("Sync completed with only \(peerCount) peer(s) — insufficient for cross-verification")
             return
         }
-        var confirmed = 0
-        for _ in peers.prefix(3) {
-            if let _ = try? await network.fetcher.fetch(rawCid: tipCID) {
-                confirmed += 1
+
+        if let data = try? await network.fetcher.fetch(rawCid: tipCID),
+           let block = Block(data: data) {
+            let valid = block.index == tipHeight
+            if valid {
+                log.info("Sync verified: tip at height \(tipHeight) with \(peerCount) connected peers")
+            } else {
+                log.warn("Sync tip height mismatch: expected \(tipHeight), got \(block.index)")
             }
-        }
-        if confirmed >= 2 {
-            log.info("Sync verified: \(confirmed) peers confirm tip at height \(tipHeight)")
         } else {
-            log.warn("Sync verification weak: only \(confirmed) peer(s) confirm tip")
+            log.warn("Sync verification: could not resolve tip block from CAS")
         }
     }
 

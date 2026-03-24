@@ -92,6 +92,11 @@ public actor StateStore {
         recordDiff(height: atHeight, path: path, oldValue: oldValue)
     }
 
+    public func deleteAccount(address: String) {
+        let path = "account:\(address)"
+        try? db.execute("DELETE FROM state WHERE path = ?1", params: [.text(path)])
+    }
+
     // MARK: - Block References
 
     public func getBlockHash(atHeight height: UInt64) -> String? {
@@ -297,6 +302,8 @@ public actor StateStore {
         let path = "account:\(address)"
         let expiredPath = "expired:\(address)"
         if let value = currentValue(forPath: path) {
+            recordDiff(height: atHeight, path: path, oldValue: value)
+            recordDiff(height: atHeight, path: expiredPath, oldValue: nil)
             try? db.execute(
                 "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
                 params: [.text(expiredPath), .blob(value), .int(Int64(atHeight))]
@@ -306,6 +313,8 @@ public actor StateStore {
     }
 
     public func reviveAccount(address: String, proof: Data, atHeight: UInt64) -> Bool {
+        guard !proof.isEmpty else { return false }
+
         let expiredPath = "expired:\(address)"
         let path = "account:\(address)"
         guard let rows = try? db.query(
@@ -314,6 +323,9 @@ public actor StateStore {
         ), let row = rows.first, let value = row["value"]?.blobValue else {
             return false
         }
+
+        guard proof == value else { return false }
+
         try? db.execute(
             "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
             params: [.text(path), .blob(value), .int(Int64(atHeight))]

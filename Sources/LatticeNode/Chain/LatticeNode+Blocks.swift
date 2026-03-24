@@ -176,9 +176,10 @@ extension LatticeNode {
         guard !orphanedBlockHashes.isEmpty else { return }
         log.info("Reorg: \(orphanedBlockHashes.count) orphaned block(s)")
 
-        // Step 1: Roll back StateStore via CAS diffs (newest → oldest)
+        // Step 1: Roll back StateStore via CAS diffs (newest first)
+        // orphanedBlockHashes is already newest-to-oldest order
         if let store = stateStores[dir] {
-            for blockHash in orphanedBlockHashes.reversed() {
+            for blockHash in orphanedBlockHashes {
                 guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
                       let block = Block(data: blockData) else { continue }
                 do {
@@ -187,8 +188,14 @@ extension LatticeNode {
                     guard let newAccounts = newState.node?.accountState,
                           let oldAccounts = oldState.node?.accountState else { continue }
                     let diff = try await newAccounts.diff(from: oldAccounts, fetcher: fetcher)
+
                     for (address, _) in diff.inserted {
-                        await store.setAccount(address: address, balance: 0, nonce: 0, atHeight: block.index)
+                        await store.deleteAccount(address: address)
+                    }
+                    for (address, balanceStr) in diff.deleted {
+                        if let balance = UInt64(balanceStr) {
+                            await store.setAccount(address: address, balance: balance, nonce: 0, atHeight: block.index)
+                        }
                     }
                     for (address, entry) in diff.modified {
                         if let oldBalance = UInt64(entry.old) {
