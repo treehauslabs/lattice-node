@@ -57,8 +57,6 @@ enum RPCRoutes {
         api.get("block/{id}") { _, ctx in try await getBlock(node: node, id: ctx.parameters.require("id")) }
         api.post("transaction") { req, _ in try await submitTransaction(node: node, request: req) }
         api.get("mempool") { _, _ in try await mempool(node: node) }
-        api.get("orders") { _, _ in try await getOrders(node: node) }
-        api.post("orders") { req, _ in try await placeOrder(node: node, request: req) }
         api.get("proof/{address}") { _, ctx in try await balanceProof(node: node, address: ctx.parameters.require("address")) }
         api.get("peers") { _, _ in try await getPeers(node: node) }
 
@@ -188,44 +186,6 @@ enum RPCRoutes {
         struct P: Encodable { let publicKey: String; let host: String; let port: UInt16 }
         struct R: Encodable { let count: Int; let peers: [P] }
         return json(R(count: peers.count, peers: peers.map { P(publicKey: String($0.publicKey.prefix(16)) + "...", host: $0.host, port: $0.port) }))
-    }
-
-    // MARK: - Orders
-
-    static func getOrders(node: LatticeNode) async throws -> Response {
-        let orders = try await node.getOrders()
-        struct E: Encodable { let id: String; let owner: String; let side: String; let price: UInt64; let amount: UInt64; let filled: UInt64; let remaining: UInt64 }
-        struct R: Encodable { let orders: [E] }
-        return json(R(orders: orders.map { E(id: $0.id, owner: $0.owner, side: $0.side.rawValue, price: $0.price, amount: $0.amount, filled: $0.filled, remaining: $0.remaining) }))
-    }
-
-    static func placeOrder(node: LatticeNode, request: Request) async throws -> Response {
-        struct Sub: Decodable { let signatures: [String: String]; let bodyCID: String; let bodyData: String? }
-        guard let sub = try? await JSONDecoder().decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
-            return jsonError("Invalid order format. Expected: {signatures, bodyCID, bodyData}")
-        }
-        let dir = node.genesisConfig.spec.directory
-        guard let net = await node.network(for: dir) else { return jsonError("Network not available", status: .internalServerError) }
-        if let hex = sub.bodyData, let raw = Data(hex: hex) {
-            guard let parsed = TransactionBody(data: raw) else {
-                return jsonError("Invalid bodyData: cannot deserialize")
-            }
-            let computedCID = HeaderImpl<TransactionBody>(node: parsed).rawCID
-            guard computedCID == sub.bodyCID else {
-                return jsonError("CID mismatch: bodyData hashes to \(computedCID), not \(sub.bodyCID)")
-            }
-            await net.fetcher.store(rawCid: sub.bodyCID, data: raw)
-        }
-        guard let body = try? await HeaderImpl<TransactionBody>(rawCID: sub.bodyCID).resolve(fetcher: net.fetcher).node else {
-            return jsonError("Transaction body not found. Provide bodyData.")
-        }
-        let tx = Transaction(signatures: sub.signatures, body: HeaderImpl<TransactionBody>(node: body))
-        let result = await node.submitTransactionWithReason(directory: dir, transaction: tx)
-        struct R: Encodable { let accepted: Bool; let txCID: String; let error: String? }
-        switch result {
-        case .success: return json(R(accepted: true, txCID: sub.bodyCID, error: nil))
-        case .failure(let r): return json(R(accepted: false, txCID: sub.bodyCID, error: r), status: .badRequest)
-        }
     }
 
     // MARK: - Fee Estimation

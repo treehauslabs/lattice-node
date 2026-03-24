@@ -17,7 +17,6 @@ public struct LatticeNodeConfig: Sendable {
     public let syncStrategy: SyncStrategy
     public let retentionDepth: UInt64
     public let resources: NodeResourceConfig
-    public let proxyConfig: ProxyConfig?
     public let finality: FinalityConfig
 
     public init(
@@ -36,7 +35,6 @@ public struct LatticeNodeConfig: Sendable {
         syncStrategy: SyncStrategy = .snapshot,
         retentionDepth: UInt64 = DEFAULT_RETENTION_DEPTH,
         resources: NodeResourceConfig = .default,
-        proxyConfig: ProxyConfig? = nil,
         finality: FinalityConfig = FinalityConfig()
     ) {
         self.publicKey = publicKey
@@ -52,7 +50,6 @@ public struct LatticeNodeConfig: Sendable {
         self.syncStrategy = syncStrategy
         self.retentionDepth = retentionDepth
         self.resources = resources
-        self.proxyConfig = proxyConfig
         self.finality = finality
     }
 

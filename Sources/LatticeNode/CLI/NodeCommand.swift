@@ -62,12 +62,6 @@ struct NodeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Disable mDNS local peer discovery")
     var noDiscovery: Bool = false
 
-    @Flag(name: .long, help: "Route P2P through Tor (SOCKS5 on 127.0.0.1:9050)")
-    var tor: Bool = false
-
-    @Option(name: .long, help: "Route P2P through SOCKS5 proxy (socks5://host:port)")
-    var proxy: String?
-
     @Flag(name: .long, help: "Enable cookie-based RPC authentication")
     var rpcAuth: Bool = false
 
@@ -161,13 +155,6 @@ struct NodeCommand: AsyncParsableCommand {
             print("  Bootstrap:   \(allPeers.count) peer(s) (\(savedCount) persisted)")
         }
 
-        var parsedProxy: ProxyConfig? = nil
-        if tor {
-            parsedProxy = ProxyConfig.defaultTor
-        } else if let proxyStr = proxy {
-            parsedProxy = ProxyConfig.parse(proxyStr)
-        }
-
         let parsedFinality = FinalityConfig(
             policies: finalityPolicy.compactMap { FinalityPolicy.parse($0) },
             defaultConfirmations: finalityConfirmations
@@ -184,7 +171,6 @@ struct NodeCommand: AsyncParsableCommand {
             persistInterval: 100,
             subscribedChains: currentSubscriptions,
             resources: resources,
-            proxyConfig: parsedProxy,
             finality: parsedFinality
         )
 
@@ -225,10 +211,6 @@ struct NodeCommand: AsyncParsableCommand {
 
         let health = HealthCheck(dataDir: dataDirURL)
         await health.start()
-
-        if let pc = parsedProxy {
-            print("  Proxy:       \(pc.type.rawValue)://\(pc.host):\(pc.port) (pending Ivy proxy support)")
-        }
 
         var rpcTask: Task<Void, any Error>? = nil
         if let rpcPort = rpcPort {

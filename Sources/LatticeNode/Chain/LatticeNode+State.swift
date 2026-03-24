@@ -78,32 +78,6 @@ extension LatticeNode {
         return await lattice.nexus.chain.getMainChainBlockHash(atIndex: index)
     }
 
-    public func getOrders() async throws -> [Order] {
-        let tip = await lattice.nexus.chain.getMainChainTip()
-        if let cached = cachedOrders, cached.tip == tip {
-            return cached.orders
-        }
-
-        let dir = genesisConfig.spec.directory
-        guard let network = networks[dir] else { return [] }
-        guard let snapshot = await lattice.nexus.chain.tipSnapshot else { return [] }
-        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
-        let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
-        guard let state = resolved.node else { return [] }
-        let generalResolved = try await state.generalState.resolve(fetcher: network.fetcher)
-        guard let generalDict = generalResolved.node else { return [] }
-        guard let allEntries = try? generalDict.allKeysAndValues() else { return [] }
-        var orders: [Order] = []
-        for (key, value) in allEntries {
-            guard key.hasPrefix("order:") else { continue }
-            if let order = Order.fromStateValue(value) {
-                orders.append(order)
-            }
-        }
-        cachedOrders = (tip: tip, orders: orders)
-        return orders
-    }
-
     public func getBalanceProof(address: String, directory: String? = nil) async throws -> Data? {
         let dir = directory ?? genesisConfig.spec.directory
         guard let network = networks[dir] else { return nil }

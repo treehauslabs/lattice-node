@@ -24,8 +24,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     static let peerRateWindow: Duration = .seconds(10)
     var syncTask: Task<Void, Never>?
     var peerRefreshTask: Task<Void, Never>?
-    var cachedOrders: (tip: String, orders: [Order])?
-    public let blockIndex: BlockIndex
     public let feeEstimator: FeeEstimator
     public let subscriptions: SubscriptionManager
     public let anchorPeers: AnchorPeers
@@ -101,8 +99,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         self.blocksSinceLastPersist = [:]
         self.recentPeerBlocks = [:]
         self.peerBlockCounts = [:]
-        let loadedIndex = try? BlockIndex.load(from: config.storagePath)
-        self.blockIndex = loadedIndex ?? BlockIndex(storagePath: config.storagePath)
         self.feeEstimator = FeeEstimator()
         self.subscriptions = SubscriptionManager()
         self.anchorPeers = AnchorPeers(dataDir: config.storagePath)
@@ -140,7 +136,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         for (dir, _) in networks {
             await persistChainState(directory: dir)
         }
-        try? await blockIndex.save()
         let currentPeers = await connectedPeerEndpoints()
         await anchorPeers.update(peers: currentPeers)
         for (_, network) in networks {

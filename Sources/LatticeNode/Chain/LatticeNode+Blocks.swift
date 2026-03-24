@@ -82,8 +82,6 @@ extension LatticeNode {
         guard accepted else { return false }
 
         if let block = try? await header.resolve(fetcher: fetcher).node {
-            await blockIndex.insert(height: block.index, hash: header.rawCID)
-
             let txFees = block.collectTransactionFees()
             if !txFees.isEmpty {
                 await feeEstimator.recordBlock(height: block.index, transactionFees: txFees)
