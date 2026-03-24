@@ -79,10 +79,10 @@ public struct TransactionValidator: Sendable {
 
         let currentHeight = await chainState.getHighestBlockIndex()
         if !isCoinbase {
-            if body.nonce <= currentHeight && currentHeight > MAX_NONCE_DRIFT && body.nonce < currentHeight - MAX_NONCE_DRIFT {
+            if body.nonce < currentHeight && currentHeight > MAX_NONCE_DRIFT && body.nonce < currentHeight - MAX_NONCE_DRIFT {
                 return .failure(.nonceAlreadyUsed(nonce: body.nonce))
             }
-            if body.nonce > currentHeight + MAX_NONCE_DRIFT {
+            if body.nonce > currentHeight + 2 {
                 return .failure(.nonceFromFuture(nonce: body.nonce))
             }
         }
@@ -153,6 +153,10 @@ public struct TransactionValidator: Sendable {
                     ))
                 }
             }
+        }
+
+        if !isCoinbase && body.fee > 0 && body.accountActions.isEmpty {
+            return .failure(.balanceNotConserved(totalDebits: 0, totalCredits: 0, fee: body.fee))
         }
 
         if !isCoinbase && !body.accountActions.isEmpty {

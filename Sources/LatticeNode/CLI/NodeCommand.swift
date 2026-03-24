@@ -236,11 +236,12 @@ struct NodeCommand: AsyncParsableCommand {
             print("  Mining started on \(chain)")
         }
 
-        startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: port)
-        startMempoolExpiryLoop(node: node)
-        startStatePruningLoop(node: node, retentionDepth: nodeConfig.retentionDepth)
-        startStateExpiryLoop(node: node)
-        startBatchAuctionLoop(node: node)
+        var backgroundTasks: [Task<Void, Never>] = []
+        backgroundTasks.append(startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: port))
+        backgroundTasks.append(startMempoolExpiryLoop(node: node))
+        backgroundTasks.append(startStatePruningLoop(node: node, retentionDepth: nodeConfig.retentionDepth))
+        backgroundTasks.append(startStateExpiryLoop(node: node))
+        backgroundTasks.append(startBatchAuctionLoop(node: node))
 
         let peerRefreshTask = Task { await node.startPeerRefresh() }
 
@@ -285,6 +286,7 @@ struct NodeCommand: AsyncParsableCommand {
         healthTask.cancel()
         peerRefreshTask.cancel()
         rpcTask?.cancel()
+        for task in backgroundTasks { task.cancel() }
         await health.stop()
 
         let mempoolPersistence = MempoolPersistence(dataDir: dataDirURL)

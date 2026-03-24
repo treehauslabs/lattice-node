@@ -7,7 +7,8 @@ func deterministicPort(basePort: UInt16, directory: String) -> UInt16 {
     return basePort &+ 1 &+ (hash % 1000)
 }
 
-func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, basePort: UInt16) {
+@discardableResult
+func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, basePort: UInt16) -> Task<Void, Never> {
     Task {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(5))
@@ -28,7 +29,8 @@ func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, baseP
     }
 }
 
-func startMempoolExpiryLoop(node: LatticeNode) {
+@discardableResult
+func startMempoolExpiryLoop(node: LatticeNode) -> Task<Void, Never> {
     Task {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(60))
@@ -37,7 +39,8 @@ func startMempoolExpiryLoop(node: LatticeNode) {
     }
 }
 
-func startStateExpiryLoop(node: LatticeNode, expiryBlocks: UInt64 = 1_000_000) {
+@discardableResult
+func startStateExpiryLoop(node: LatticeNode, expiryBlocks: UInt64 = 1_000_000) -> Task<Void, Never> {
     Task {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(3600))
@@ -56,7 +59,8 @@ func startStateExpiryLoop(node: LatticeNode, expiryBlocks: UInt64 = 1_000_000) {
     }
 }
 
-func startBatchAuctionLoop(node: LatticeNode) {
+@discardableResult
+func startBatchAuctionLoop(node: LatticeNode) -> Task<Void, Never> {
     Task {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(30))
@@ -90,7 +94,8 @@ func startBatchAuctionLoop(node: LatticeNode) {
     }
 }
 
-func startStatePruningLoop(node: LatticeNode, retentionDepth: UInt64) {
+@discardableResult
+func startStatePruningLoop(node: LatticeNode, retentionDepth: UInt64) -> Task<Void, Never> {
     Task {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(300))

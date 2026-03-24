@@ -7,12 +7,12 @@ import cashew
 extension LatticeNode {
 
     static let maxTimestampDriftMs: Int64 = 7_200_000
+    static let maxReorgDepth: Int = 100
 
     nonisolated func isBlockTimestampValid(_ block: Block) -> Bool {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        if block.timestamp > nowMs + Self.maxTimestampDriftMs {
-            return false
-        }
+        if block.timestamp > nowMs + Self.maxTimestampDriftMs { return false }
+        if block.timestamp < nowMs - 86_400_000 { return false }
         return true
     }
 
@@ -179,12 +179,20 @@ extension LatticeNode {
         guard !orphanedBlockHashes.isEmpty else { return }
         log.info("Reorg: \(orphanedBlockHashes.count) orphaned block(s)")
 
+        if orphanedBlockHashes.count > Self.maxReorgDepth {
+            log.error("Reorg depth \(orphanedBlockHashes.count) exceeds limit \(Self.maxReorgDepth) — potential attack")
+            return
+        }
+
         // Step 1: Roll back StateStore via CAS diffs (newest first)
         // orphanedBlockHashes is already newest-to-oldest order
         if let store = stateStores[dir] {
             for blockHash in orphanedBlockHashes {
                 guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
-                      let block = Block(data: blockData) else { continue }
+                      let block = Block(data: blockData) else {
+                    log.error("Missing CAS data for orphaned block \(blockHash) — reorg incomplete")
+                    return
+                }
                 do {
                     let newState = try await block.frontier.resolve(fetcher: fetcher)
                     let oldState = try await block.homestead.resolve(fetcher: fetcher)
@@ -312,19 +320,28 @@ extension LatticeNode {
         let fetcher = await network.fetcher
         await storeReceivedBlockRecursively(cid: cid, data: data, fetcher: fetcher)
 
-        if let block = Block(data: data) {
-            if !isBlockTimestampValid(block) {
-                tally.recordFailure(peer: peer)
-                return
-            }
-            if await checkSyncNeeded(
-                peerBlock: block,
-                peerTipCID: cid,
-                network: network
-            ) {
-                tally.recordSuccess(peer: peer)
-                return
-            }
+        guard let block = Block(data: data) else {
+            tally.recordFailure(peer: peer)
+            return
+        }
+
+        if !isBlockTimestampValid(block) {
+            tally.recordFailure(peer: peer)
+            return
+        }
+
+        if block.index == 0 && block.previousBlock != nil {
+            tally.recordFailure(peer: peer)
+            return
+        }
+
+        if await checkSyncNeeded(
+            peerBlock: block,
+            peerTipCID: cid,
+            network: network
+        ) {
+            tally.recordSuccess(peer: peer)
+            return
         }
 
         let directory = await network.directory
@@ -393,6 +410,11 @@ extension LatticeNode {
 
     func isPeerBlockRateLimited(_ peer: PeerID) -> Bool {
         let now = ContinuousClock.Instant.now
+
+        if peerBlockCounts.count > 5000 {
+            peerBlockCounts = peerBlockCounts.filter { now - $0.value.windowStart < .seconds(30) }
+        }
+
         if let entry = peerBlockCounts[peer] {
             if now - entry.windowStart < Self.peerRateWindow {
                 if entry.count >= Self.maxBlocksPerPeerPerWindow {
