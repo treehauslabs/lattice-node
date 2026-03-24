@@ -180,12 +180,12 @@ struct NodeCommand: AsyncParsableCommand {
 
         guard NexusGenesis.verifyGenesis(node.genesisResult) else {
             print("  FATAL: Genesis block hash mismatch!")
-            print("  Expected: \(NexusGenesis.expectedBlockHash)")
+            print("  Expected: \(NexusGenesis.expectedBlockHash ?? "nil")")
             print("  Got:      \(node.genesisResult.blockHash)")
             print("  This binary may be incompatible with the network.")
             throw ExitCode.failure
         }
-        print("  Genesis:     verified (\(String(NexusGenesis.expectedBlockHash.prefix(20)))...)")
+        print("  Genesis:     verified (\(String(node.genesisResult.blockHash.prefix(20)))...)")
 
         try? await node.restoreChildChains()
         try await node.start()

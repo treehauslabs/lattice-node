@@ -67,6 +67,7 @@ enum RPCRoutes {
         api.get("nonce/{address}") { _, ctx in try await getNonce(node: node, address: ctx.parameters.require("address")) }
 
         api.get("receipt/{txCID}") { _, ctx in try await getReceipt(node: node, txCID: ctx.parameters.require("txCID")) }
+        api.get("transactions/{address}") { _, ctx in try await getTransactionHistory(node: node, address: ctx.parameters.require("address")) }
         api.post("orders/commit") { req, _ in try await commitOrder(node: node, request: req) }
         api.post("orders/reveal") { req, _ in try await revealOrder(node: node, request: req) }
 
@@ -318,6 +319,23 @@ enum RPCRoutes {
             return jsonError("Receipt not found", status: .notFound)
         }
         return json(receipt)
+    }
+
+    // MARK: - Transaction History
+
+    static func getTransactionHistory(node: LatticeNode, address: String) async throws -> Response {
+        let dir = node.genesisConfig.spec.directory
+        guard let store = await node.stateStore(for: dir) else {
+            return jsonError("State store not available", status: .internalServerError)
+        }
+        let history = await store.getTransactionHistory(address: address)
+        struct Entry: Encodable { let txCID: String; let blockHash: String; let height: UInt64 }
+        struct R: Encodable { let address: String; let transactions: [Entry]; let count: Int }
+        return json(R(
+            address: address,
+            transactions: history.map { Entry(txCID: $0.txCID, blockHash: $0.blockHash, height: $0.height) },
+            count: history.count
+        ))
     }
 
     // MARK: - Batch Auction (MEV Protection)

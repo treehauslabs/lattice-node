@@ -116,6 +116,9 @@ extension LatticeNode {
                     for (cid, txHeader) in txEntries {
                         await receiptStore.indexReceipt(txCID: cid, blockHash: header.rawCID, blockHeight: block.index)
                         if let tx = txHeader.node, let body = tx.body.node {
+                            for action in body.accountActions {
+                                await store.indexTransaction(address: action.owner, txCID: cid, blockHash: header.rawCID, height: block.index)
+                            }
                             let actions = body.accountActions.map {
                                 TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
                             }

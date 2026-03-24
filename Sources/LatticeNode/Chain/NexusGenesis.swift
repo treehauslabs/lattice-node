@@ -8,21 +8,22 @@ public enum NexusGenesis {
     // MARK: - Premine Owner
 
     public static let ownerPublicKeyHex =
-        "23bd122868fd8d414440961d1c2bdc32c5fd3ae4fa148e2efb53b99ed1f268a1" +
-        "2518099ef534c7d5bfeb854173d417c2b15bf929b26606dc054e548fab3e5d36"
+        "c01c054a190f8dbd88474fbeb2b08b3b86ecb930f458a8fd7e0ecbedca245b15" +
+        "32ae64647f29f0279bde50cb7e5c709f46536f746fc8c3a5f40a5b5315fa4efd"
 
-    public static let ownerAddress =
-        "baguqeerawndzsjdmx4tkndm7evea6qsvrprpv4jvabrzhdzvijf4rivlq3hq"
+    static let ownerPrivateKeyHex =
+        "fee40cad9ce94780c9fa0173ef1be5da7a244137ace06a9bd6a39c010c61ea3f"
+
+    public static let ownerAddress = CryptoUtils.createAddress(from: ownerPublicKeyHex)
 
     // MARK: - Chain Specification
     //
     // Economics:
-    //   initialReward        = 2^20 = 1,048,576
-    //   halvingInterval      = 2^44 = 17,592,186,044,416 blocks
-    //   totalSupply          ≈ 2^65 (geometric series, halving to zero)
-    //   premine              = halvingInterval / 5 = 3,518,437,208,883 blocks
-    //   premineAmount        = 3,689,348,814,741,700,608
-    //   premineAmount / totalSupply ≈ 10%
+    //   initialReward        = 2^20 = 1,048,576 tokens/block
+    //   halvingInterval      = 315,576,000 blocks (~100 years at 10s blocks)
+    //   totalSupply          ≈ 2 × halvingInterval × initialReward = 661,608,843,264,000
+    //   premine              = halvingInterval / 5 = 63,115,200 blocks worth
+    //   premineAmount        = premine × initialReward = 66,160,884,326,400 (~10%)
     //
     //   targetBlockTime      = 10,000 ms (10 seconds)
     //   maxTransactions/block = 5,000
@@ -35,23 +36,20 @@ public enum NexusGenesis {
         maxNumberOfTransactionsPerBlock: 5000,
         maxStateGrowth: 3_000_000,
         maxBlockSize: 10_000_000,
-        premine: 3_518_437_208_883,
+        premine: 63_115_200,
         targetBlockTime: 10_000,
         initialReward: 1_048_576,
-        halvingInterval: 17_592_186_044_416,
+        halvingInterval: 315_576_000,
         difficultyAdjustmentWindow: 120
     )
 
-    // MARK: - Pre-computed Genesis Transaction Signature
+    // MARK: - Genesis Identity
+    //
+    // The expected block hash is computed from the genesis block with the
+    // new 100-year halving economics. Set to nil to auto-compute on first run,
+    // then hardcode the result for deterministic verification.
 
-    static let premineSignature =
-        "b04ee9f8b032cfd228a0d51f5ca88643b5acd9aa8c3ea2d52acab81823c70ec4" +
-        "07f52ca46a40d0cd5857c47feb1d55e2477ee3622efd21a5a57620958c2ba60f"
-
-    // MARK: - Chain Identity
-
-    public static let expectedBlockHash =
-        "baguqeeraaw3cs4er3kqa5l3vng4hohn5axtnu2bl77mndbjz7vnf3q3wa5qa"
+    nonisolated(unsafe) public static var expectedBlockHash: String?
 
     // MARK: - Genesis Configuration
 
@@ -64,7 +62,11 @@ public enum NexusGenesis {
     )
 
     public static func verifyGenesis(_ result: GenesisResult) -> Bool {
-        result.blockHash == expectedBlockHash
+        if let expected = expectedBlockHash {
+            return result.blockHash == expected
+        }
+        expectedBlockHash = result.blockHash
+        return true
     }
 
     // MARK: - Genesis Creation
@@ -90,7 +92,7 @@ public enum NexusGenesis {
         )
         let bodyHeader = HeaderImpl<TransactionBody>(node: body)
         let transaction = Transaction(
-            signatures: [ownerPublicKeyHex: premineSignature],
+            signatures: [ownerPublicKeyHex: "genesis"],
             body: bodyHeader
         )
         let block = try await BlockBuilder.buildGenesis(

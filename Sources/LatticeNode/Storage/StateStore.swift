@@ -42,6 +42,17 @@ public actor StateStore {
 
         try db.execute("CREATE INDEX IF NOT EXISTS idx_blocks_hash ON blocks(hash)")
         try db.execute("CREATE INDEX IF NOT EXISTS idx_diffs_height ON state_diffs(height)")
+
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS tx_history (
+                address TEXT NOT NULL,
+                txCID TEXT NOT NULL,
+                blockHash TEXT NOT NULL,
+                height INTEGER NOT NULL,
+                PRIMARY KEY (address, txCID)
+            )
+        """)
+        try db.execute("CREATE INDEX IF NOT EXISTS idx_tx_history_addr ON tx_history(address, height DESC)")
     }
 
     // MARK: - Account State
@@ -90,6 +101,28 @@ public actor StateStore {
             params: [.text(path), .blob(data), .int(Int64(atHeight))]
         )
         recordDiff(height: atHeight, path: path, oldValue: oldValue)
+    }
+
+    // MARK: - Transaction History
+
+    public func indexTransaction(address: String, txCID: String, blockHash: String, height: UInt64) {
+        try? db.execute(
+            "INSERT OR IGNORE INTO tx_history (address, txCID, blockHash, height) VALUES (?1, ?2, ?3, ?4)",
+            params: [.text(address), .text(txCID), .text(blockHash), .int(Int64(height))]
+        )
+    }
+
+    public func getTransactionHistory(address: String, limit: Int = 50) -> [(txCID: String, blockHash: String, height: UInt64)] {
+        guard let rows = try? db.query(
+            "SELECT txCID, blockHash, height FROM tx_history WHERE address = ?1 ORDER BY height DESC LIMIT ?2",
+            params: [.text(address), .int(Int64(limit))]
+        ) else { return [] }
+        return rows.compactMap { row in
+            guard let cid = row["txCID"]?.textValue,
+                  let hash = row["blockHash"]?.textValue,
+                  let h = row["height"]?.intValue else { return nil }
+            return (txCID: cid, blockHash: hash, height: UInt64(h))
+        }
     }
 
     public func deleteAccount(address: String) {
