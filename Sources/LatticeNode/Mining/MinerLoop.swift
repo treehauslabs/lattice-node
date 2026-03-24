@@ -338,6 +338,7 @@ public actor MinerLoop {
 
     private func withNonce(_ block: Block, startNonce: UInt64) -> Block {
         Block(
+            version: block.version,
             previousBlock: block.previousBlock,
             transactions: block.transactions,
             difficulty: block.difficulty,
