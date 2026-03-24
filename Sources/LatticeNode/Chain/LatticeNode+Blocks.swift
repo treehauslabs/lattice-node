@@ -202,12 +202,14 @@ extension LatticeNode {
                     }
                     for (address, balanceStr) in diff.deleted {
                         if let balance = UInt64(balanceStr) {
-                            await store.setAccount(address: address, balance: balance, nonce: 0, atHeight: block.index)
+                            let existingNonce = await store.getNonce(address: address) ?? 0
+                            await store.setAccount(address: address, balance: balance, nonce: existingNonce, atHeight: block.index)
                         }
                     }
                     for (address, entry) in diff.modified {
                         if let oldBalance = UInt64(entry.old) {
-                            await store.setAccount(address: address, balance: oldBalance, nonce: 0, atHeight: block.index)
+                            let existingNonce = await store.getNonce(address: address) ?? 0
+                            await store.setAccount(address: address, balance: oldBalance, nonce: existingNonce, atHeight: block.index)
                         }
                     }
                 } catch {

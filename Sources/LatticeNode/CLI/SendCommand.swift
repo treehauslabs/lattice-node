@@ -49,7 +49,11 @@ struct SendCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let totalCost = amount + fee
+        let (totalCost, costOverflow) = amount.addingReportingOverflow(fee)
+        guard !costOverflow else {
+            printError("Amount + fee overflows UInt64")
+            throw ExitCode.failure
+        }
         guard balance >= totalCost else {
             printError("Insufficient balance: have \(balance), need \(totalCost)")
             throw ExitCode.failure
@@ -57,8 +61,11 @@ struct SendCommand: AsyncParsableCommand {
 
         let nonceURL = URL(string: "\(rpc)/api/nonce/\(senderAddress)")!
         let (nonceData, _) = try await URLSession.shared.data(from: nonceURL)
-        let nonceJSON = (try? JSONSerialization.jsonObject(with: nonceData) as? [String: Any]) ?? [:]
-        let nonce = nonceJSON["nonce"] as? UInt64 ?? 0
+        guard let nonceJSON = try? JSONSerialization.jsonObject(with: nonceData) as? [String: Any],
+              let nonce = nonceJSON["nonce"] as? UInt64 else {
+            printError("Could not fetch sender nonce")
+            throw ExitCode.failure
+        }
 
         let heightURL = URL(string: "\(rpc)/api/chain/info")!
         let (heightData, _) = try await URLSession.shared.data(from: heightURL)
@@ -80,10 +87,15 @@ struct SendCommand: AsyncParsableCommand {
             oldBalance: balance,
             newBalance: balance - totalCost
         )
+        let (recipientNew, recipientOverflow) = recipientBalance.addingReportingOverflow(amount)
+        guard !recipientOverflow else {
+            printError("Recipient balance would overflow UInt64")
+            throw ExitCode.failure
+        }
         let recipientAction = AccountAction(
             owner: to,
             oldBalance: recipientBalance,
-            newBalance: recipientBalance + amount
+            newBalance: recipientNew
         )
 
         let body = TransactionBody(
