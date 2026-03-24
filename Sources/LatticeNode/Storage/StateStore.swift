@@ -31,16 +31,6 @@ public actor StateStore {
             )
         """)
 
-        try db.execute("""
-            CREATE TABLE IF NOT EXISTS blocks (
-                height INTEGER PRIMARY KEY,
-                hash TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                difficulty TEXT NOT NULL
-            )
-        """)
-
-        try db.execute("CREATE INDEX IF NOT EXISTS idx_blocks_hash ON blocks(hash)")
         try db.execute("CREATE INDEX IF NOT EXISTS idx_diffs_height ON state_diffs(height)")
 
         try db.execute("""
@@ -130,42 +120,6 @@ public actor StateStore {
         try? db.execute("DELETE FROM state WHERE path = ?1", params: [.text(path)])
     }
 
-    // MARK: - Block References
-
-    public func getBlockHash(atHeight height: UInt64) -> String? {
-        guard let rows = try? db.query(
-            "SELECT hash FROM blocks WHERE height = ?1",
-            params: [.int(Int64(height))]
-        ), let row = rows.first else { return nil }
-        return row["hash"]?.textValue
-    }
-
-    public func getBlockHeight(forHash hash: String) -> UInt64? {
-        guard let rows = try? db.query(
-            "SELECT height FROM blocks WHERE hash = ?1",
-            params: [.text(hash)]
-        ), let row = rows.first, let h = row["height"]?.intValue else { return nil }
-        return UInt64(h)
-    }
-
-    public func setBlock(height: UInt64, hash: String, timestamp: Int64, difficulty: String) {
-        try? db.execute(
-            "INSERT OR REPLACE INTO blocks (height, hash, timestamp, difficulty) VALUES (?1, ?2, ?3, ?4)",
-            params: [.int(Int64(height)), .text(hash), .int(timestamp), .text(difficulty)]
-        )
-    }
-
-    public func getLatestBlock() -> BlockRef? {
-        guard let rows = try? db.query(
-            "SELECT height, hash, timestamp, difficulty FROM blocks ORDER BY height DESC LIMIT 1"
-        ), let row = rows.first else { return nil }
-        guard let h = row["height"]?.intValue,
-              let hash = row["hash"]?.textValue,
-              let ts = row["timestamp"]?.intValue,
-              let diff = row["difficulty"]?.textValue else { return nil }
-        return BlockRef(hash: hash, height: UInt64(h), timestamp: ts, difficulty: diff)
-    }
-
     // MARK: - General State
 
     public func getGeneral(key: String) -> Data? {
@@ -240,11 +194,6 @@ public actor StateStore {
         do {
             try db.beginTransaction()
 
-            try db.execute(
-                "INSERT OR REPLACE INTO blocks (height, hash, timestamp, difficulty) VALUES (?1, ?2, ?3, ?4)",
-                params: [.int(Int64(changes.height)), .text(changes.blockHash), .int(changes.timestamp), .text(changes.difficulty)]
-            )
-
             for update in changes.accountUpdates {
                 let path = "account:\(update.address)"
                 let account = AccountState(balance: update.balance, nonce: update.nonce)
@@ -315,7 +264,6 @@ public actor StateStore {
             }
 
             try db.execute("DELETE FROM state_diffs WHERE height > ?1", params: [.int(Int64(height))])
-            try db.execute("DELETE FROM blocks WHERE height > ?1", params: [.int(Int64(height))])
 
             try db.commit()
         } catch {

@@ -232,9 +232,8 @@ struct NodeCommand: AsyncParsableCommand {
 
         var backgroundTasks: [Task<Void, Never>] = []
         backgroundTasks.append(startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: port))
-        backgroundTasks.append(startMempoolExpiryLoop(node: node))
-        backgroundTasks.append(startStatePruningLoop(node: node, retentionDepth: nodeConfig.retentionDepth))
-        backgroundTasks.append(startStateExpiryLoop(node: node))
+        backgroundTasks.append(startMempoolLoop(node: node))
+        backgroundTasks.append(startGarbageCollectionLoop(node: node, retentionDepth: nodeConfig.retentionDepth))
 
         let peerRefreshTask = Task { await node.startPeerRefresh() }
 

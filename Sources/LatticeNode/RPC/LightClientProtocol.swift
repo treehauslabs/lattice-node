@@ -54,20 +54,6 @@ public enum LightClientProtocol {
         fromHeight: UInt64,
         toHeight: UInt64
     ) async -> [ChainHeader] {
-        var headers: [ChainHeader] = []
-        for h in fromHeight...min(toHeight, fromHeight + 1000) {
-            guard let hash = await stateStore.getBlockHash(atHeight: h) else { continue }
-            let block = await stateStore.getLatestBlock()
-            headers.append(ChainHeader(
-                hash: hash,
-                height: h,
-                previousHash: h > 0 ? await stateStore.getBlockHash(atHeight: h - 1) : nil,
-                stateRoot: "",
-                difficulty: block?.difficulty ?? "0",
-                timestamp: block?.timestamp ?? 0,
-                cumulativeWork: "0"
-            ))
-        }
-        return headers
+        return []
     }
 }

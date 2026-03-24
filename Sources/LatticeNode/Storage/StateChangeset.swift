@@ -10,20 +10,6 @@ public struct AccountState: Codable, Sendable {
     }
 }
 
-public struct BlockRef: Codable, Sendable {
-    public let hash: String
-    public let height: UInt64
-    public let timestamp: Int64
-    public let difficulty: String
-
-    public init(hash: String, height: UInt64, timestamp: Int64, difficulty: String) {
-        self.hash = hash
-        self.height = height
-        self.timestamp = timestamp
-        self.difficulty = difficulty
-    }
-}
-
 public struct StateChangeset: Sendable {
     public let height: UInt64
     public let blockHash: String

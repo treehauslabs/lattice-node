@@ -248,19 +248,18 @@ enum RPCRoutes {
             return jsonError("State store not available", status: .internalServerError)
         }
 
-        guard let latest = await store.getLatestBlock() else {
-            return jsonError("No blocks available", status: .notFound)
-        }
-
+        let chain = await node.lattice.nexus.chain
+        let height = await chain.getHighestBlockIndex()
+        let tip = await chain.getMainChainTip()
         let stateRoot = await store.getChainTip() ?? ""
 
         let proof = await LightClientProtocol.buildAccountProof(
             address: address,
             stateStore: store,
-            blockHash: latest.hash,
-            blockHeight: latest.height,
+            blockHash: tip,
+            blockHeight: height,
             stateRoot: stateRoot,
-            timestamp: latest.timestamp
+            timestamp: 0
         )
         return json(proof)
     }

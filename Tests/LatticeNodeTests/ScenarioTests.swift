@@ -53,24 +53,7 @@ final class StateStoreScenarioTests: XCTestCase {
         XCTAssertNil(b2)
     }
 
-    func testBlockIndexRoundtrip() async throws {
-        let store = try makeStore()
-        await store.setBlock(height: 0, hash: "genesis", timestamp: 0, difficulty: "max")
-        await store.setBlock(height: 1, hash: "block1", timestamp: 1000, difficulty: "half")
-
-        let _v2 = await store.getBlockHash(atHeight: 0)
-
-
-        XCTAssertEqual(_v2, "genesis")
-        let _v3 = await store.getBlockHash(atHeight: 1)
-
-        XCTAssertEqual(_v3, "block1")
-        let _v4 = await store.getBlockHeight(forHash: "block1")
-
-        XCTAssertEqual(_v4, 1)
-        let noBlock = await store.getBlockHash(atHeight: 99)
-        XCTAssertNil(noBlock)
-    }
+    // testBlockIndexRoundtrip removed — block index eliminated (ChainState is authoritative)
 
     func testApplyBlockAtomicity() async throws {
         let store = try makeStore()
@@ -94,9 +77,6 @@ final class StateStoreScenarioTests: XCTestCase {
         let _v6 = await store.getBalance(address: "bob")
 
         XCTAssertEqual(_v6, 300)
-        let _v7 = await store.getBlockHash(atHeight: 1)
-
-        XCTAssertEqual(_v7, "block1")
         let _v8 = await store.getHeight()
 
         XCTAssertEqual(_v8, 1)

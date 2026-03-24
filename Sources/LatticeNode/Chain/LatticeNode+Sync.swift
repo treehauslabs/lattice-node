@@ -202,15 +202,6 @@ extension LatticeNode {
                     log.info("StateStore rebuilt: \(entries.count) accounts from frontier state root")
                 }
 
-                for blockMeta in result.persisted.blocks {
-                    await store.setBlock(
-                        height: blockMeta.blockIndex,
-                        hash: blockMeta.blockHash,
-                        timestamp: 0,
-                        difficulty: ""
-                    )
-                }
-
                 await store.setChainTip(
                     hash: result.tipBlockHash,
                     height: result.tipBlockIndex,

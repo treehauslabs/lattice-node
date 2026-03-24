@@ -71,11 +71,7 @@ extension LatticeNode {
     }
 
     public func getBlockHash(atIndex index: UInt64) async -> String? {
-        let dir = genesisConfig.spec.directory
-        if let store = stateStores[dir], let hash = await store.getBlockHash(atHeight: index) {
-            return hash
-        }
-        return await lattice.nexus.chain.getMainChainBlockHash(atIndex: index)
+        await lattice.nexus.chain.getMainChainBlockHash(atIndex: index)
     }
 
     public func getBalanceProof(address: String, directory: String? = nil) async throws -> Data? {

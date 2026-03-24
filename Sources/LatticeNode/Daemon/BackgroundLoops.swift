@@ -22,7 +22,8 @@ func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, baseP
                         enableLocalDiscovery: config.enableLocalDiscovery
                     )
                     try? await node.registerChainNetwork(directory: dir, config: childConfig)
-                    print("  [discovery] Registered child chain: \(dir) on port \(port)")
+                    let log = NodeLogger("discovery")
+                    log.info("Registered child chain: \(dir) on port \(port)")
                 }
             }
         }
@@ -30,7 +31,7 @@ func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, baseP
 }
 
 @discardableResult
-func startMempoolExpiryLoop(node: LatticeNode) -> Task<Void, Never> {
+func startMempoolLoop(node: LatticeNode) -> Task<Void, Never> {
     Task {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(60))
@@ -40,35 +41,28 @@ func startMempoolExpiryLoop(node: LatticeNode) -> Task<Void, Never> {
 }
 
 @discardableResult
-func startStateExpiryLoop(node: LatticeNode, expiryBlocks: UInt64 = 1_000_000) -> Task<Void, Never> {
+func startGarbageCollectionLoop(node: LatticeNode, retentionDepth: UInt64, expiryBlocks: UInt64 = 1_000_000) -> Task<Void, Never> {
     Task {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(3600))
-            for directory in await node.allDirectories() {
-                guard let store = await node.stateStore(for: directory) else { continue }
-                let expiry = StateExpiry(store: store, expiryBlocks: expiryBlocks)
-                let height = await store.getHeight() ?? 0
-                let expired = await expiry.findExpiredAccounts(currentHeight: height)
-                if !expired.isEmpty {
-                    await expiry.expireAccounts(expired, atHeight: height)
-                    let log = NodeLogger("expiry")
-                    log.info("Expired \(expired.count) inactive accounts in \(directory)")
-                }
-            }
-        }
-    }
-}
-
-@discardableResult
-func startStatePruningLoop(node: LatticeNode, retentionDepth: UInt64) -> Task<Void, Never> {
-    Task {
+        var gcCycle: UInt64 = 0
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(300))
+            gcCycle += 1
+
             for directory in await node.allDirectories() {
-                if let store = await node.stateStore(for: directory) {
-                    let height = await store.getHeight() ?? 0
-                    if height > retentionDepth {
-                        await store.pruneDiffs(belowHeight: height - retentionDepth)
+                guard let store = await node.stateStore(for: directory) else { continue }
+                let height = await store.getHeight() ?? 0
+
+                if height > retentionDepth {
+                    await store.pruneDiffs(belowHeight: height - retentionDepth)
+                }
+
+                if gcCycle % 12 == 0 {
+                    let expiry = StateExpiry(store: store, expiryBlocks: expiryBlocks)
+                    let expired = await expiry.findExpiredAccounts(currentHeight: height)
+                    if !expired.isEmpty {
+                        await expiry.expireAccounts(expired, atHeight: height)
+                        let log = NodeLogger("gc")
+                        log.info("Expired \(expired.count) inactive accounts in \(directory)")
                     }
                 }
             }
