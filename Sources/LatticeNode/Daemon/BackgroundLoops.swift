@@ -60,41 +60,6 @@ func startStateExpiryLoop(node: LatticeNode, expiryBlocks: UInt64 = 1_000_000) -
 }
 
 @discardableResult
-func startBatchAuctionLoop(node: LatticeNode) -> Task<Void, Never> {
-    Task {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(30))
-            let dir = await node.genesisConfig.spec.directory
-            guard let store = await node.stateStore(for: dir) else { continue }
-            let height = await store.getHeight() ?? 0
-
-            guard let rows = try? await store.queryGeneralKeys(prefix: "commit:") else { continue }
-            var revealedOrders: [BatchAuction.RevealedOrder] = []
-
-            for (key, data) in rows {
-                guard let committed = try? JSONDecoder().decode(BatchAuction.CommittedOrder.self, from: data) else { continue }
-                guard BatchAuction.canReveal(commitHeight: committed.commitHeight, currentHeight: height) else { continue }
-                let revealKey = "reveal:\(committed.commitHash)"
-                guard let revealData = await store.getGeneral(key: revealKey) else { continue }
-                guard let order = try? JSONDecoder().decode(Order.self, from: revealData) else { continue }
-                revealedOrders.append(BatchAuction.RevealedOrder(order: order, salt: ""))
-            }
-
-            guard !revealedOrders.isEmpty else { continue }
-
-            let matches = BatchAuction.executeBatch(orders: revealedOrders)
-            if !matches.isEmpty {
-                let log = NodeLogger("auction")
-                log.info("Settled \(matches.count) order match(es) at height \(height)")
-                for (key, _) in rows {
-                    await store.setGeneral(key: key, value: Data(), atHeight: height)
-                }
-            }
-        }
-    }
-}
-
-@discardableResult
 func startStatePruningLoop(node: LatticeNode, retentionDepth: UInt64) -> Task<Void, Never> {
     Task {
         while !Task.isCancelled {

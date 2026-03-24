@@ -253,7 +253,6 @@ struct NodeCommand: AsyncParsableCommand {
         backgroundTasks.append(startMempoolExpiryLoop(node: node))
         backgroundTasks.append(startStatePruningLoop(node: node, retentionDepth: nodeConfig.retentionDepth))
         backgroundTasks.append(startStateExpiryLoop(node: node))
-        backgroundTasks.append(startBatchAuctionLoop(node: node))
 
         let peerRefreshTask = Task { await node.startPeerRefresh() }
 

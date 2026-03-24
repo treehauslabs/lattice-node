@@ -70,9 +70,6 @@ enum RPCRoutes {
         api.get("transactions/{address}") { _, ctx in try await getTransactionHistory(node: node, address: ctx.parameters.require("address")) }
         api.get("finality/{height}") { _, ctx in try await getFinality(node: node, height: ctx.parameters.require("height")) }
         api.get("finality/config") { _, _ in try await getFinalityConfig(node: node) }
-        api.post("orders/commit") { req, _ in try await commitOrder(node: node, request: req) }
-        api.post("orders/reveal") { req, _ in try await revealOrder(node: node, request: req) }
-
         let light = api.group("light")
         light.get("headers") { req, _ in try await lightHeaders(node: node, request: req) }
         light.get("proof/{address}") { _, ctx in try await lightProof(node: node, address: ctx.parameters.require("address")) }
@@ -376,43 +373,6 @@ enum RPCRoutes {
         }
         struct R: Encodable { let chains: [ChainFinality]; let defaultConfirmations: UInt64 }
         return json(R(chains: configs, defaultConfirmations: finality.defaultConfirmations))
-    }
-
-    // MARK: - Batch Auction (MEV Protection)
-
-    static func commitOrder(node: LatticeNode, request: Request) async throws -> Response {
-        struct Sub: Decodable { let commitHash: String; let sender: String }
-        guard let sub = try? await JSONDecoder().decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
-            return jsonError("Expected: {commitHash, sender}")
-        }
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
-        let committed = BatchAuction.CommittedOrder(commitHash: sub.commitHash, sender: sub.sender, commitHeight: height)
-        let dir = node.genesisConfig.spec.directory
-        if let store = await node.stateStore(for: dir),
-           let data = try? JSONEncoder().encode(committed) {
-            await store.setGeneral(key: "commit:\(sub.commitHash)", value: data, atHeight: height)
-        }
-        struct R: Encodable { let accepted: Bool; let commitHash: String; let revealAfterHeight: UInt64 }
-        return json(R(accepted: true, commitHash: sub.commitHash, revealAfterHeight: height + BatchAuction.auctionDuration))
-    }
-
-    static func revealOrder(node: LatticeNode, request: Request) async throws -> Response {
-        struct Sub: Decodable { let commitHash: String; let side: String; let price: UInt64; let amount: UInt64; let owner: String; let salt: String }
-        guard let sub = try? await JSONDecoder().decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
-            return jsonError("Invalid reveal format")
-        }
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
-        let dir = node.genesisConfig.spec.directory
-        guard let store = await node.stateStore(for: dir),
-              let commitData = await store.getGeneral(key: "commit:\(sub.commitHash)"),
-              let committed = try? JSONDecoder().decode(BatchAuction.CommittedOrder.self, from: commitData) else {
-            return jsonError("Commit not found")
-        }
-        guard BatchAuction.canReveal(commitHeight: committed.commitHeight, currentHeight: height) else {
-            return jsonError("Cannot reveal yet. Wait until height \(committed.commitHeight + BatchAuction.auctionDuration)")
-        }
-        struct R: Encodable { let revealed: Bool; let commitHash: String }
-        return json(R(revealed: true, commitHash: sub.commitHash))
     }
 
     // MARK: - Prometheus Metrics
