@@ -214,18 +214,18 @@ public actor StateStore {
         guard let rows = try? db.query(
             "SELECT value FROM state WHERE path = 'meta:height'"
         ), let row = rows.first, let data = row["value"]?.blobValue else { return nil }
-        return data.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
+        guard let str = String(data: data, encoding: .utf8) else { return nil }
+        return UInt64(str)
     }
 
     public func setChainTip(hash: String, height: UInt64, stateRoot: String) {
-        let heightData = withUnsafeBytes(of: height) { Data($0) }
         try? db.execute(
             "INSERT OR REPLACE INTO state (path, value, height) VALUES ('meta:chain-tip', ?1, ?2)",
             params: [.blob(Data(hash.utf8)), .int(Int64(height))]
         )
         try? db.execute(
             "INSERT OR REPLACE INTO state (path, value, height) VALUES ('meta:height', ?1, ?2)",
-            params: [.blob(heightData), .int(Int64(height))]
+            params: [.blob(Data(String(height).utf8)), .int(Int64(height))]
         )
         try? db.execute(
             "INSERT OR REPLACE INTO state (path, value, height) VALUES ('meta:state-root', ?1, ?2)",

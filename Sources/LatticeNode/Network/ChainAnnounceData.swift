@@ -44,15 +44,17 @@ public struct ChainAnnounceData: Sendable, Equatable {
 
         func readUInt16() -> UInt16? {
             guard offset + 2 <= data.count else { return nil }
-            let val = data[data.startIndex + offset ..< data.startIndex + offset + 2]
-                .withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
+            let b0 = data[data.startIndex + offset]
+            let b1 = data[data.startIndex + offset + 1]
             offset += 2
-            return val
+            return UInt16(b0) << 8 | UInt16(b1)
         }
         func readUInt64() -> UInt64? {
             guard offset + 8 <= data.count else { return nil }
-            let val = data[data.startIndex + offset ..< data.startIndex + offset + 8]
-                .withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
+            var val: UInt64 = 0
+            for i in 0..<8 {
+                val = val << 8 | UInt64(data[data.startIndex + offset + i])
+            }
             offset += 8
             return val
         }
