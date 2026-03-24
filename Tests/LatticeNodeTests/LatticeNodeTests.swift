@@ -60,7 +60,7 @@ final class LatticeNodeTests: XCTestCase {
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, timestamp: 0, difficulty: UInt256(1000), fetcher: fetcher
         )
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
         await level.restoreChildChain(directory: "Payments", level: childLevel)
 
@@ -80,7 +80,7 @@ final class LatticeNodeTests: XCTestCase {
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, timestamp: 0, difficulty: UInt256(1000), fetcher: fetcher
         )
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
 
         await level.restoreChildChain(directory: "Data", level: childLevel)
@@ -98,7 +98,7 @@ final class LatticeNodeTests: XCTestCase {
                                   premine: 0, targetBlockTime: 1_000,
                                   initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
         let g = try await BlockBuilder.buildGenesis(spec: childSpec, timestamp: 0, difficulty: UInt256(1000), fetcher: fetcher)
-        let xChain = ChainState.fromGenesis(block: g)
+        let xChain = ChainState.fromGenesis(block: g, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let xLevel = ChainLevel(chain: xChain, children: [:])
         await level.restoreChildChain(directory: "X", level: xLevel)
         await level.restoreChildChain(directory: "X", level: xLevel)
@@ -131,7 +131,7 @@ final class LatticeNodeTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
-        let chain = ChainState.fromGenesis(block: genesis)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
         let b1 = try await BlockBuilder.buildBlock(
             previous: genesis, timestamp: t + 1000,
@@ -165,7 +165,7 @@ final class LatticeNodeTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
-        let chain = ChainState.fromGenesis(block: genesis)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let b1 = try await BlockBuilder.buildBlock(
             previous: genesis, timestamp: t + 1000,
             difficulty: UInt256(1000), nonce: 1, fetcher: fetcher
@@ -203,7 +203,7 @@ final class LatticeNodeTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
-        let chain = ChainState.fromGenesis(block: genesis)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let mempool = NodeMempool(maxSize: 100)
         let miner = MinerLoop(chainState: chain, mempool: mempool, fetcher: fetcher, spec: spec)
 

@@ -76,7 +76,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         } else {
             genesis = try await GenesisCeremony.create(
                 config: genesisConfig,
-                fetcher: nexusNetwork.fetcher
+                fetcher: nexusNetwork.fetcher,
+                retentionDepth: config.retentionDepth
             )
         }
 

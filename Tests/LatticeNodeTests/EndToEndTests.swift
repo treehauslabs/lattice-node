@@ -78,7 +78,7 @@ final class SmokeTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
-        let chain = ChainState.fromGenesis(block: genesis)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
         var prev = genesis
         for i in 1...10 {
@@ -109,7 +109,7 @@ final class SmokeTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
-        let chain = ChainState.fromGenesis(block: genesis)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let mempool = NodeMempool(maxSize: 100)
 
         await f.store(rawCid: HeaderImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
@@ -136,7 +136,7 @@ final class SmokeTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
-        let chain = ChainState.fromGenesis(block: genesis)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
         var prev = genesis
         for i in 1...5 {
@@ -184,7 +184,7 @@ final class SmokeTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
-        let chain = ChainState.fromGenesis(block: genesis)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let b1 = try await BlockBuilder.buildBlock(
             previous: genesis, timestamp: t + 1000,
             difficulty: UInt256(1000), nonce: 1, fetcher: f
@@ -225,8 +225,8 @@ final class MultiChainEndToEndTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 
@@ -269,8 +269,8 @@ final class MultiChainEndToEndTests: XCTestCase {
             spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
         await f.store(rawCid: HeaderImpl<Block>(node: childGenesis).rawCID, data: childGenesis.toData()!)
 
@@ -325,9 +325,9 @@ final class MultiChainEndToEndTests: XCTestCase {
             spec: childBSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let chainA = ChainState.fromGenesis(block: childAGenesis)
-        let chainB = ChainState.fromGenesis(block: childBGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let chainA = ChainState.fromGenesis(block: childAGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let chainB = ChainState.fromGenesis(block: childBGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
         await f.store(rawCid: HeaderImpl<Block>(node: childAGenesis).rawCID, data: childAGenesis.toData()!)
         await f.store(rawCid: HeaderImpl<Block>(node: childBGenesis).rawCID, data: childBGenesis.toData()!)
@@ -559,8 +559,8 @@ final class TwoNodeEndToEndTests: XCTestCase {
         let spec = testSpec()
         let config = GenesisConfig.standard(spec: spec)
 
-        let genesisA = try await GenesisCeremony.create(config: config, fetcher: f)
-        let genesisB = try await GenesisCeremony.create(config: config, fetcher: f)
+        let genesisA = try await GenesisCeremony.create(config: config, fetcher: f, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let genesisB = try await GenesisCeremony.create(config: config, fetcher: f, retentionDepth: DEFAULT_RETENTION_DEPTH)
         XCTAssertEqual(genesisA.blockHash, genesisB.blockHash)
 
         let fA = fetcher()
@@ -607,8 +607,8 @@ final class TwoNodeEndToEndTests: XCTestCase {
         let spec = testSpec()
         let config = GenesisConfig.standard(spec: spec)
 
-        let genesisA = try await GenesisCeremony.create(config: config, fetcher: f)
-        let genesisB = try await GenesisCeremony.create(config: config, fetcher: f)
+        let genesisA = try await GenesisCeremony.create(config: config, fetcher: f, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let genesisB = try await GenesisCeremony.create(config: config, fetcher: f, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
         var shortPrev = genesisB.block
         for i in 1...3 {
@@ -674,7 +674,7 @@ final class MultiChainReceptionTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
 
         let nexusBlock1 = try await BlockBuilder.buildBlock(
@@ -712,8 +712,8 @@ final class MultiChainReceptionTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let chainA = ChainState.fromGenesis(block: nexusGenesis)
-        let chainB = ChainState.fromGenesis(block: nexusGenesis)
+        let chainA = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let chainB = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let levelA = ChainLevel(chain: chainA, children: [:])
         let levelB = ChainLevel(chain: chainB, children: [:])
 
@@ -763,8 +763,8 @@ final class MultiChainReceptionTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 
@@ -943,8 +943,8 @@ private struct MultiChainEnv {
         try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: childStorer)
         await childStorer.flush(to: f)
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
         let nexusLevel = ChainLevel(chain: nexusChain, children: [childDir: childLevel])
 
@@ -1094,9 +1094,9 @@ final class MultiChainPersistenceTests: XCTestCase {
             spec: childBSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let chainA = ChainState.fromGenesis(block: childAGenesis)
-        let chainB = ChainState.fromGenesis(block: childBGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let chainA = ChainState.fromGenesis(block: childAGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let chainB = ChainState.fromGenesis(block: childBGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
         let persistedA = await chainA.persist()
         let persistedB = await chainB.persist()
@@ -1191,7 +1191,7 @@ final class MultiChainMiningContextTests: XCTestCase {
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childMempool = NodeMempool(maxSize: 100)
 
         let ctx = ChildMiningContext(
@@ -1211,7 +1211,7 @@ final class MultiChainMiningContextTests: XCTestCase {
         let nexusGenesis = try await BlockBuilder.buildGenesis(
             spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         await f.store(rawCid: HeaderImpl<Block>(node: nexusGenesis).rawCID, data: nexusGenesis.toData()!)
 
         var contexts: [ChildMiningContext] = []
@@ -1220,7 +1220,7 @@ final class MultiChainMiningContextTests: XCTestCase {
             let genesis = try await BlockBuilder.buildGenesis(
                 spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
             )
-            let chain = ChainState.fromGenesis(block: genesis)
+            let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
             await f.store(rawCid: HeaderImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
             contexts.append(ChildMiningContext(
                 directory: dir, chainState: chain,
@@ -1284,7 +1284,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
 
         let dirsBefore = await nexusLevel.childDirectories()
@@ -1317,7 +1317,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
         let nexusGenesis = try await BlockBuilder.buildGenesis(
             spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
 
         var childBlocks: [String: Block] = [:]
@@ -1360,7 +1360,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
 
         let genesisStorer = BufferedStorer()
@@ -1435,8 +1435,8 @@ final class MultiChainDiscoveryTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 
@@ -1487,8 +1487,8 @@ final class MultiChainDiscoveryTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 
@@ -1540,8 +1540,8 @@ final class MultiChainDiscoveryTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 
@@ -1615,7 +1615,7 @@ final class FullMiningIntegrationTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256.max, fetcher: f
         )
-        let chain = ChainState.fromGenesis(block: genesis)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let nexusLevel = ChainLevel(chain: chain, children: [:])
         let lattice = Lattice(nexus: nexusLevel)
         let mempool = NodeMempool(maxSize: 100)
@@ -1669,8 +1669,8 @@ final class FullMiningIntegrationTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256.max, fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 
@@ -1746,14 +1746,14 @@ final class FullMiningIntegrationTests: XCTestCase {
         )
 
         // Node A: mines
-        let chainA = ChainState.fromGenesis(block: nexusGenesis)
-        let childChainA = ChainState.fromGenesis(block: childGenesis)
+        let chainA = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChainA = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevelA = ChainLevel(chain: childChainA, children: [:])
         let nexusLevelA = ChainLevel(chain: chainA, children: ["Payments": childLevelA])
 
         // Node B: receives
-        let chainB = ChainState.fromGenesis(block: nexusGenesis)
-        let childChainB = ChainState.fromGenesis(block: childGenesis)
+        let chainB = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChainB = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevelB = ChainLevel(chain: childChainB, children: [:])
         let nexusLevelB = ChainLevel(chain: chainB, children: ["Payments": childLevelB])
 
@@ -1922,8 +1922,8 @@ final class MultiChainDiscoveryRemainingTests: XCTestCase {
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childLevel = ChainLevel(chain: childChain, children: [:])
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 

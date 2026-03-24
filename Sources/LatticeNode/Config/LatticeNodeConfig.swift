@@ -3,6 +3,8 @@ import Foundation
 import Ivy
 import ArrayTrie
 
+public let DEFAULT_RETENTION_DEPTH: UInt64 = 1000
+
 public struct LatticeNodeConfig: Sendable {
     public let publicKey: String
     public let privateKey: String
@@ -32,7 +34,7 @@ public struct LatticeNodeConfig: Sendable {
             return t
         }(),
         syncStrategy: SyncStrategy = .snapshot,
-        retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE,
+        retentionDepth: UInt64 = DEFAULT_RETENTION_DEPTH,
         resources: NodeResourceConfig = .default,
         proxyConfig: ProxyConfig? = nil,
         finality: FinalityConfig = FinalityConfig()

@@ -103,7 +103,7 @@ public enum NexusGenesis {
             fetcher: fetcher
         )
         let blockHash = HeaderImpl<Block>(node: block).rawCID
-        let chainState = ChainState.fromGenesis(block: block)
+        let chainState = ChainState.fromGenesis(block: block, retentionDepth: DEFAULT_RETENTION_DEPTH)
         return GenesisResult(block: block, blockHash: blockHash, chainState: chainState)
     }
 }

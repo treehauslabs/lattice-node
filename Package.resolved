@@ -1,5 +1,5 @@
 {
-  "originHash" : "1685d0870b9d601c8166b0eb3dd1ad803d02573021b78eb3699d269c4f324bfa",
+  "originHash" : "97a7aecb0695c813ee32c24a3042df075d3547cb27e7b00264e21b3f1a8b8f08",
   "pins" : [
     {
       "identity" : "acorn",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swift-server/async-http-client.git",
       "state" : {
-        "revision" : "c5784ca81535cc6a92d900f84abd070dfb0e9392",
-        "version" : "1.32.1"
+        "revision" : "3b57e00556515b126ad74455de1e6fa456856391",
+        "version" : "1.33.0"
       }
     },
     {
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Ivy.git",
       "state" : {
-        "revision" : "d3a5b0deeb0745ed513510c25ab43625c6afed67",
-        "version" : "2.2.0"
+        "revision" : "a7e9f55e794e29ee82d2ebfb82ed7da7d323f449",
+        "version" : "2.3.0"
       }
     },
     {
@@ -105,8 +105,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
-        "revision" : "c4c1879909928b1ef59270d7d1cebcd19167809f",
-        "version" : "3.7.0"
+        "revision" : "dfd832c84e1922fa963fd3108d3afdc5b7463220",
+        "version" : "3.9.1"
       }
     },
     {
@@ -285,8 +285,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
-        "revision" : "b31565862a8f39866af50bc6676160d8dda7de35",
-        "version" : "2.96.0"
+        "revision" : "bdf004b44f77c56fca752cd1cf243c802f8469c9",
+        "version" : "2.97.0"
       }
     },
     {
@@ -303,8 +303,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio-http2.git",
       "state" : {
-        "revision" : "9019b76fa858564a27e0aab13c01987d6e2869fa",
-        "version" : "1.41.0"
+        "revision" : "6d8d596f0a9bfebb925733003731fe2d749b7e02",
+        "version" : "1.42.0"
       }
     },
     {

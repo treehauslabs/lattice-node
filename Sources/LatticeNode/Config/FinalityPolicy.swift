@@ -21,7 +21,7 @@ public struct FinalityConfig: Sendable {
     private let policies: [String: UInt64]
     public let defaultConfirmations: UInt64
 
-    public init(policies: [FinalityPolicy] = [], defaultConfirmations: UInt64 = RECENT_BLOCK_DISTANCE) {
+    public init(policies: [FinalityPolicy] = [], defaultConfirmations: UInt64 = DEFAULT_RETENTION_DEPTH) {
         var map: [String: UInt64] = [:]
         for p in policies { map[p.chain] = p.confirmations }
         self.policies = map
