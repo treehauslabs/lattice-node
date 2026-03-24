@@ -181,6 +181,11 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             storagePath: self.config.storagePath,
             directory: directory
         )
+        if stateStores[directory] == nil {
+            if let store = try? StateStore(storagePath: self.config.storagePath, chain: directory) {
+                stateStores[directory] = store
+            }
+        }
         try await network.start()
     }
 

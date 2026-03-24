@@ -107,6 +107,12 @@ extension LatticeNode {
                 )
                 if let changeset {
                     await store.applyBlock(changeset)
+
+                    if let network = networks[directory] {
+                        for update in changeset.accountUpdates {
+                            await network.nodeMempool.updateConfirmedNonce(sender: update.address, nonce: update.nonce)
+                        }
+                    }
                 }
 
                 let receiptStore = TransactionReceiptStore(store: store, fetcher: fetcher)
@@ -236,7 +242,7 @@ extension LatticeNode {
         }
 
         // Step 4: Re-validate orphaned txs and return to mempool
-        let validator = TransactionValidator(fetcher: fetcher, chainState: chain)
+        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, stateStore: stateStores[dir])
         var recovered = 0
         for blockHash in orphanedBlockHashes {
             guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
@@ -448,17 +454,34 @@ extension LatticeNode {
 
             let accountDiff = try await newAccounts.diff(from: oldAccounts, fetcher: fetcher)
 
+            var senderTxCounts: [String: UInt64] = [:]
+            if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
+               let txEntries = try? txDict.allKeysAndValues() {
+                for (_, txHeader) in txEntries {
+                    if let body = txHeader.node?.body.node, body.fee > 0 {
+                        let sender = body.signers.first ?? ""
+                        senderTxCounts[sender, default: 0] += 1
+                    }
+                }
+            }
+
+            let dir = genesisConfig.spec.directory
+            let store = stateStores[dir]
+
             var accountUpdates: [(address: String, balance: UInt64, nonce: UInt64)] = []
 
             for (address, balanceStr) in accountDiff.inserted {
                 if let balance = UInt64(balanceStr) {
-                    accountUpdates.append((address: address, balance: balance, nonce: 0))
+                    let txCount = senderTxCounts[address] ?? 0
+                    accountUpdates.append((address: address, balance: balance, nonce: txCount))
                 }
             }
 
             for (address, entry) in accountDiff.modified {
                 if let balance = UInt64(entry.new) {
-                    accountUpdates.append((address: address, balance: balance, nonce: 0))
+                    let currentNonce = await store?.getNonce(address: address) ?? 0
+                    let txCount = senderTxCounts[address] ?? 0
+                    accountUpdates.append((address: address, balance: balance, nonce: currentNonce + txCount))
                 }
             }
 

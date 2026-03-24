@@ -91,11 +91,28 @@ public actor NodeMempool {
 
     public func selectTransactions(maxCount: Int) -> [Transaction] {
         var selected: [Transaction] = []
+        var selectedNonces: [String: UInt64] = [:]
         for entry in sortedEntries {
             if selected.count >= maxCount { break }
-            selected.append(entry.transaction)
+            let account = byAccount[entry.sender]
+            let confirmedNonce = account?.confirmedNonce ?? 0
+            let nextExpected = selectedNonces[entry.sender] ?? confirmedNonce
+            if entry.nonce == nextExpected {
+                selected.append(entry.transaction)
+                selectedNonces[entry.sender] = nextExpected + 1
+            }
         }
         return selected
+    }
+
+    public func updateConfirmedNonce(sender: String, nonce: UInt64) {
+        byAccount[sender, default: AccountTxQueue()].confirmedNonce = nonce
+        let confirmed = nonce
+        if var queue = byAccount[sender] {
+            let stale = queue.txsByNonce.keys.filter { $0 < confirmed }
+            for n in stale { queue.txsByNonce.removeValue(forKey: n) }
+            byAccount[sender] = queue
+        }
     }
 
     public func remove(txCID: String) {

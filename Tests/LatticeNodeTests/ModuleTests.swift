@@ -31,11 +31,11 @@ final class NodeMempoolTests: XCTestCase {
 
     func testSelectTransactionsReturnHighestFeeFirst() async {
         let mempool = NodeMempool(maxSize: 100)
-        let wallet = makeWallet()
 
+        let wallets = (0..<5).map { _ in makeWallet() }
         let fees: [UInt64] = [5, 50, 10, 100, 25]
         for (i, fee) in fees.enumerated() {
-            let tx = makeTx(wallet: wallet, fee: fee, nonce: UInt64(i))
+            let tx = makeTx(wallet: wallets[i], fee: fee, nonce: 0)
             let added = await mempool.add(transaction: tx)
             XCTAssertTrue(added, "Transaction with fee \(fee) should be added")
         }

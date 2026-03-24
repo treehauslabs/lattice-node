@@ -108,7 +108,7 @@ struct SendCommand: AsyncParsableCommand {
             settleActions: [],
             signers: [senderAddress],
             fee: fee,
-            nonce: height
+            nonce: nonce
         )
 
         let bodyHeader = HeaderImpl<TransactionBody>(node: body)

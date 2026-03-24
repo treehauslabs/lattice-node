@@ -529,7 +529,7 @@ final class MempoolEndToEndTests: XCTestCase {
         let childBody = TransactionBody(
             accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
             peerActions: [], settleActions: [],
-            signers: [kpAddr], fee: 20, nonce: 1
+            signers: [kpAddr], fee: 20, nonce: 0
         )
 
         let _ = await nexusMempool.add(transaction: sign(nexusBody, kp))
@@ -1248,7 +1248,7 @@ final class MultiChainMiningContextTests: XCTestCase {
             let body = TransactionBody(
                 accountActions: [], actions: [], swapActions: [], swapClaimActions: [],
                 genesisActions: [], peerActions: [], settleActions: [],
-                signers: [kpAddr], fee: fee, nonce: fee
+                signers: [kpAddr], fee: fee, nonce: 0
             )
             let _ = await mempool.add(transaction: sign(body, kp))
         }

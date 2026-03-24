@@ -30,11 +30,13 @@ public struct TransactionValidator: Sendable {
     private let fetcher: Fetcher
     private let chainState: ChainState
     private let isCoinbase: Bool
+    private let stateStore: StateStore?
 
-    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false) {
+    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, stateStore: StateStore? = nil) {
         self.fetcher = fetcher
         self.chainState = chainState
         self.isCoinbase = isCoinbase
+        self.stateStore = stateStore
     }
 
     public func validate(_ transaction: Transaction) async -> Result<Void, TransactionValidationError> {
@@ -77,12 +79,13 @@ public struct TransactionValidator: Sendable {
             return .failure(.feeTooHigh(actual: body.fee, maximum: MAX_TRANSACTION_FEE))
         }
 
-        let currentHeight = await chainState.getHighestBlockIndex()
         if !isCoinbase {
-            if body.nonce < currentHeight && currentHeight > MAX_NONCE_DRIFT && body.nonce < currentHeight - MAX_NONCE_DRIFT {
+            let sender = body.signers.first ?? ""
+            let confirmedNonce = await stateStore?.getNonce(address: sender) ?? 0
+            if body.nonce < confirmedNonce {
                 return .failure(.nonceAlreadyUsed(nonce: body.nonce))
             }
-            if body.nonce > currentHeight + 2 {
+            if body.nonce > confirmedNonce + 64 {
                 return .failure(.nonceFromFuture(nonce: body.nonce))
             }
         }

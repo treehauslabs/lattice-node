@@ -278,7 +278,7 @@ final class MempoolAdversarialTests: XCTestCase {
                 accountActions: [AccountAction(owner: addr, oldBalance: 1000, newBalance: 0)],
                 actions: [], swapActions: [], swapClaimActions: [],
                 genesisActions: [], peerActions: [], settleActions: [],
-                signers: [addr], fee: UInt64(i + 1), nonce: UInt64(i)
+                signers: [addr], fee: UInt64(i + 1), nonce: 0
             )
             let h = HeaderImpl<TransactionBody>(node: body)
             let sig = CryptoUtils.sign(message: h.rawCID, privateKeyHex: kp.privateKey)!
