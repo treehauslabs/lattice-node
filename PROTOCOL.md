@@ -145,8 +145,8 @@ All blocks, transactions, and state objects are stored by their content identifi
 The CAS is the single source of truth for all blockchain data. Higher-level systems (PBSS, receipts, mempool persistence) store only CID references and derive full data on-demand via CAS resolution. This eliminates data duplication and ensures consistency:
 
 - **Mempool persistence**: Saves only `{signatures, bodyCID}` per transaction. On startup, bodies are resolved from CAS (already stored locally from prior gossip).
-- **Transaction receipts**: Stores only a lightweight index `{txCID → blockHash, height}`. Full receipts are derived on-demand by resolving the block from CAS and extracting the transaction.
-- **Block propagation**: Only block CIDs are gossiped. Peers resolve full blocks from CAS, finding most transaction bodies already local from mempool gossip.
+- **Transaction receipts**: Recent receipts stored in full for fast queries. A lightweight index `{txCID → blockHash, height}` enables CAS-derived reconstruction for older receipts if the full receipt has been pruned.
+- **Block propagation**: Miners push full block data to direct peers (ensuring availability). Relay peers announce CIDs only; downstream nodes resolve from CAS, finding most transaction bodies already local from mempool gossip.
 - **State queries**: PBSS (SQLite) serves as a fast O(1) read cache over the CAS merkle trees. The CAS remains authoritative; PBSS is rebuilt from CAS after sync.
 
 ### 4.2 Path-Based State Storage (PBSS)
@@ -185,19 +185,22 @@ Accounts inactive for >1,000,000 blocks are moved from `account:<address>` to `e
 
 ### 4.5 Transaction Receipts
 
-On block acceptance, a lightweight receipt index is stored per transaction: `{txCID → blockHash, blockHeight}`. Full receipts are derived on-demand from CAS by resolving the block and extracting the transaction data:
+Two-tier receipt storage for optimal availability and efficiency:
 
-| Field | Source | Description |
-|-------|--------|-------------|
-| txCID | index | Transaction content identifier |
-| blockHash | index | Block containing this transaction |
-| blockHeight | index | Block height |
-| timestamp | CAS (block) | Block timestamp |
-| fee | CAS (tx body) | Transaction fee |
-| sender | CAS (tx body) | First signer address |
-| accountActions | CAS (tx body) | Balance changes per account |
+1. **Recent receipts**: Full receipt stored in StateStore on block acceptance (fast queries, no CAS dependency)
+2. **Receipt index**: Lightweight `{txCID → blockHash, height}` index stored alongside full receipt
 
-This CAS-derived approach stores ~16 bytes per receipt (index only) instead of ~500 bytes (full receipt), with receipts reconstructed from the immutable block data when queried.
+On query, the full receipt is returned directly if available. If it has been pruned (state expiry), the index enables CAS-derived reconstruction by resolving the block and extracting the transaction. This gracefully degrades: recent receipts are instant, historical receipts require a CAS fetch but remain available as long as the block is in CAS.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| txCID | String | Transaction content identifier |
+| blockHash | String | Block containing this transaction |
+| blockHeight | UInt64 | Block height |
+| timestamp | Int64 | Block timestamp |
+| fee | UInt64 | Transaction fee |
+| sender | String | First signer address |
+| accountActions | [{owner, oldBalance, newBalance}] | Balance changes |
 
 ---
 
@@ -230,15 +233,14 @@ On startup, peers are discovered from (in order):
 
 ### 5.4 Block Propagation
 
-Blocks are propagated as **header-only announcements**. When a miner produces a block:
+Blocks use a **hybrid push/announce** model for optimal data availability and bandwidth:
 
-1. The full block (header + transactions + state) is stored in the miner's local CAS
-2. Only the block CID is announced to peers via Ivy
-3. Receiving peers resolve the block CID through the 3-tier CAS (memory → disk → network)
-4. Transaction bodies within the block are typically already in the receiver's local CAS from prior transaction gossip
-5. Only genuinely missing data is fetched from the network
+1. **Miner → direct peers**: Full block data pushed via `publishBlock`, ensuring at least N peers have the complete block immediately
+2. **Relay peers → their peers**: CID-only announcement via `announceBlock`; downstream nodes resolve from CAS
+3. **CAS resolution**: Receiving peers resolve block CID through the 3-tier CAS (memory → disk → network). Transaction bodies are typically already local from prior mempool gossip
+4. **Deduplication**: CAS never re-fetches data already stored locally. Only genuinely new content (coinbase transaction, state roots) is transferred on hops 2+
 
-This is bandwidth-optimal: most transaction data is already distributed via mempool gossip before the block is mined. The CAS deduplicates automatically — if a peer already has a transaction body (from mempool submission), it never re-fetches it during block resolution. Full block data is only transferred for truly new content (coinbase transaction, state roots).
+This balances data availability (full push to first hop guarantees block survival) with bandwidth efficiency (CID-only relay for subsequent hops, ~99% reduction for transaction-heavy blocks).
 
 ### 5.5 Rate Limiting
 

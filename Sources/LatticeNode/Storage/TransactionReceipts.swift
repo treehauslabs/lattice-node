@@ -28,15 +28,29 @@ public actor TransactionReceiptStore {
         self.fetcher = fetcher
     }
 
+    public func saveReceipt(_ receipt: TransactionReceipt) async {
+        guard let data = try? JSONEncoder().encode(receipt) else { return }
+        await store.setGeneral(key: "receipt:\(receipt.txCID)", value: data, atHeight: receipt.blockHeight)
+    }
+
+    public func getReceipt(txCID: String) async -> TransactionReceipt? {
+        if let data = await store.getGeneral(key: "receipt:\(txCID)"),
+           let receipt = try? JSONDecoder().decode(TransactionReceipt.self, from: data) {
+            return receipt
+        }
+
+        guard let indexData = await store.getGeneral(key: "receipt-idx:\(txCID)"),
+              let index = try? JSONDecoder().decode(ReceiptIndex.self, from: indexData) else { return nil }
+
+        return await deriveFromCAS(txCID: txCID, index: index)
+    }
+
     public func indexReceipt(txCID: String, blockHash: String, blockHeight: UInt64) async {
         guard let data = try? JSONEncoder().encode(ReceiptIndex(blockHash: blockHash, blockHeight: blockHeight)) else { return }
         await store.setGeneral(key: "receipt-idx:\(txCID)", value: data, atHeight: blockHeight)
     }
 
-    public func getReceipt(txCID: String) async -> TransactionReceipt? {
-        guard let indexData = await store.getGeneral(key: "receipt-idx:\(txCID)"),
-              let index = try? JSONDecoder().decode(ReceiptIndex.self, from: indexData) else { return nil }
-
+    private func deriveFromCAS(txCID: String, index: ReceiptIndex) async -> TransactionReceipt? {
         guard let blockData = try? await fetcher.fetch(rawCid: index.blockHash),
               let block = Block(data: blockData),
               let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,

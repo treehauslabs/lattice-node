@@ -113,8 +113,19 @@ extension LatticeNode {
                 let receiptStore = TransactionReceiptStore(store: store, fetcher: fetcher)
                 if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
                    let txEntries = try? txDict.allKeysAndValues() {
-                    for (cid, _) in txEntries {
+                    for (cid, txHeader) in txEntries {
                         await receiptStore.indexReceipt(txCID: cid, blockHash: header.rawCID, blockHeight: block.index)
+                        if let tx = txHeader.node, let body = tx.body.node {
+                            let actions = body.accountActions.map {
+                                TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
+                            }
+                            await receiptStore.saveReceipt(TransactionReceipt(
+                                txCID: cid, blockHash: header.rawCID, blockHeight: block.index,
+                                timestamp: block.timestamp, fee: body.fee,
+                                sender: body.signers.first ?? "", status: "confirmed",
+                                accountActions: actions
+                            ))
+                        }
                     }
                 }
             }
