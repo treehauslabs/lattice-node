@@ -156,6 +156,9 @@ extension LatticeNode {
         mempool: Mempool
     ) async {
         let log = NodeLogger("reorg")
+        let dir = genesisConfig.spec.directory
+        let network = networks[dir]
+
         let newChainHashes = await collectAncestors(
             from: newTip, chain: chain, limit: config.retentionDepth
         )
@@ -171,23 +174,20 @@ extension LatticeNode {
         }
 
         guard !orphanedBlockHashes.isEmpty else { return }
-        log.info("Reorg detected: \(orphanedBlockHashes.count) orphaned block(s), recovering state via CAS diff")
+        log.info("Reorg: \(orphanedBlockHashes.count) orphaned block(s)")
 
-        let dir = genesisConfig.spec.directory
+        // Step 1: Roll back StateStore via CAS diffs (newest → oldest)
         if let store = stateStores[dir] {
             for blockHash in orphanedBlockHashes.reversed() {
                 guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
                       let block = Block(data: blockData) else { continue }
-
                 do {
                     let newState = try await block.frontier.resolve(fetcher: fetcher)
                     let oldState = try await block.homestead.resolve(fetcher: fetcher)
                     guard let newAccounts = newState.node?.accountState,
                           let oldAccounts = oldState.node?.accountState else { continue }
-
                     let diff = try await newAccounts.diff(from: oldAccounts, fetcher: fetcher)
-
-                    for (address, balanceStr) in diff.inserted {
+                    for (address, _) in diff.inserted {
                         await store.setAccount(address: address, balance: 0, nonce: 0, atHeight: block.index)
                     }
                     for (address, entry) in diff.modified {
@@ -201,24 +201,51 @@ extension LatticeNode {
             }
         }
 
+        // Step 2: Collect confirmed tx CIDs from the NEW chain (to avoid re-adding them)
+        var newChainTxCIDs = Set<String>()
+        for newBlockHash in newChainHashes {
+            guard let blockData = try? await fetcher.fetch(rawCid: newBlockHash),
+                  let block = Block(data: blockData),
+                  let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
+                  let txEntries = try? txDict.allKeysAndValues() else { continue }
+            for (cid, _) in txEntries {
+                newChainTxCIDs.insert(cid)
+            }
+        }
+
+        // Step 3: Remove new chain's confirmed txs from both mempools
+        if !newChainTxCIDs.isEmpty {
+            await mempool.removeAll(txCIDs: newChainTxCIDs)
+            if let network {
+                await network.nodeMempool.removeAll(txCIDs: newChainTxCIDs)
+            }
+        }
+
+        // Step 4: Re-validate orphaned txs and add to BOTH mempools
         let validator = TransactionValidator(fetcher: fetcher, chainState: chain)
+        var recovered = 0
         for blockHash in orphanedBlockHashes {
             guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
-                  let block = Block(data: blockData) else { continue }
-            guard let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node else { continue }
-            guard let txEntries = try? txDict.allKeysAndValues() else { continue }
+                  let block = Block(data: blockData),
+                  let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
+                  let txEntries = try? txDict.allKeysAndValues() else { continue }
 
-            for (_, txHeader) in txEntries {
+            for (cid, txHeader) in txEntries {
                 guard let tx = txHeader.node else { continue }
                 if tx.body.node?.fee == 0 && tx.body.node?.nonce == block.index { continue }
+                if newChainTxCIDs.contains(cid) { continue }
                 let result = await validator.validate(tx)
                 if case .success = result {
                     let _ = await mempool.add(transaction: tx)
+                    if let network {
+                        let _ = await network.nodeMempool.add(transaction: tx)
+                    }
+                    recovered += 1
                 }
             }
         }
 
-        log.info("Reorg recovery complete: state rolled back, orphaned txs re-validated")
+        log.info("Reorg complete: \(recovered) tx(s) recovered, \(newChainTxCIDs.count) confirmed in new chain")
         await emitReorgEvent(
             directory: dir,
             oldTip: oldTip,
