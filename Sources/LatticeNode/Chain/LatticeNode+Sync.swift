@@ -199,7 +199,27 @@ extension LatticeNode {
                             atHeight: result.tipBlockIndex
                         )
                     }
-                    log.info("StateStore rebuilt: \(entries.count) accounts from frontier state root")
+
+                    var senderNonces: [String: UInt64] = [:]
+                    for blockMeta in result.persisted.blocks.sorted(by: { $0.blockIndex < $1.blockIndex }) {
+                        if let data = try? await fetcher.fetch(rawCid: blockMeta.blockHash),
+                           let blk = Block(data: data),
+                           let txDict = try? await blk.transactions.resolveRecursive(fetcher: fetcher).node,
+                           let txEntries = try? txDict.allKeysAndValues() {
+                            for (_, txHeader) in txEntries {
+                                if let body = txHeader.node?.body.node, body.fee > 0 {
+                                    let sender = body.signers.first ?? ""
+                                    senderNonces[sender, default: 0] += 1
+                                }
+                            }
+                        }
+                    }
+                    for (address, nonce) in senderNonces {
+                        let balance = await store.getBalance(address: address) ?? 0
+                        await store.setAccount(address: address, balance: balance, nonce: nonce, atHeight: result.tipBlockIndex)
+                    }
+
+                    log.info("StateStore rebuilt: \(entries.count) accounts, \(senderNonces.count) nonces from \(result.persisted.blocks.count) blocks")
                 }
 
                 await store.setChainTip(
