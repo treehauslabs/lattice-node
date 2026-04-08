@@ -174,7 +174,11 @@ struct NodeCommand: AsyncParsableCommand {
             finality: parsedFinality
         )
 
-        let node = try await LatticeNode(config: nodeConfig, genesisConfig: NexusGenesis.config)
+        let node = try await LatticeNode(
+            config: nodeConfig,
+            genesisConfig: NexusGenesis.config,
+            genesisBuilder: NexusGenesis.buildGenesisBlock
+        )
 
         guard NexusGenesis.verifyGenesis(node.genesisResult) else {
             print("  FATAL: Genesis block hash mismatch!")

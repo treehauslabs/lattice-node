@@ -35,7 +35,13 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
     // MARK: - Initialization
 
-    public init(config: LatticeNodeConfig, genesisConfig: GenesisConfig) async throws {
+    public typealias GenesisBuilder = (GenesisConfig, Fetcher) async throws -> Block
+
+    public init(
+        config: LatticeNodeConfig,
+        genesisConfig: GenesisConfig,
+        genesisBuilder: GenesisBuilder? = nil
+    ) async throws {
         self.config = config
         self.genesisConfig = genesisConfig
 
@@ -60,26 +66,32 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         )
         let persisted = try? await persister.load()
 
+        let buildGenesisBlock: (Fetcher) async throws -> Block = { fetcher in
+            if let genesisBuilder {
+                return try await genesisBuilder(genesisConfig, fetcher)
+            }
+            return try await BlockBuilder.buildGenesis(
+                spec: genesisConfig.spec,
+                timestamp: genesisConfig.timestamp,
+                difficulty: genesisConfig.difficulty,
+                fetcher: fetcher
+            )
+        }
+
         let genesis: GenesisResult
         if let persisted = persisted {
             let restoredChain = ChainState.restore(
                 from: persisted,
                 retentionDepth: config.retentionDepth
             )
-            let genesisBlock = try await BlockBuilder.buildGenesis(
-                spec: genesisConfig.spec,
-                timestamp: genesisConfig.timestamp,
-                difficulty: genesisConfig.difficulty,
-                fetcher: nexusNetwork.fetcher
-            )
+            let genesisBlock = try await buildGenesisBlock(nexusNetwork.fetcher)
             let blockHash = HeaderImpl<Block>(node: genesisBlock).rawCID
             genesis = GenesisResult(block: genesisBlock, blockHash: blockHash, chainState: restoredChain)
         } else {
-            genesis = try await GenesisCeremony.create(
-                config: genesisConfig,
-                fetcher: nexusNetwork.fetcher,
-                retentionDepth: config.retentionDepth
-            )
+            let genesisBlock = try await buildGenesisBlock(nexusNetwork.fetcher)
+            let blockHash = HeaderImpl<Block>(node: genesisBlock).rawCID
+            let chainState = ChainState.fromGenesis(block: genesisBlock, retentionDepth: config.retentionDepth)
+            genesis = GenesisResult(block: genesisBlock, blockHash: blockHash, chainState: chainState)
         }
 
         let genesisHeader = HeaderImpl<Block>(node: genesis.block)

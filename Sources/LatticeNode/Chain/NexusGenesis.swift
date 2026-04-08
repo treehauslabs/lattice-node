@@ -69,9 +69,9 @@ public enum NexusGenesis {
         return true
     }
 
-    // MARK: - Genesis Creation
+    // MARK: - Genesis Builder (for LatticeNode.init)
 
-    public static func create(fetcher: Fetcher) async throws -> GenesisResult {
+    public static func buildGenesisBlock(config: GenesisConfig, fetcher: Fetcher) async throws -> Block {
         let premineAmount = spec.premineAmount()
         let accountAction = AccountAction(
             owner: ownerAddress,
@@ -95,13 +95,19 @@ public enum NexusGenesis {
             signatures: [ownerPublicKeyHex: "genesis"],
             body: bodyHeader
         )
-        let block = try await BlockBuilder.buildGenesis(
-            spec: spec,
+        return try await BlockBuilder.buildGenesis(
+            spec: config.spec,
             transactions: [transaction],
             timestamp: config.timestamp,
             difficulty: config.difficulty,
             fetcher: fetcher
         )
+    }
+
+    // MARK: - Genesis Creation
+
+    public static func create(fetcher: Fetcher) async throws -> GenesisResult {
+        let block = try await buildGenesisBlock(config: config, fetcher: fetcher)
         let blockHash = HeaderImpl<Block>(node: block).rawCID
         let chainState = ChainState.fromGenesis(block: block, retentionDepth: DEFAULT_RETENTION_DEPTH)
         return GenesisResult(block: block, blockHash: blockHash, chainState: chainState)
