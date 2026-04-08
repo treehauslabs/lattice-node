@@ -80,15 +80,13 @@ extension LatticeNode {
             guard line.balance < 0 else { continue }
             guard line.needsSettlement else { continue }
 
-            // Send the mining solution as settlement proof
-            await network.ivy.sendMessage(
+            // Send the mining solution as a native settlement message
+            // Ivy's handleMiningSettlement will verify the work and credit our balance
+            await network.ivy.submitSettlement(
                 to: peer,
-                topic: "settlement",
-                payload: Message.miningChallengeSolution(
-                    nonce: nonce,
-                    hash: blockHash,
-                    blockNonce: nonce
-                ).serialize()
+                nonce: nonce,
+                hash: blockHash,
+                blockNonce: nonce
             )
         }
     }
