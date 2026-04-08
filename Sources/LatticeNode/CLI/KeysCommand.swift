@@ -33,7 +33,7 @@ struct KeysCommand: ParsableCommand {
                     "privateKey": keyPair.privateKey,
                 ]
                 let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
-                try data.write(to: URL(filePath: outputPath))
+                try data.write(to: URL(fileURLWithPath: outputPath))
                 print("")
                 printSuccess("Saved to \(outputPath)")
             }
@@ -52,7 +52,7 @@ struct KeysCommand: ParsableCommand {
         var path: String
 
         func run() throws {
-            let data = try Data(contentsOf: URL(filePath: path))
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: String] else {
                 printError("Invalid key file format")
                 throw ExitCode.failure

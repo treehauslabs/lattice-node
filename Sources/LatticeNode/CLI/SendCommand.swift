@@ -28,7 +28,7 @@ struct SendCommand: AsyncParsableCommand {
     var fee: UInt64 = 1
 
     func run() async throws {
-        let keyData = try Data(contentsOf: URL(filePath: key))
+        let keyData = try Data(contentsOf: URL(fileURLWithPath: key))
         guard let keyJSON = try JSONSerialization.jsonObject(with: keyData) as? [String: String],
               let publicKey = keyJSON["publicKey"],
               let privateKey = keyJSON["privateKey"] else {
@@ -125,9 +125,23 @@ struct SendCommand: AsyncParsableCommand {
         }
     }
 
+    private func httpGet(_ urlString: String) async throws -> Data {
+        guard let url = URL(string: urlString) else { return Data() }
+        #if canImport(FoundationNetworking)
+        return try await withCheckedThrowingContinuation { continuation in
+            URLSession.shared.dataTask(with: url) { data, _, error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: data ?? Data()) }
+            }.resume()
+        }
+        #else
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return data
+        #endif
+    }
+
     private func fetchJSON(_ urlString: String) async throws -> [String: Any] {
-        guard let url = URL(string: urlString) else { return [:] }
-        let data = try Data(contentsOf: url)
+        let data = try await httpGet(urlString)
         return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
@@ -138,16 +152,17 @@ struct SendCommand: AsyncParsableCommand {
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let (responseData, _): (Data, URLResponse)
+        let responseData: Data
         #if canImport(FoundationNetworking)
-        (responseData, _) = try await withCheckedThrowingContinuation { continuation in
-            URLSession.shared.dataTask(with: request) { data, response, error in
+        responseData = try await withCheckedThrowingContinuation { continuation in
+            URLSession.shared.dataTask(with: request) { data, _, error in
                 if let error { continuation.resume(throwing: error) }
-                else { continuation.resume(returning: (data ?? Data(), response ?? URLResponse())) }
+                else { continuation.resume(returning: data ?? Data()) }
             }.resume()
         }
         #else
-        (responseData, _) = try await URLSession.shared.data(for: request)
+        let (data, _) = try await URLSession.shared.data(for: request)
+        responseData = data
         #endif
 
         return (try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]) ?? [:]

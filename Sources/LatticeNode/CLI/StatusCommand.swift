@@ -18,7 +18,7 @@ struct StatusCommand: AsyncParsableCommand {
         printHeader("Chain Status")
 
         let persister = ChainStatePersister(
-            storagePath: URL(filePath: storagePath),
+            storagePath: URL(fileURLWithPath: storagePath),
             directory: directory
         )
 

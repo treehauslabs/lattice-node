@@ -64,7 +64,7 @@ struct ClusterCommand: AsyncParsableCommand {
         let genesisConfig = GenesisConfig.standard(spec: spec)
         let client = MultiNodeClient(
             genesisConfig: genesisConfig,
-            baseStoragePath: URL(filePath: storagePath)
+            baseStoragePath: URL(fileURLWithPath: storagePath)
         )
 
         printHeader("Spawning Nodes")

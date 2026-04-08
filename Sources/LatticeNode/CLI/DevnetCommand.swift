@@ -64,7 +64,7 @@ struct DevnetCommand: AsyncParsableCommand {
             publicKey: keyPair.publicKey,
             privateKey: keyPair.privateKey,
             listenPort: port,
-            storagePath: URL(filePath: storagePath),
+            storagePath: URL(fileURLWithPath: storagePath),
             enableLocalDiscovery: true
         )
 

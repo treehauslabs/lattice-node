@@ -31,7 +31,7 @@ struct QueryCommand: AsyncParsableCommand {
         let command = expression[0]
 
         let persister = ChainStatePersister(
-            storagePath: URL(filePath: storagePath),
+            storagePath: URL(fileURLWithPath: storagePath),
             directory: directory
         )
 
