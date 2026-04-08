@@ -9,7 +9,7 @@ public actor MinerLoop {
     private let fetcher: Fetcher
     private let spec: ChainSpec
     private let identity: MinerIdentity?
-    private let childContexts: [ChildMiningContext]
+    private let childContextProvider: (@Sendable () async -> [ChildMiningContext])?
     private let batchSize: UInt64
     private var mining: Bool
     private var currentTask: Task<Void, Never>?
@@ -23,6 +23,7 @@ public actor MinerLoop {
         spec: ChainSpec,
         identity: MinerIdentity? = nil,
         childContexts: [ChildMiningContext] = [],
+        childContextProvider: (@Sendable () async -> [ChildMiningContext])? = nil,
         batchSize: UInt64 = 10_000
     ) {
         self.chainState = chainState
@@ -30,7 +31,7 @@ public actor MinerLoop {
         self.fetcher = fetcher
         self.spec = spec
         self.identity = identity
-        self.childContexts = childContexts
+        self.childContextProvider = childContextProvider ?? { childContexts }
         self.batchSize = batchSize
         self.mining = false
     }
@@ -73,7 +74,9 @@ public actor MinerLoop {
                 }
 
                 let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
+                let currentChildContexts = await childContextProvider?() ?? []
                 let childResult = await buildChildBlocks(
+                    contexts: currentChildContexts,
                     nexusBlock: previousBlock, timestamp: blockTimestamp
                 )
                 let blockDifficulty = previousBlock.nextDifficulty
@@ -277,11 +280,11 @@ public actor MinerLoop {
         let pendingChildTxRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)]
     }
 
-    private func buildChildBlocks(nexusBlock: Block, timestamp: Int64) async -> ChildBlockResult {
+    private func buildChildBlocks(contexts: [ChildMiningContext], nexusBlock: Block, timestamp: Int64) async -> ChildBlockResult {
         var blocks: [String: Block] = [:]
         var pendingRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)] = []
 
-        for ctx in childContexts {
+        for ctx in contexts {
             do {
                 let childTipHash = await ctx.chainState.getMainChainTip()
                 let childTipData = try await ctx.fetcher.fetch(rawCid: childTipHash)

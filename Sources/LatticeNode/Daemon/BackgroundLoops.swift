@@ -40,6 +40,24 @@ func startMempoolLoop(node: LatticeNode) -> Task<Void, Never> {
     }
 }
 
+/// Re-announce pins and advertise storage capacity periodically.
+/// Pin announcements expire after 24 hours; this re-announces every 6 hours
+/// and broadcasts available storage so peers can route pin requests to us.
+@discardableResult
+func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
+    Task {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(21600)) // 6 hours
+            for directory in await node.allDirectories() {
+                await node.reannounceChainTip(directory: directory)
+                if let network = await node.network(for: directory) {
+                    await network.advertiseStorage()
+                }
+            }
+        }
+    }
+}
+
 @discardableResult
 func startGarbageCollectionLoop(node: LatticeNode, retentionDepth: UInt64, expiryBlocks: UInt64 = 1_000_000) -> Task<Void, Never> {
     Task {

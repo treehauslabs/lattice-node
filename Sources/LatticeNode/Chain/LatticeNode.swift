@@ -24,6 +24,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     static let peerRateWindow: Duration = .seconds(10)
     var syncTask: Task<Void, Never>?
     var peerRefreshTask: Task<Void, Never>?
+    private var mempoolPruneTask: Task<Void, Never>?
+    private var gcTask: Task<Void, Never>?
+    private var pinReannounceTask: Task<Void, Never>?
     public let feeEstimator: FeeEstimator
     public let subscriptions: SubscriptionManager
     public let anchorPeers: AnchorPeers
@@ -124,9 +127,18 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             try await network.start()
             await restoreMempool(directory: dir, network: network, fetcher: network.ivyFetcher)
         }
+        mempoolPruneTask = startMempoolLoop(node: self)
+        gcTask = startGarbageCollectionLoop(node: self, retentionDepth: config.retentionDepth)
+        pinReannounceTask = startPinReannounceLoop(node: self)
     }
 
     public func stop() async {
+        mempoolPruneTask?.cancel()
+        mempoolPruneTask = nil
+        gcTask?.cancel()
+        gcTask = nil
+        pinReannounceTask?.cancel()
+        pinReannounceTask = nil
         peerRefreshTask?.cancel()
         peerRefreshTask = nil
         syncTask?.cancel()
@@ -193,6 +205,25 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         for (_, network) in networks {
             await network.nodeMempool.pruneExpired(olderThan: age)
         }
+    }
+
+    // MARK: - Pin Re-announcement
+
+    /// Re-announce the current chain tip block and its Volume boundaries.
+    /// Called periodically to keep pin announcements alive in the DHT.
+    public func reannounceChainTip(directory: String) async {
+        guard let network = networks[directory] else { return }
+        let chain: ChainState
+        if directory == genesisConfig.spec.directory {
+            chain = await lattice.nexus.chain
+        } else if let childLevel = await lattice.nexus.children[directory] {
+            chain = await childLevel.chain
+        } else {
+            return
+        }
+        let tipCID = await chain.getMainChainTip()
+        guard let data = try? await network.ivyFetcher.fetch(rawCid: tipCID) else { return }
+        await network.announceStoredBlock(cid: tipCID, data: data)
     }
 
     // MARK: - Peer Persistence

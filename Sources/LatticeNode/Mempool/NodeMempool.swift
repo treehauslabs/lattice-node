@@ -109,8 +109,14 @@ public actor NodeMempool {
         byAccount[sender, default: AccountTxQueue()].confirmedNonce = nonce
         let confirmed = nonce
         if var queue = byAccount[sender] {
-            let stale = queue.txsByNonce.keys.filter { $0 < confirmed }
-            for n in stale { queue.txsByNonce.removeValue(forKey: n) }
+            let stale = queue.txsByNonce.filter { $0.key < confirmed }
+            for (n, entry) in stale {
+                byCID.removeValue(forKey: entry.cid)
+                if let idx = sortedEntries.firstIndex(where: { $0.cid == entry.cid }) {
+                    sortedEntries.remove(at: idx)
+                }
+                queue.txsByNonce.removeValue(forKey: n)
+            }
             byAccount[sender] = queue
         }
     }

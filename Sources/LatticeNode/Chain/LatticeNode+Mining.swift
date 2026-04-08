@@ -16,14 +16,15 @@ extension LatticeNode {
             publicKeyHex: config.publicKey,
             privateKeyHex: config.privateKey
         )
-        let childContexts = await buildChildMiningContexts()
         let miner = MinerLoop(
             chainState: chainState,
             mempool: network.nodeMempool,
             fetcher: network.ivyFetcher,
             spec: genesisConfig.spec,
             identity: identity,
-            childContexts: childContexts,
+            childContextProvider: { [weak self] in
+                await self?.buildChildMiningContexts() ?? []
+            },
             batchSize: config.resources.miningBatchSize
         )
         await miner.setDelegate(self)

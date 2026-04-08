@@ -56,6 +56,12 @@ public struct NodeResourceConfig: Sendable {
         return max(totalTxs / max(chainCount, 1), 100)
     }
 
+    /// Max storage entries for the verified distance store (one per CID).
+    /// Derived from disk budget assuming ~4KB average entry size.
+    public var maxStorageEntries: Int {
+        max(Int(diskBudgetGB * 1_073_741_824) / 4096, 1000)
+    }
+
     public func withIdentity(publicKey: String) -> NodeResourceConfig {
         NodeResourceConfig(
             memoryBudgetGB: memoryBudgetGB,

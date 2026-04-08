@@ -85,7 +85,7 @@ public struct TransactionValidator: Sendable {
             if body.nonce < confirmedNonce {
                 return .failure(.nonceAlreadyUsed(nonce: body.nonce))
             }
-            if body.nonce > confirmedNonce + 64 {
+            if body.nonce > confirmedNonce + MAX_NONCE_DRIFT {
                 return .failure(.nonceFromFuture(nonce: body.nonce))
             }
         }

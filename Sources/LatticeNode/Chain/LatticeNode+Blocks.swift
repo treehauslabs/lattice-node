@@ -75,7 +75,14 @@ extension LatticeNode {
         directory: String,
         fetcher: Fetcher
     ) async -> Bool {
-        let chain = await lattice.nexus.chain
+        let chain: ChainState
+        if directory == genesisConfig.spec.directory {
+            chain = await lattice.nexus.chain
+        } else if let childLevel = await lattice.nexus.children[directory] {
+            chain = await childLevel.chain
+        } else {
+            return false
+        }
         let tipBefore = await chain.getMainChainTip()
 
         let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
@@ -111,6 +118,9 @@ extension LatticeNode {
                             await network.nodeMempool.updateConfirmedNonce(sender: update.address, nonce: update.nonce)
                         }
                     }
+                } else {
+                    let log = NodeLogger("blocks")
+                    log.error("Failed to extract state changeset for block \(header.rawCID) — StateStore not updated")
                 }
 
                 let receiptStore = TransactionReceiptStore(store: store, fetcher: fetcher)
@@ -202,8 +212,8 @@ extension LatticeNode {
             for blockHash in orphanedBlockHashes {
                 guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
                       let block = Block(data: blockData) else {
-                    log.error("Missing CAS data for orphaned block \(blockHash) — reorg incomplete")
-                    return
+                    log.error("Missing CAS data for orphaned block \(blockHash) — skipping")
+                    continue
                 }
                 do {
                     let newState = try await block.frontier.resolve(fetcher: fetcher)
@@ -319,14 +329,24 @@ extension LatticeNode {
                         }
                     }
 
-                    // Recover orphaned child txs to child mempool
+                    // Recover orphaned child txs to child mempool (with validation)
                     if let childNetwork = networks[childDir],
+                       let childChain = await lattice.nexus.children[childDir]?.chain,
                        let txDict = try? await childBlock.transactions.resolveRecursive(fetcher: fetcher).node,
                        let txEntries = try? txDict.allKeysAndValues() {
-                        for (_, txHeader) in txEntries {
+                        let validator = TransactionValidator(
+                            fetcher: fetcher,
+                            chainState: childChain,
+                            stateStore: stateStores[childDir]
+                        )
+                        for (cid, txHeader) in txEntries {
                             guard let tx = txHeader.node else { continue }
                             if tx.body.node?.fee == 0 { continue }
-                            let _ = await childNetwork.nodeMempool.add(transaction: tx)
+                            if await childNetwork.nodeMempool.contains(txCID: cid) { continue }
+                            let result = await validator.validate(tx)
+                            if case .success = result {
+                                let _ = await childNetwork.nodeMempool.add(transaction: tx)
+                            }
                         }
                     }
 
@@ -419,6 +439,8 @@ extension LatticeNode {
         if accepted {
             tally.recordSuccess(peer: peer)
             await network.setChainTip(tipCID: cid, referencedCIDs: [])
+            // Announce accepted block so we earn from serving it
+            await network.announceStoredBlock(cid: cid, data: data)
         } else {
             tally.recordFailure(peer: peer)
         }
@@ -467,6 +489,11 @@ extension LatticeNode {
         )
         if accepted {
             tally.recordSuccess(peer: peer)
+            // Announce accepted block for earning
+            if let block = try? await header.resolve(fetcher: resolveFetcher).node,
+               let blockData = block.toData() {
+                await network.announceStoredBlock(cid: cid, data: blockData)
+            }
             await maybePersist(directory: directory)
         } else {
             tally.recordFailure(peer: peer)

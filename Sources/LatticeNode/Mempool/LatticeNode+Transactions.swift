@@ -36,7 +36,7 @@ extension LatticeNode {
         let added = await network.submitTransaction(transaction)
         if added {
             await metrics.increment("lattice_transactions_submitted_total")
-            await network.announceBlock(cid: transaction.body.rawCID)
+            await network.gossipTransaction(cid: transaction.body.rawCID)
             let fee = transaction.body.node?.fee ?? 0
             let sender = transaction.body.node?.signers.first ?? ""
             await subscriptions.emit(.newTransaction(

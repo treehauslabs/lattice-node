@@ -21,6 +21,9 @@ public actor ChainNetwork: IvyDelegate {
     public let verifiedStore: VerifiedDistanceStore
     public let protectionPolicy: BlockchainProtectionPolicy
     private let localCAS: any AcornCASWorker
+    /// Separate store for earning pins — LFU eviction keeps profitable data.
+    /// Not distance-based; stores whatever peers request us to pin.
+    private let pinStore: DiskCASWorker<DefaultFileSystem>
     private let resources: NodeResourceConfig
     public weak var delegate: ChainNetworkDelegate?
     private var subscribedChains: Set<String>
@@ -62,10 +65,20 @@ public actor ChainNetwork: IvyDelegate {
         )
         self.verifiedStore = verified
 
-        // Local CAS: memory + disk (no network worker — reads go through IvyFetcher)
+        // Earning pin store: LFU eviction keeps frequently-requested (profitable) data.
+        // Separate from blockchain data — stores whatever maximizes serving revenue.
+        let pinDiskBytes = diskBytes / 4
+        let pinDisk = try DiskCASWorker(
+            directory: storagePath.appendingPathComponent(directory).appendingPathComponent("pins"),
+            maxBytes: pinDiskBytes
+        )
+        self.pinStore = pinDisk
+
+        // Local CAS: memory + blockchain disk + pin disk
+        // Reads check all three; Ivy can serve from any.
         let local = await CompositeCASWorker(
-            workers: ["mem": memory, "disk": verified],
-            order: ["mem", "disk"]
+            workers: ["mem": memory, "disk": verified, "pins": pinDisk],
+            order: ["mem", "disk", "pins"]
         )
         self.localCAS = local
 
@@ -176,6 +189,30 @@ public actor ChainNetwork: IvyDelegate {
 
     public func storeBlock(cid: String, data: Data) async {
         await storeLocally(cid: cid, data: data)
+        // Announce stored block so we can earn from serving it
+        await announceStoredBlock(cid: cid, data: data)
+    }
+
+    /// Announce a block we received and stored so peers can discover us as a pinner.
+    /// Lighter than publishBlock — no storeAndPublish, just pin announcements.
+    func announceStoredBlock(cid: String, data: Data) async {
+        let fee = await ivy.config.relayFee * 2
+        let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+
+        // Announce the block itself
+        await ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+
+        // Announce Volume boundaries so state/tx subtrees are discoverable
+        if let block = Block(data: data) {
+            let frontierCID = block.frontier.rawCID
+            if !frontierCID.isEmpty {
+                await ivy.publishPinAnnounce(rootCID: frontierCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+            }
+            let txCID = block.transactions.rawCID
+            if !txCID.isEmpty {
+                await ivy.publishPinAnnounce(rootCID: txCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+            }
+        }
     }
 
     // MARK: - Chain Tip Management
@@ -218,6 +255,51 @@ public actor ChainNetwork: IvyDelegate {
 
     public func allMempoolTransactions() async -> [Transaction] {
         await nodeMempool.allTransactions()
+    }
+
+    // MARK: - Storage Advertising
+
+    /// Available pin storage capacity based on the earning pin store's disk budget.
+    public var availableStorageCapacity: Int {
+        get async {
+            let diskBytes = resources.diskBytesPerChain(chainCount: 1) / 4
+            let usedBytes = await pinStore.totalBytes
+            return Swift.max(diskBytes - usedBytes, 0)
+        }
+    }
+
+    /// Broadcast available storage capacity so peers discover us as a pinner.
+    public func advertiseStorage() async {
+        let capacity = await availableStorageCapacity
+        guard capacity > 0 else { return }
+        var payload = Data()
+        var cap = UInt32(min(capacity, Int(UInt32.max)))
+        payload.append(Data(bytes: &cap, count: 4))
+        await ivy.broadcastMessage(topic: "storage", payload: payload)
+    }
+
+    /// Accept a remote pin request: fetch the CID, store it in the earning pin store, announce it.
+    /// The pin store uses LFU eviction — unprofitable data gets replaced by profitable data naturally.
+    private func handlePinRequest(cid: String, from peer: PeerID) async {
+        // Already have it locally? Just announce.
+        let cidObj = ContentIdentifier(rawValue: cid)
+        if await localCAS.has(cid: cidObj) {
+            let fee = await ivy.config.relayFee * 2
+            let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+            await ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+            return
+        }
+
+        // Fetch from the requesting peer (targeted, one hop)
+        guard let data = await ivy.get(cid: cid, target: peer) else { return }
+
+        // Store in the earning pin store (LFU eviction, not distance-based)
+        await pinStore.storeLocal(cid: cidObj, data: data)
+
+        // Announce so peers discover us
+        let fee = await ivy.config.relayFee * 2
+        let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+        await ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)
     }
 
     // MARK: - Gossip
@@ -273,6 +355,10 @@ public actor ChainNetwork: IvyDelegate {
                         _ = await nodeMempool.add(transaction: tx)
                     }
                 }
+            }
+        case "pinRequest":
+            if let cid = String(data: payload, encoding: .utf8) {
+                await handlePinRequest(cid: cid, from: peer)
             }
         default:
             break

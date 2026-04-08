@@ -20,6 +20,7 @@ FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libjavascriptcoregtk-4.1-0 \
+    dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/.build/release/LatticeNode /usr/local/bin/lattice-node
