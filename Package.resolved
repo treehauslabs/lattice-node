@@ -1,5 +1,5 @@
 {
-  "originHash" : "97a7aecb0695c813ee32c24a3042df075d3547cb27e7b00264e21b3f1a8b8f08",
+  "originHash" : "e25612e11ae7d7ffa578bb6320050b600bd1180078cfa6ba90199e9da0405764",
   "pins" : [
     {
       "identity" : "acorn",
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Ivy.git",
       "state" : {
-        "revision" : "a7e9f55e794e29ee82d2ebfb82ed7da7d323f449",
-        "version" : "2.3.0"
+        "revision" : "46543cc64d4449c87e4b4e623910a2dab9096075",
+        "version" : "3.0.1"
       }
     },
     {
@@ -375,8 +375,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Tally.git",
       "state" : {
-        "revision" : "debbd1a91a2c6b00f4c9eece322364aa0a227cb2",
-        "version" : "1.1.0"
+        "revision" : "0e67040a9a9e6ab47036a4b53a2abe649f2a2732",
+        "version" : "1.2.0"
       }
     },
     {

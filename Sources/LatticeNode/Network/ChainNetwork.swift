@@ -64,9 +64,8 @@ public actor ChainNetwork: IvyDelegate {
         )
         self.verifiedStore = verified
 
-        var ivyConfig = config
         let tallyWithMaxPeers = TallyConfig(maxPeers: maxPeerConnections)
-        ivyConfig = IvyConfig(
+        let ivyConfig = IvyConfig(
             publicKey: config.publicKey,
             listenPort: config.listenPort,
             bootstrapPeers: config.bootstrapPeers,
@@ -77,22 +76,13 @@ public actor ChainNetwork: IvyDelegate {
             requestTimeout: config.requestTimeout,
             relayTimeout: config.relayTimeout,
             serviceType: config.serviceType,
-            enableRelay: config.enableRelay,
-            enableAutoNAT: config.enableAutoNAT,
-            enableHolePunch: config.enableHolePunch,
             stunServers: config.stunServers,
-            enableTransport: config.enableTransport,
-            enableAnnounce: config.enableAnnounce,
-            announceInterval: config.announceInterval,
-            announceAppName: config.announceAppName,
-            udpPort: config.udpPort,
-            enableUDP: config.enableUDP,
-            signingKey: config.signingKey,
             defaultTTL: config.defaultTTL,
-            healthConfig: config.healthConfig
+            healthConfig: config.healthConfig,
+            signingKey: config.signingKey
         )
         let ivy = Ivy(config: ivyConfig)
-        let network = await ivy.reticulumWorker()
+        let network = await ivy.worker()
 
         let composite = await CompositeCASWorker(
             workers: ["mem": memory, "disk": verified, "net": network],
@@ -182,6 +172,39 @@ public actor ChainNetwork: IvyDelegate {
 
     nonisolated public func ivy(_ ivy: Ivy, didReceiveBlock cid: String, data: Data, from peer: PeerID) {
         Task { await delegate?.chainNetwork(self, didReceiveBlock: cid, data: data, from: peer) }
+    }
+
+    nonisolated public func ivy(_ ivy: Ivy, didDiscoverPublicAddress address: ObservedAddress) {}
+
+    nonisolated public func ivy(_ ivy: Ivy, didReceiveMessage message: Message, from peer: PeerID) {
+        switch message {
+        case .peerMessage(let topic, let payload):
+            Task { await handlePeerMessage(topic: topic, payload: payload, from: peer) }
+        default:
+            break
+        }
+    }
+
+    private func handlePeerMessage(topic: String, payload: Data, from peer: PeerID) async {
+        switch topic {
+        case "newBlock":
+            // Block header gossip — decode CID and fetch the full block
+            if let cid = String(data: payload, encoding: .utf8) {
+                await delegate?.chainNetwork(self, didReceiveBlockAnnouncement: cid, from: peer)
+            }
+        case "mempool":
+            // Transaction gossip — decode and submit to mempool
+            break
+        default:
+            break
+        }
+    }
+
+    /// Gossip a block announcement to all direct peers via peerMessage
+    public func gossipBlockAnnouncement(cid: String) async {
+        if let payload = cid.data(using: .utf8) {
+            await ivy.broadcastMessage(topic: "newBlock", payload: payload)
+        }
     }
 }
 
