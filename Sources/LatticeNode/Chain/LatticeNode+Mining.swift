@@ -1,6 +1,7 @@
 import Lattice
 import Foundation
 import Ivy
+import Tally
 import cashew
 
 extension LatticeNode {
@@ -49,6 +50,12 @@ extension LatticeNode {
         await storeBlockRecursively(block, fetcher: network.fetcher)
         await network.publishBlock(cid: header.rawCID, data: blockData)
         await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
+
+        // Settlement: submit mining work to Ivy creditors
+        // The block hash serves as proof of work — creditors verify it meets difficulty
+        let blockHash = Data(header.rawCID.utf8)
+        await settleWithCreditors(network: network, nonce: block.nonce, blockHash: blockHash)
+
         let accepted = await processBlockAndRecoverReorg(
             header: header,
             directory: directory,
@@ -61,6 +68,29 @@ extension LatticeNode {
             }
         }
         await maybePersist(directory: directory)
+    }
+
+    /// Submit mining proof to Ivy creditors to settle outstanding debt.
+    /// Each mined block is simultaneously a settlement proof — the work was real.
+    private func settleWithCreditors(network: ChainNetwork, nonce: UInt64, blockHash: Data) async {
+        let ledger = await network.ivy.ledger
+        let allLines = await ledger.allLines
+        for (peer, line) in allLines {
+            // Only settle with peers we owe (negative balance = we're the debtor)
+            guard line.balance < 0 else { continue }
+            guard line.needsSettlement else { continue }
+
+            // Send the mining solution as settlement proof
+            await network.ivy.sendMessage(
+                to: peer,
+                topic: "settlement",
+                payload: Message.miningChallengeSolution(
+                    nonce: nonce,
+                    hash: blockHash,
+                    blockNonce: nonce
+                ).serialize()
+            )
+        }
     }
 
     func buildChildMiningContexts() async -> [ChildMiningContext] {
