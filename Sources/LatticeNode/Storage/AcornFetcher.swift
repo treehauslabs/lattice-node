@@ -15,25 +15,12 @@ public actor AcornFetcher: Fetcher {
         if let data = await worker.get(cid: cid) {
             return data
         }
-        let contentCid = ContentIdentifier(rawValue: contentHash(of: rawCid))
-        if let data = await worker.get(cid: contentCid) {
-            return data
-        }
         throw FetcherError.notFound(rawCid)
     }
 
     public func store(rawCid: String, data: Data) async {
-        let cashewCid = ContentIdentifier(rawValue: rawCid)
-        await worker.store(cid: cashewCid, data: data)
-        let contentCid = ContentIdentifier(for: data)
-        if contentCid.rawValue != rawCid {
-            await worker.store(cid: contentCid, data: data)
-        }
-    }
-
-    private func contentHash(of cidString: String) -> String {
-        let data = Data(cidString.utf8)
-        return ContentIdentifier(for: data).rawValue
+        let cid = ContentIdentifier(rawValue: rawCid)
+        await worker.store(cid: cid, data: data)
     }
 }
 

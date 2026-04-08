@@ -123,15 +123,9 @@ public actor ChainNetwork: IvyDelegate {
     }
 
     /// Store data locally only (no network publish).
-    /// Dual-stores under both the raw CID and the Acorn content hash to handle
-    /// CID format differences between Cashew (CIDv1) and Acorn (ContentIdentifier).
     public func storeLocally(cid: String, data: Data) async {
-        let rawCid = ContentIdentifier(rawValue: cid)
-        await localCAS.store(cid: rawCid, data: data)
-        let contentCid = ContentIdentifier(for: data)
-        if contentCid.rawValue != cid {
-            await localCAS.store(cid: contentCid, data: data)
-        }
+        let contentId = ContentIdentifier(rawValue: cid)
+        await localCAS.store(cid: contentId, data: data)
     }
 
     // MARK: - Block Operations (backward compat aliases)
