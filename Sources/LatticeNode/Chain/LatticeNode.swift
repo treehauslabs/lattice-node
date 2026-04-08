@@ -119,9 +119,10 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
     public func start() async throws {
         await lattice.setDelegate(self)
-        for (_, network) in networks {
+        for (dir, network) in networks {
             await network.setDelegate(self)
             try await network.start()
+            await restoreMempool(directory: dir, network: network, fetcher: network.ivyFetcher)
         }
     }
 
@@ -133,8 +134,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         for (_, miner) in miners {
             await miner.stop()
         }
-        for (dir, _) in networks {
+        for (dir, network) in networks {
             await persistChainState(directory: dir)
+            await persistMempool(directory: dir, network: network)
         }
         let currentPeers = await connectedPeerEndpoints()
         await anchorPeers.update(peers: currentPeers)

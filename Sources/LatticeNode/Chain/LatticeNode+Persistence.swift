@@ -1,5 +1,6 @@
 import Lattice
 import Foundation
+import cashew
 
 extension LatticeNode {
 
@@ -28,7 +29,61 @@ extension LatticeNode {
         blocksSinceLastPersist[directory] = count
         if count >= config.persistInterval {
             await persistChainState(directory: directory)
+            await runStateExpiry(directory: directory)
         }
+    }
+
+    private func runStateExpiry(directory: String) async {
+        guard let store = stateStores[directory] else { return }
+        let chain: ChainState
+        if directory == genesisConfig.spec.directory {
+            chain = await lattice.nexus.chain
+        } else if let childLevel = await lattice.nexus.children[directory] {
+            chain = await childLevel.chain
+        } else {
+            return
+        }
+        let currentHeight = await chain.getHighestBlockIndex()
+        let expiry = StateExpiry(store: store)
+        let expired = await expiry.findExpiredAccounts(currentHeight: currentHeight)
+        if !expired.isEmpty {
+            await expiry.expireAccounts(expired, atHeight: currentHeight)
+            let log = NodeLogger("expiry")
+            log.info("\(directory): expired \(expired.count) inactive account(s)")
+        }
+    }
+
+    // MARK: - Mempool Persistence
+
+    func persistMempool(directory: String, network: ChainNetwork) async {
+        let persistence = MempoolPersistence(dataDir: config.storagePath.appendingPathComponent(directory))
+        let txs = await network.allMempoolTransactions()
+        do {
+            try persistence.save(transactions: txs)
+        } catch {
+            let log = NodeLogger("persistence")
+            log.error("Failed to persist mempool for \(directory): \(error)")
+        }
+    }
+
+    func restoreMempool(directory: String, network: ChainNetwork, fetcher: Fetcher) async {
+        let persistence = MempoolPersistence(dataDir: config.storagePath.appendingPathComponent(directory))
+        let serialized = persistence.load()
+        guard !serialized.isEmpty else { return }
+        var restored = 0
+        for stx in serialized {
+            let bodyHeader = HeaderImpl<TransactionBody>(rawCID: stx.bodyCID)
+            guard let body = try? await bodyHeader.resolve(fetcher: fetcher).node else { continue }
+            let tx = Transaction(signatures: stx.signatures, body: bodyHeader)
+            if await network.submitTransaction(tx) {
+                restored += 1
+            }
+        }
+        if restored > 0 {
+            let log = NodeLogger("persistence")
+            log.info("\(directory): restored \(restored) mempool transaction(s)")
+        }
+        persistence.delete()
     }
 
     public func restoreChildChains() async throws {

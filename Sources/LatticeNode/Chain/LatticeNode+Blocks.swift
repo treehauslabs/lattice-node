@@ -185,6 +185,17 @@ extension LatticeNode {
             return
         }
 
+        // Enforce finality: refuse to reorg past finalized blocks
+        let currentHeight = await chain.getHighestBlockIndex()
+        for blockHash in orphanedBlockHashes {
+            if let meta = await chain.getConsensusBlock(hash: blockHash) {
+                if config.finality.isFinal(chain: dir, blockHeight: meta.blockIndex, currentHeight: currentHeight) {
+                    log.error("Reorg would undo finalized block at height \(meta.blockIndex) — rejected")
+                    return
+                }
+            }
+        }
+
         // Step 1: Roll back StateStore via CAS diffs (newest first)
         // orphanedBlockHashes is already newest-to-oldest order
         if let store = stateStores[dir] {
@@ -261,12 +272,70 @@ extension LatticeNode {
         }
 
         log.info("Reorg complete: \(recovered) tx(s) recovered, \(newChainTxCIDs.count) confirmed in new chain")
+
+        // Step 5: Roll back child chain states from orphaned nexus blocks
+        await rollbackChildChains(orphanedBlockHashes: orphanedBlockHashes, fetcher: fetcher)
+
         await emitReorgEvent(
             directory: dir,
             oldTip: oldTip,
             newTip: newTip,
             depth: UInt64(orphanedBlockHashes.count)
         )
+    }
+
+    /// Roll back child chain StateStores for child blocks embedded in orphaned nexus blocks.
+    private func rollbackChildChains(orphanedBlockHashes: [String], fetcher: Fetcher) async {
+        let log = NodeLogger("reorg")
+        for blockHash in orphanedBlockHashes {
+            guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
+                  let block = Block(data: blockData),
+                  let childDict = try? await block.childBlocks.resolveRecursive(fetcher: fetcher).node,
+                  let entries = try? childDict.allKeysAndValues() else { continue }
+
+            for (childDir, childHeader) in entries {
+                guard let childBlock = childHeader.node,
+                      let store = stateStores[childDir] else { continue }
+                do {
+                    let newState = try await childBlock.frontier.resolve(fetcher: fetcher)
+                    let oldState = try await childBlock.homestead.resolve(fetcher: fetcher)
+                    guard let newAccounts = newState.node?.accountState,
+                          let oldAccounts = oldState.node?.accountState else { continue }
+                    let diff = try await newAccounts.diff(from: oldAccounts, fetcher: fetcher)
+
+                    for (address, _) in diff.inserted {
+                        await store.deleteAccount(address: address)
+                    }
+                    for (address, balanceStr) in diff.deleted {
+                        if let balance = UInt64(balanceStr) {
+                            let nonce = await store.getNonce(address: address) ?? 0
+                            await store.setAccount(address: address, balance: balance, nonce: nonce, atHeight: childBlock.index)
+                        }
+                    }
+                    for (address, entry) in diff.modified {
+                        if let oldBalance = UInt64(entry.old) {
+                            let nonce = await store.getNonce(address: address) ?? 0
+                            await store.setAccount(address: address, balance: oldBalance, nonce: nonce, atHeight: childBlock.index)
+                        }
+                    }
+
+                    // Recover orphaned child txs to child mempool
+                    if let childNetwork = networks[childDir],
+                       let txDict = try? await childBlock.transactions.resolveRecursive(fetcher: fetcher).node,
+                       let txEntries = try? txDict.allKeysAndValues() {
+                        for (_, txHeader) in txEntries {
+                            guard let tx = txHeader.node else { continue }
+                            if tx.body.node?.fee == 0 { continue }
+                            let _ = await childNetwork.nodeMempool.add(transaction: tx)
+                        }
+                    }
+
+                    log.info("Child chain \(childDir): rolled back block at height \(childBlock.index)")
+                } catch {
+                    log.error("Child chain \(childDir) rollback failed: \(error)")
+                }
+            }
+        }
     }
 
     private func collectAncestors(
@@ -314,8 +383,7 @@ extension LatticeNode {
 
         tally.recordReceived(peer: peer, bytes: data.count)
 
-        await storeReceivedBlockRecursively(cid: cid, data: data, network: network)
-
+        // Validate before storing — don't waste disk on invalid blocks
         guard let block = Block(data: data) else {
             tally.recordFailure(peer: peer)
             return
@@ -330,6 +398,9 @@ extension LatticeNode {
             tally.recordFailure(peer: peer)
             return
         }
+
+        // Basic checks passed — store to CAS
+        await storeReceivedBlockRecursively(cid: cid, data: data, network: network)
 
         if await checkSyncNeeded(
             peerBlock: block,
