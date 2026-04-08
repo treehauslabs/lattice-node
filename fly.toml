@@ -1,0 +1,25 @@
+[build]
+  dockerfile = "Dockerfile"
+
+[mounts]
+  source = "lattice_data"
+  destination = "/data"
+
+[[services]]
+  internal_port = 4001
+  protocol = "tcp"
+  [[services.ports]]
+    port = 4001
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+[processes]
+  app = "node --mine Nexus --port 4001 --rpc-port 8080 --rpc-bind 0.0.0.0 --data-dir /data --autosize"
