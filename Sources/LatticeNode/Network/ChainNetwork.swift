@@ -17,6 +17,7 @@ public actor ChainNetwork: IvyDelegate {
     public let directory: String
     public let ivy: Ivy
     public let fetcher: AcornFetcher
+    public let ivyFetcher: IvyFetcher
     public let nodeMempool: NodeMempool
     private let storage: any AcornCASWorker
     private let memoryWorker: MemoryCASWorker
@@ -92,6 +93,7 @@ public actor ChainNetwork: IvyDelegate {
         self.ivy = ivy
         self.storage = composite
         self.fetcher = AcornFetcher(worker: composite)
+        self.ivyFetcher = IvyFetcher(ivy: ivy, localWorker: composite)
     }
 
     public func start() async throws {
