@@ -16,11 +16,14 @@ echo ""
 # Step 1: Build the binary to generate keys
 echo "Building lattice-node..."
 cd "$PROJECT_DIR"
-swift build -c release 2>/dev/null
+if ! swift build -c release; then
+    echo "ERROR: Build failed. Check dependencies (libsqlite3-dev, libjavascriptcoregtk-4.1-dev on Linux)"
+    exit 1
+fi
 BINARY=".build/release/LatticeNode"
 
 if [ ! -f "$BINARY" ]; then
-    echo "ERROR: Build failed. Cannot find $BINARY"
+    echo "ERROR: Binary not found at $BINARY"
     exit 1
 fi
 
