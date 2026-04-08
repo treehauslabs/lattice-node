@@ -124,15 +124,18 @@ public struct TransactionValidator: Sendable {
         guard let state = try? await frontierHeader.resolve(fetcher: fetcher).node else {
             return .failure(.stateResolutionFailed)
         }
-        let accountHeader = state.accountState
-        guard let accountDict = try? await accountHeader.resolve(fetcher: fetcher).node else {
+
+        let ownerKeys = body.accountActions.map { $0.owner }
+        var accountPaths = [[String]: ResolutionStrategy]()
+        for key in ownerKeys { accountPaths[[key]] = .targeted }
+        guard let accountDict = try? await state.accountState.resolve(paths: accountPaths, fetcher: fetcher).node else {
             return .failure(.stateResolutionFailed)
         }
 
         for action in body.accountActions {
             let actualBalance: UInt64
-            if let balanceStr = try? accountDict.get(key: action.owner) {
-                actualBalance = UInt64(String(describing: balanceStr)) ?? 0
+            if let balance = try? accountDict.get(key: action.owner) {
+                actualBalance = balance
             } else {
                 actualBalance = 0
             }

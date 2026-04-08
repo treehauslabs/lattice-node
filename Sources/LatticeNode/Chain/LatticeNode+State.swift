@@ -57,10 +57,10 @@ extension LatticeNode {
         let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
         guard let state = resolved.node else { return 0 }
-        let accountResolved = try await state.accountState.resolve(fetcher: network.fetcher)
+        let accountResolved = try await state.accountState.resolve(paths: [[address]: .targeted], fetcher: network.fetcher)
         guard let accountDict = accountResolved.node else { return 0 }
-        guard let balanceStr = try? accountDict.get(key: address) else { return 0 }
-        return UInt64(balanceStr) ?? 0
+        guard let balance = try? accountDict.get(key: address) else { return 0 }
+        return balance
     }
 
     public func getBlock(hash: String) async throws -> Block? {
@@ -89,7 +89,7 @@ extension LatticeNode {
         let proof = try await state.accountState.proof(paths: proofPaths, fetcher: network.fetcher)
         let balance: UInt64
         if let dict = proof.node, let val = try? dict.get(key: address) {
-            balance = UInt64(String(describing: val)) ?? 0
+            balance = val
         } else {
             balance = 0
         }

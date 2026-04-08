@@ -267,10 +267,10 @@ public actor MinerLoop {
     private func lookupBalance(address: String, frontier: LatticeStateHeader) async throws -> UInt64 {
         let resolved = try await frontier.resolve(fetcher: fetcher)
         guard let state = resolved.node else { return 0 }
-        let resolvedAccounts = try await state.accountState.resolveRecursive(fetcher: fetcher)
-        guard let accountDict = resolvedAccounts.node else { return 0 }
+        let accountResolved = try await state.accountState.resolve(paths: [[address]: .targeted], fetcher: fetcher)
+        guard let accountDict = accountResolved.node else { return 0 }
         guard let balance = try? accountDict.get(key: address) else { return 0 }
-        return UInt64(balance) ?? 0
+        return balance
     }
 
     // MARK: - Child Block Building (Merged Mining)
