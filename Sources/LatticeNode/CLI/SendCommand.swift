@@ -2,6 +2,9 @@ import ArgumentParser
 import Foundation
 import Lattice
 import cashew
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 struct SendCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -41,13 +44,7 @@ struct SendCommand: AsyncParsableCommand {
         printKeyValue("Amount", "\(amount)")
         printKeyValue("Fee", "\(fee)")
 
-        let balanceURL = URL(string: "\(rpc)/api/balance/\(senderAddress)")!
-        let (balanceData, _) = try await URLSession.shared.data(from: balanceURL)
-        guard let balanceJSON = try? JSONSerialization.jsonObject(with: balanceData) as? [String: Any],
-              let balance = balanceJSON["balance"] as? UInt64 else {
-            printError("Could not fetch sender balance")
-            throw ExitCode.failure
-        }
+        let balance = try await fetchJSON("\(rpc)/api/balance/\(senderAddress)")["balance"] as? UInt64 ?? 0
 
         let (totalCost, costOverflow) = amount.addingReportingOverflow(fee)
         guard !costOverflow else {
@@ -59,28 +56,16 @@ struct SendCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let nonceURL = URL(string: "\(rpc)/api/nonce/\(senderAddress)")!
-        let (nonceData, _) = try await URLSession.shared.data(from: nonceURL)
-        guard let nonceJSON = try? JSONSerialization.jsonObject(with: nonceData) as? [String: Any],
-              let nonce = nonceJSON["nonce"] as? UInt64 else {
-            printError("Could not fetch sender nonce")
-            throw ExitCode.failure
-        }
+        let nonce = try await fetchJSON("\(rpc)/api/nonce/\(senderAddress)")["nonce"] as? UInt64 ?? 0
 
-        let heightURL = URL(string: "\(rpc)/api/chain/info")!
-        let (heightData, _) = try await URLSession.shared.data(from: heightURL)
-        guard let chainJSON = try? JSONSerialization.jsonObject(with: heightData) as? [String: Any],
-              let chains = chainJSON["chains"] as? [[String: Any]],
-              let nexus = chains.first,
-              let height = nexus["height"] as? UInt64 else {
+        let chainInfo = try await fetchJSON("\(rpc)/api/chain/info")
+        guard let chains = chainInfo["chains"] as? [[String: Any]],
+              let _ = chains.first?["height"] as? UInt64 else {
             printError("Could not fetch chain height")
             throw ExitCode.failure
         }
 
-        let recipientBalanceURL = URL(string: "\(rpc)/api/balance/\(to)")!
-        let (recipientData, _) = try await URLSession.shared.data(from: recipientBalanceURL)
-        let recipientJSON = (try? JSONSerialization.jsonObject(with: recipientData) as? [String: Any]) ?? [:]
-        let recipientBalance = recipientJSON["balance"] as? UInt64 ?? 0
+        let recipientBalance = (try? await fetchJSON("\(rpc)/api/balance/\(to)")["balance"] as? UInt64) ?? 0
 
         let senderAction = AccountAction(
             owner: senderAddress,
@@ -129,21 +114,42 @@ struct SendCommand: AsyncParsableCommand {
         ]
 
         let txJSON = try JSONSerialization.data(withJSONObject: txPayload)
-        var request = URLRequest(url: URL(string: "\(rpc)/api/transaction")!)
+        let response = try await postJSON("\(rpc)/api/transaction", body: txJSON)
+        if response["accepted"] as? Bool == true {
+            let txCID = response["txCID"] as? String ?? ""
+            printSuccess("Transaction submitted: \(String(txCID.prefix(32)))...")
+        } else {
+            let error = response["error"] as? String ?? "Unknown error"
+            printError("Transaction rejected: \(error)")
+            throw ExitCode.failure
+        }
+    }
+
+    private func fetchJSON(_ urlString: String) async throws -> [String: Any] {
+        guard let url = URL(string: urlString) else { return [:] }
+        let data = try Data(contentsOf: url)
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    private func postJSON(_ urlString: String, body: Data) async throws -> [String: Any] {
+        guard let url = URL(string: urlString) else { return [:] }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.httpBody = txJSON
+        request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let (responseData, _) = try await URLSession.shared.data(for: request)
-        if let response = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] {
-            if response["accepted"] as? Bool == true {
-                let txCID = response["txCID"] as? String ?? ""
-                printSuccess("Transaction submitted: \(String(txCID.prefix(32)))...")
-            } else {
-                let error = response["error"] as? String ?? "Unknown error"
-                printError("Transaction rejected: \(error)")
-                throw ExitCode.failure
-            }
+        let (responseData, _): (Data, URLResponse)
+        #if canImport(FoundationNetworking)
+        (responseData, _) = try await withCheckedThrowingContinuation { continuation in
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: (data ?? Data(), response ?? URLResponse())) }
+            }.resume()
         }
+        #else
+        (responseData, _) = try await URLSession.shared.data(for: request)
+        #endif
+
+        return (try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]) ?? [:]
     }
 }

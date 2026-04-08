@@ -27,12 +27,22 @@ public struct CookieAuth: Sendable {
 
     public static func generate(at path: URL) throws -> CookieAuth {
         var bytes = [UInt8](repeating: 0, count: 32)
+        #if canImport(Darwin)
         let result = bytes.withUnsafeMutableBufferPointer { buffer in
             SecRandomCopyBytes(kSecRandomDefault, 32, buffer.baseAddress!)
         }
         guard result == errSecSuccess else {
             throw RPCAuthError.cookieGenerationFailed
         }
+        #else
+        guard let urandom = fopen("/dev/urandom", "r") else {
+            throw RPCAuthError.cookieGenerationFailed
+        }
+        defer { fclose(urandom) }
+        guard fread(&bytes, 1, 32, urandom) == 32 else {
+            throw RPCAuthError.cookieGenerationFailed
+        }
+        #endif
         let token = bytes.map { String(format: "%02x", $0) }.joined()
         try token.write(to: path, atomically: true, encoding: .utf8)
         #if !os(Windows)
