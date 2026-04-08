@@ -87,7 +87,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             let log = NodeLogger("genesis")
             log.error("Failed to store genesis block recursively: \(error)")
         }
-        await storer.flush(to: nexusNetwork.fetcher)
+        await storer.flush(to: nexusNetwork)
 
         self.genesisResult = genesis
         let nexusLevel = ChainLevel(chain: genesis.chainState, children: [:])

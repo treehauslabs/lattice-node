@@ -28,24 +28,32 @@ public actor IvyFetcher: VolumeAwareFetcher {
     // MARK: - Fetcher
 
     public func fetch(rawCid: String) async throws -> Data {
-        // 1. Check local storage first (memory + disk, no network cost)
+        // 1. Check local storage under both CID forms (handles Cashew/Acorn format differences)
         let cid = ContentIdentifier(rawValue: rawCid)
         if let data = await localWorker.get(cid: cid) {
             return data
         }
+        let contentCid = ContentIdentifier(rawValue: contentHash(of: rawCid))
+        if let data = await localWorker.get(cid: contentCid) {
+            return data
+        }
 
-        // 2. Check if we know a pinner for a Volume containing this CID
-        //    (from a prior provide() call)
-        // For now, use untargeted retrieval — the routing will handle it
-
-        // 3. Fee-based retrieval through Ivy
+        // 2. Fee-based retrieval through Ivy
         if let data = await ivy.get(cid: rawCid) {
-            // Cache locally for future fetches
+            // Dual-store locally for future fetches
             await localWorker.store(cid: cid, data: data)
+            let computedCid = ContentIdentifier(for: data)
+            if computedCid.rawValue != rawCid {
+                await localWorker.store(cid: computedCid, data: data)
+            }
             return data
         }
 
         throw FetcherError.notFound(rawCid)
+    }
+
+    private func contentHash(of cidString: String) -> String {
+        ContentIdentifier(for: Data(cidString.utf8)).rawValue
     }
 
     // MARK: - VolumeAwareFetcher
@@ -66,9 +74,14 @@ public actor IvyFetcher: VolumeAwareFetcher {
     // MARK: - Store
 
     /// Store data locally and optionally announce to the network.
+    /// Dual-stores under both the raw CID and the Acorn content hash.
     public func store(rawCid: String, data: Data, pin: Bool = false) async {
         let cid = ContentIdentifier(rawValue: rawCid)
         await localWorker.store(cid: cid, data: data)
+        let contentCid = ContentIdentifier(for: data)
+        if contentCid.rawValue != rawCid {
+            await localWorker.store(cid: contentCid, data: data)
+        }
         if pin {
             await ivy.save(cid: rawCid, data: data, pin: true)
         }

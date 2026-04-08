@@ -1,5 +1,5 @@
 {
-  "originHash" : "1b23aa1c01f63473139b1f2fb34d54c63518c9eac39a45faa3a0645856524ba2",
+  "originHash" : "7481ada249c57c9179bc06754ad5ce85f2cb7932393684ac16cc0ffe3e4b2d86",
   "pins" : [
     {
       "identity" : "acorn",
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Ivy.git",
       "state" : {
-        "revision" : "b36927e1cbfcb6b54108428258dce2d7ccb9deaf",
-        "version" : "3.0.2"
+        "revision" : "b2715bdbda5b274a99badba069fdcc25e89a35ec",
+        "version" : "3.0.3"
       }
     },
     {

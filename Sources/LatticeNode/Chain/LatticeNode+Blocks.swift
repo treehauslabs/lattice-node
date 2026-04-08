@@ -18,7 +18,7 @@ extension LatticeNode {
 
     // MARK: - Recursive Block Storage
 
-    func storeBlockRecursively(_ block: Block, fetcher: AcornFetcher) async {
+    func storeBlockRecursively(_ block: Block, network: ChainNetwork) async {
         let header = HeaderImpl<Block>(node: block)
         let storer = BufferedStorer()
         do {
@@ -27,19 +27,19 @@ extension LatticeNode {
             let log = NodeLogger("blocks")
             log.error("Failed to store block recursively: \(error)")
         }
-        await storer.flush(to: fetcher)
+        await storer.flush(to: network)
     }
 
-    func deepCopyBlock(cid: String, from source: AcornFetcher, to dest: AcornFetcher) async {
+    func deepCopyBlock(cid: String, from source: ChainNetwork, to dest: ChainNetwork) async {
         var visited = Set<String>()
         await copyCIDRecursive(cid, from: source, to: dest, visited: &visited)
     }
 
-    private func copyCIDRecursive(_ cid: String, from source: AcornFetcher, to dest: AcornFetcher, visited: inout Set<String>) async {
+    private func copyCIDRecursive(_ cid: String, from source: ChainNetwork, to dest: ChainNetwork, visited: inout Set<String>) async {
         guard !cid.isEmpty, !visited.contains(cid) else { return }
         visited.insert(cid)
-        guard let data = try? await source.fetch(rawCid: cid) else { return }
-        await dest.store(rawCid: cid, data: data)
+        guard let data = try? await source.fetcher.fetch(rawCid: cid) else { return }
+        await dest.storeLocally(cid: cid, data: data)
 
         if let block = Block(data: data) {
             if let prevCID = block.previousBlock?.rawCID {
@@ -54,8 +54,8 @@ extension LatticeNode {
         }
     }
 
-    func storeReceivedBlockRecursively(cid: String, data: Data, fetcher: AcornFetcher) async {
-        await fetcher.store(rawCid: cid, data: data)
+    func storeReceivedBlockRecursively(cid: String, data: Data, network: ChainNetwork) async {
+        await network.storeLocally(cid: cid, data: data)
         guard let block = Block(data: data) else { return }
         let storer = BufferedStorer()
         let header = HeaderImpl<Block>(node: block)
@@ -65,7 +65,7 @@ extension LatticeNode {
             let log = NodeLogger("blocks")
             log.error("Failed to store received block \(cid) recursively: \(error)")
         }
-        await storer.flush(to: fetcher)
+        await storer.flush(to: network)
     }
 
     // MARK: - Block Processing with Reorg Recovery
@@ -314,8 +314,7 @@ extension LatticeNode {
 
         tally.recordReceived(peer: peer, bytes: data.count)
 
-        let fetcher = await network.fetcher
-        await storeReceivedBlockRecursively(cid: cid, data: data, fetcher: fetcher)
+        await storeReceivedBlockRecursively(cid: cid, data: data, network: network)
 
         guard let block = Block(data: data) else {
             tally.recordFailure(peer: peer)
@@ -344,7 +343,7 @@ extension LatticeNode {
         let directory = await network.directory
         let header = HeaderImpl<Block>(rawCID: cid)
         let accepted = await processBlockAndRecoverReorg(
-            header: header, directory: directory, fetcher: fetcher
+            header: header, directory: directory, fetcher: await network.ivyFetcher
         )
         if accepted {
             tally.recordSuccess(peer: peer)
@@ -372,11 +371,11 @@ extension LatticeNode {
 
         guard !(await isSyncing) else { return }
 
-        let fetcher = await network.fetcher
+        let resolveFetcher: any Fetcher = await network.ivyFetcher
 
         let header = HeaderImpl<Block>(rawCID: cid)
 
-        if let block = try? await header.resolve(fetcher: fetcher).node {
+        if let block = try? await header.resolve(fetcher: resolveFetcher).node {
             if !isBlockTimestampValid(block) {
                 tally.recordFailure(peer: peer)
                 return
@@ -393,7 +392,7 @@ extension LatticeNode {
 
         let directory = await network.directory
         let accepted = await processBlockAndRecoverReorg(
-            header: header, directory: directory, fetcher: fetcher
+            header: header, directory: directory, fetcher: resolveFetcher
         )
         if accepted {
             tally.recordSuccess(peer: peer)
@@ -529,8 +528,8 @@ extension LatticeNode {
             if let nexusNetwork = networks[nexusDir] {
                 await deepCopyBlock(
                     cid: tipHash,
-                    from: nexusNetwork.fetcher,
-                    to: childNetwork.fetcher
+                    from: nexusNetwork,
+                    to: childNetwork
                 )
             }
         }

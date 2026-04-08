@@ -41,7 +41,7 @@ extension LatticeNode {
     }
 
     func performSync(peerTipCID: String, network: ChainNetwork) async {
-        let fetcher = await network.fetcher
+        let fetcher: any Fetcher = await network.ivyFetcher
         let syncer = ChainSyncer(
             fetcher: fetcher,
             store: { [network] cid, data in await network.storeBlock(cid: cid, data: data) },
@@ -70,7 +70,7 @@ extension LatticeNode {
     func performHeadersFirstSync(peerTipCID: String, network: ChainNetwork) async {
         print("  [sync] Starting headers-first sync from \(String(peerTipCID.prefix(16)))...")
 
-        let fetcher = await network.fetcher
+        let fetcher: any Fetcher = await network.ivyFetcher
         let headerChain = HeaderChain()
 
         do {
@@ -158,7 +158,8 @@ extension LatticeNode {
 
     private func reprocessSyncedBlocksForChildChains(
         persisted: PersistedChainState,
-        fetcher: Fetcher
+        fetcher: Fetcher,
+        network: ChainNetwork
     ) async {
         for blockMeta in persisted.blocks {
             guard let blockData = try? await fetcher.fetch(rawCid: blockMeta.blockHash),
@@ -167,7 +168,7 @@ extension LatticeNode {
 
             let storer = BufferedStorer()
             try? header.storeRecursively(storer: storer)
-            await storer.flush(to: fetcher as! AcornFetcher)
+            await storer.flush(to: network)
 
             let _ = await lattice.processBlockHeader(header, fetcher: fetcher)
         }
@@ -239,7 +240,7 @@ extension LatticeNode {
             }
         }
 
-        await reprocessSyncedBlocksForChildChains(persisted: result.persisted, fetcher: fetcher)
+        await reprocessSyncedBlocksForChildChains(persisted: result.persisted, fetcher: fetcher, network: network)
         await verifySyncWithPeers(tipCID: result.tipBlockHash, tipHeight: result.tipBlockIndex, network: network)
     }
 
@@ -251,7 +252,7 @@ extension LatticeNode {
             return
         }
 
-        if let data = try? await network.fetcher.fetch(rawCid: tipCID),
+        if let data = try? await network.ivyFetcher.fetch(rawCid: tipCID),
            let block = Block(data: data) {
             let valid = block.index == tipHeight
             if valid {

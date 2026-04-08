@@ -20,7 +20,7 @@ extension LatticeNode {
         let miner = MinerLoop(
             chainState: chainState,
             mempool: network.nodeMempool,
-            fetcher: network.fetcher,
+            fetcher: network.ivyFetcher,
             spec: genesisConfig.spec,
             identity: identity,
             childContexts: childContexts,
@@ -47,7 +47,7 @@ extension LatticeNode {
         let header = HeaderImpl<Block>(node: block)
         guard let blockData = block.toData() else { return }
 
-        await storeBlockRecursively(block, fetcher: network.fetcher)
+        await storeBlockRecursively(block, network: network)
         await network.publishBlock(cid: header.rawCID, data: blockData)
         await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
 
@@ -59,7 +59,7 @@ extension LatticeNode {
         let accepted = await processBlockAndRecoverReorg(
             header: header,
             directory: directory,
-            fetcher: network.fetcher
+            fetcher: network.ivyFetcher
         )
         if accepted, let removals = pendingRemovals {
             await network.pruneConfirmedTransactions(txCIDs: removals.nexusTxCIDs)
@@ -102,12 +102,12 @@ extension LatticeNode {
             let tipSnapshot = await childChainState.tipSnapshot
             guard let specCID = tipSnapshot?.specCID else { continue }
             let specHeader = HeaderImpl<ChainSpec>(rawCID: specCID)
-            guard let childSpec = try? await specHeader.resolve(fetcher: network.fetcher).node else { continue }
+            guard let childSpec = try? await specHeader.resolve(fetcher: network.ivyFetcher).node else { continue }
             contexts.append(ChildMiningContext(
                 directory: dir,
                 chainState: childChainState,
                 mempool: network.nodeMempool,
-                fetcher: network.fetcher,
+                fetcher: network.ivyFetcher,
                 spec: childSpec
             ))
         }

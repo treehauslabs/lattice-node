@@ -12,7 +12,7 @@ let package = Package(
         .package(url: "https://github.com/treehauslabs/AcornDiskWorker.git", from: "1.0.1"),
         .package(url: "https://github.com/treehauslabs/AcornMemoryWorker.git", from: "1.0.0"),
         .package(url: "https://github.com/treehauslabs/Tally.git", from: "1.2.0"),
-        .package(url: "https://github.com/treehauslabs/Ivy.git", from: "3.0.2"),
+        .package(url: "https://github.com/treehauslabs/Ivy.git", from: "3.0.3"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
     ],

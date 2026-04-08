@@ -16,13 +16,11 @@ public protocol ChainNetworkDelegate: AnyObject, Sendable {
 public actor ChainNetwork: IvyDelegate {
     public let directory: String
     public let ivy: Ivy
-    public let fetcher: AcornFetcher
     public let ivyFetcher: IvyFetcher
     public let nodeMempool: NodeMempool
-    private let storage: any AcornCASWorker
-    private let memoryWorker: MemoryCASWorker
     public let verifiedStore: VerifiedDistanceStore
     public let protectionPolicy: BlockchainProtectionPolicy
+    private let localCAS: any AcornCASWorker
     private let resources: NodeResourceConfig
     public weak var delegate: ChainNetworkDelegate?
     private var subscribedChains: Set<String>
@@ -47,7 +45,6 @@ public actor ChainNetwork: IvyDelegate {
             capacity: memoryEntries,
             maxBytes: memoryBytes
         )
-        self.memoryWorker = memory
 
         let diskBytes = resources.diskBytesPerChain(chainCount: chainCount)
         let disk = try DiskCASWorker(
@@ -64,6 +61,13 @@ public actor ChainNetwork: IvyDelegate {
             protectionPolicy: policy
         )
         self.verifiedStore = verified
+
+        // Local CAS: memory + disk (no network worker — reads go through IvyFetcher)
+        let local = await CompositeCASWorker(
+            workers: ["mem": memory, "disk": verified],
+            order: ["mem", "disk"]
+        )
+        self.localCAS = local
 
         let tallyWithMaxPeers = TallyConfig(maxPeers: maxPeerConnections)
         let ivyConfig = IvyConfig(
@@ -83,17 +87,15 @@ public actor ChainNetwork: IvyDelegate {
             signingKey: config.signingKey
         )
         let ivy = Ivy(config: ivyConfig)
-        let network = await ivy.worker()
 
-        let composite = await CompositeCASWorker(
-            workers: ["mem": memory, "disk": verified, "net": network],
-            order: ["mem", "disk", "net"]
-        )
+        // Connect Ivy's internal worker to the local CAS so it can serve
+        // sub-node data (state trie entries, tx bodies, radix nodes) to
+        // remote peers via fee-based dhtForward.
+        let ivyWorker = await ivy.worker()
+        await ivyWorker.setNear(local)
 
         self.ivy = ivy
-        self.storage = composite
-        self.fetcher = AcornFetcher(worker: composite)
-        self.ivyFetcher = IvyFetcher(ivy: ivy, localWorker: composite)
+        self.ivyFetcher = IvyFetcher(ivy: ivy, localWorker: local)
     }
 
     public func start() async throws {
@@ -103,6 +105,83 @@ public actor ChainNetwork: IvyDelegate {
 
     public func stop() async {
         await ivy.stop()
+    }
+
+    // MARK: - Fetcher (unified read path)
+
+    /// Volume-aware fetcher for all Cashew resolution: state, blocks, proofs.
+    /// Local cache first, then Ivy's fee-based DHT.
+    public var fetcher: IvyFetcher { ivyFetcher }
+
+    // MARK: - Store (unified write path)
+
+    /// Store data locally and publish to the network via Ivy.
+    public func storeAndPublish(cid: String, data: Data) async {
+        await protectionPolicy.pin(cid)
+        await verifiedStore.storeVerified(cid: ContentIdentifier(rawValue: cid), data: data)
+        await ivy.save(cid: cid, data: data, pin: true)
+    }
+
+    /// Store data locally only (no network publish).
+    /// Dual-stores under both the raw CID and the Acorn content hash to handle
+    /// CID format differences between Cashew (CIDv1) and Acorn (ContentIdentifier).
+    public func storeLocally(cid: String, data: Data) async {
+        let rawCid = ContentIdentifier(rawValue: cid)
+        await localCAS.store(cid: rawCid, data: data)
+        let contentCid = ContentIdentifier(for: data)
+        if contentCid.rawValue != cid {
+            await localCAS.store(cid: contentCid, data: data)
+        }
+    }
+
+    // MARK: - Block Operations (backward compat aliases)
+
+    public func publishBlock(cid: String, data: Data) async {
+        await storeAndPublish(cid: cid, data: data)
+
+        // Announce Volume sub-tree roots so peers can discover and fetch sub-trees independently.
+        // Light clients query state CIDs, not block CIDs — they need to find pinners for state.
+        if let block = Block(data: data) {
+            await announceVolumeBoundaries(block: block)
+        }
+    }
+
+    /// Publish pin announcements for each Volume boundary root in the block.
+    /// This makes state, transactions, and child blocks independently discoverable.
+    private func announceVolumeBoundaries(block: Block) async {
+        let fee = await ivy.config.relayFee * 3
+        let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+
+        // State trees (most important for light client queries)
+        let frontierCID = block.frontier.rawCID
+        if !frontierCID.isEmpty {
+            await ivy.publishPinAnnounce(rootCID: frontierCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+        }
+        let homesteadCID = block.homestead.rawCID
+        if !homesteadCID.isEmpty {
+            await ivy.publishPinAnnounce(rootCID: homesteadCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+        }
+
+        // Transaction tree
+        let txCID = block.transactions.rawCID
+        if !txCID.isEmpty {
+            await ivy.publishPinAnnounce(rootCID: txCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+        }
+
+        // Child blocks
+        let childCID = block.childBlocks.rawCID
+        if !childCID.isEmpty {
+            await ivy.publishPinAnnounce(rootCID: childCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+        }
+    }
+
+    public func announceBlock(cid: String) async {
+        await ivy.announceBlock(cid: cid)
+        await gossipBlockAnnouncement(cid: cid)
+    }
+
+    public func storeBlock(cid: String, data: Data) async {
+        await storeLocally(cid: cid, data: data)
     }
 
     // MARK: - Chain Tip Management
@@ -129,22 +208,6 @@ public actor ChainNetwork: IvyDelegate {
         subscribedChains
     }
 
-    // MARK: - Block Operations
-
-    public func publishBlock(cid: String, data: Data) async {
-        await protectionPolicy.pin(cid)
-        await verifiedStore.storeVerified(cid: ContentIdentifier(rawValue: cid), data: data)
-        await ivy.publishBlock(cid: cid, data: data)
-    }
-
-    public func announceBlock(cid: String) async {
-        await ivy.announceBlock(cid: cid)
-    }
-
-    public func storeBlock(cid: String, data: Data) async {
-        await fetcher.store(rawCid: cid, data: data)
-    }
-
     // MARK: - Mempool Operations
 
     public func submitTransaction(_ transaction: Transaction) async -> Bool {
@@ -161,6 +224,22 @@ public actor ChainNetwork: IvyDelegate {
 
     public func allMempoolTransactions() async -> [Transaction] {
         await nodeMempool.allTransactions()
+    }
+
+    // MARK: - Gossip
+
+    /// Gossip a block announcement to all direct peers via peerMessage
+    public func gossipBlockAnnouncement(cid: String) async {
+        if let payload = cid.data(using: .utf8) {
+            await ivy.broadcastMessage(topic: "newBlock", payload: payload)
+        }
+    }
+
+    /// Gossip a transaction CID to all direct peers via peerMessage
+    public func gossipTransaction(cid: String) async {
+        if let payload = cid.data(using: .utf8) {
+            await ivy.broadcastMessage(topic: "mempool", payload: payload)
+        }
     }
 
     // MARK: - IvyDelegate
@@ -190,22 +269,19 @@ public actor ChainNetwork: IvyDelegate {
     private func handlePeerMessage(topic: String, payload: Data, from peer: PeerID) async {
         switch topic {
         case "newBlock":
-            // Block header gossip — decode CID and fetch the full block
             if let cid = String(data: payload, encoding: .utf8) {
                 await delegate?.chainNetwork(self, didReceiveBlockAnnouncement: cid, from: peer)
             }
         case "mempool":
-            // Transaction gossip — decode and submit to mempool
-            break
+            if let txCID = String(data: payload, encoding: .utf8) {
+                if let txData = try? await ivyFetcher.fetch(rawCid: txCID) {
+                    if let tx = Transaction(data: txData) {
+                        _ = await nodeMempool.add(transaction: tx)
+                    }
+                }
+            }
         default:
             break
-        }
-    }
-
-    /// Gossip a block announcement to all direct peers via peerMessage
-    public func gossipBlockAnnouncement(cid: String) async {
-        if let payload = cid.data(using: .utf8) {
-            await ivy.broadcastMessage(topic: "newBlock", payload: payload)
         }
     }
 }

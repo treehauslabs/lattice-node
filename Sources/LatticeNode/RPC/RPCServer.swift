@@ -151,7 +151,7 @@ enum RPCRoutes {
             guard computedCID == sub.bodyCID else {
                 return jsonError("CID mismatch: bodyData hashes to \(computedCID), not \(sub.bodyCID)")
             }
-            await net.fetcher.store(rawCid: sub.bodyCID, data: raw)
+            await net.storeLocally(cid: sub.bodyCID, data: raw)
         }
         guard let body = try? await HeaderImpl<TransactionBody>(rawCID: sub.bodyCID).resolve(fetcher: net.fetcher).node else {
             return jsonError("Transaction body not found. Provide bodyData or ensure bodyCID is in the CAS.")
@@ -272,7 +272,7 @@ enum RPCRoutes {
               let network = await node.network(for: dir) else {
             return jsonError("State store not available", status: .internalServerError)
         }
-        let receiptStore = TransactionReceiptStore(store: store, fetcher: network.fetcher)
+        let receiptStore = await TransactionReceiptStore(store: store, fetcher: network.fetcher)
         guard let receipt = await receiptStore.getReceipt(txCID: txCID) else {
             return jsonError("Receipt not found", status: .notFound)
         }

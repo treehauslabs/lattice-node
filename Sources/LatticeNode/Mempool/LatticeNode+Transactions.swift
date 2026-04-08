@@ -24,7 +24,7 @@ extension LatticeNode {
             ? await lattice.nexus.chain
             : await lattice.nexus.children[directory]?.chain
         if let chain {
-            let validator = TransactionValidator(fetcher: network.fetcher, chainState: chain, stateStore: stateStores[directory])
+            let validator = TransactionValidator(fetcher: await network.fetcher, chainState: chain, stateStore: stateStores[directory])
             let result = await validator.validate(transaction)
             switch result {
             case .failure(let error):
@@ -87,7 +87,7 @@ extension LatticeNode {
     public func broadcastTransaction(directory: String, transaction: Transaction) async {
         guard let network = networks[directory] else { return }
         guard let bodyData = transaction.body.node?.toData() else { return }
-        await network.fetcher.store(rawCid: transaction.body.rawCID, data: bodyData)
+        await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
         await network.announceBlock(cid: transaction.body.rawCID)
     }
 }
