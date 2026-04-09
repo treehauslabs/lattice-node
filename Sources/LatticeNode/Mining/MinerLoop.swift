@@ -258,12 +258,11 @@ public actor MinerLoop {
         let rangePerWorker = totalBatchSize / UInt64(workerCount)
         let baseOffset = self.nonceOffset
 
-        nonisolated(unsafe) let mineFunc = self.mineBatch
         return await withTaskGroup(of: UInt64?.self) { group in
             for i in 0..<workerCount {
                 let startNonce = baseOffset &+ UInt64(i) &* rangePerWorker
                 group.addTask {
-                    mineFunc(midstate, targetDifficulty, startNonce, rangePerWorker)
+                    mineBatchFree(midstate: midstate, targetDifficulty: targetDifficulty, startNonce: startNonce, count: rangePerWorker)
                 }
             }
             for await result in group {
@@ -431,4 +430,67 @@ public actor MinerLoop {
             nonce: startNonce
         )
     }
+}
+
+// Free function for parallel mining — outside the actor so addTask closures don't capture self.
+private func mineBatchFree(
+    midstate: SHA256,
+    targetDifficulty: UInt256,
+    startNonce: UInt64,
+    count: UInt64
+) -> UInt64? {
+    let end = startNonce &+ count
+    var nonce = startNonce
+
+    var nonceBuf: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                   UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+        (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+
+    while nonce < end {
+        if nonce & 0x3FF == 0 && Task.isCancelled { return nil }
+
+        var nonceLen = 0
+        if nonce == 0 {
+            nonceBuf.0 = 0x30
+            nonceLen = 1
+        } else {
+            var n = nonce
+            var digitCount = 0
+            withUnsafeMutablePointer(to: &nonceBuf) { ptr in
+                let buf = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
+                while n > 0 {
+                    buf[digitCount] = UInt8(0x30 &+ (n % 10))
+                    n /= 10
+                    digitCount &+= 1
+                }
+                var lo = 0; var hi = digitCount &- 1
+                while lo < hi {
+                    let tmp = buf[lo]; buf[lo] = buf[hi]; buf[hi] = tmp
+                    lo &+= 1; hi &-= 1
+                }
+            }
+            nonceLen = digitCount
+        }
+
+        var hasher = midstate
+        withUnsafePointer(to: &nonceBuf) { ptr in
+            hasher.update(bufferPointer: UnsafeRawBufferPointer(
+                start: UnsafeRawPointer(ptr), count: nonceLen
+            ))
+        }
+        let digest = hasher.finalize()
+        let hash: UInt256 = digest.withUnsafeBytes { raw in
+            let p = raw.bindMemory(to: UInt64.self)
+            return UInt256([
+                UInt64(bigEndian: p[0]),
+                UInt64(bigEndian: p[1]),
+                UInt64(bigEndian: p[2]),
+                UInt64(bigEndian: p[3])
+            ])
+        }
+
+        if targetDifficulty >= hash { return nonce }
+        nonce &+= 1
+    }
+    return nil
 }
