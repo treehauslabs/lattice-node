@@ -58,18 +58,67 @@ public actor IvyFetcher: VolumeAwareFetcher {
     // MARK: - VolumeAwareFetcher
 
     /// Called by Cashew before resolving child blocks within a Volume.
-    /// Discovers pinners and sets the active Volume so subsequent fetch()
-    /// calls route directly to the pinner (one hop) instead of DHT-walking.
+    /// Translates Cashew's resolution paths into an Ivy selector, discovers pinners
+    /// that cover the needed subtree, and targets subsequent fetch() calls at the best match.
     public func provide(rootCID: String, paths: ArrayTrie<ResolutionStrategy>) async throws {
         activeVolumeRoot = rootCID
 
         // Use cached pinner if we already know one
         if volumePinners[rootCID] != nil { return }
 
+        let selector = Self.selectorFromPaths(paths)
         let pinners = await ivy.discoverPinners(cid: rootCID)
-        if let best = pinners.first {
+
+        // Prefer pinners whose selector covers our needs (prefix match)
+        if let best = Self.bestPinner(for: selector, from: pinners) {
             volumePinners[rootCID] = PeerID(publicKey: best.publicKey)
+        } else if let fallback = pinners.first {
+            volumePinners[rootCID] = PeerID(publicKey: fallback.publicKey)
         }
+    }
+
+    // MARK: - Selector Translation
+
+    /// Convert Cashew's ArrayTrie<ResolutionStrategy> into an Ivy selector string.
+    /// Uses the top-level keys of the trie as the selector path. Examples:
+    ///   paths with single child "accountState" → "/accountState"
+    ///   paths with multiple children → "/" (needs everything)
+    ///   empty paths → "/"
+    static func selectorFromPaths(_ paths: ArrayTrie<ResolutionStrategy>) -> String {
+        let topKeys = paths.childKeys()
+        guard topKeys.count == 1, let key = topKeys.first else { return "/" }
+        // Single top-level path — use it as selector
+        // Check if there's a deeper single path
+        if let child = paths.traverse(path: key) {
+            let subKeys = child.childKeys()
+            if subKeys.count == 1, let subKey = subKeys.first {
+                return "/\(key)/\(subKey)"
+            }
+        }
+        return "/\(key)"
+    }
+
+    /// Pick the pinner whose selector best covers the needed selector.
+    /// "/" covers everything. "/accountState" covers "/accountState/alice".
+    /// Prefer the most specific match (longest matching selector).
+    static func bestPinner(
+        for selector: String,
+        from pinners: [(publicKey: String, selector: String)]
+    ) -> (publicKey: String, selector: String)? {
+        var best: (publicKey: String, selector: String)?
+        var bestLen = -1
+
+        for pinner in pinners {
+            // Check if pinner's selector covers our needs
+            if selector.hasPrefix(pinner.selector) || pinner.selector == "/" {
+                let len = pinner.selector.count
+                if len > bestLen {
+                    best = pinner
+                    bestLen = len
+                }
+            }
+        }
+        return best
     }
 
     // MARK: - Store

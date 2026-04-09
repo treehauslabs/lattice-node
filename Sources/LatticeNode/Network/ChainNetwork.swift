@@ -154,19 +154,22 @@ public actor ChainNetwork: IvyDelegate {
     }
 
     /// Publish pin announcements for each Volume boundary root in the block.
-    /// This makes state, transactions, and child blocks independently discoverable.
+    /// Each announcement includes a selector describing what subtree the pin covers.
+    /// Light clients can discover pinners for specific subtrees (e.g., /accountState).
     private func announceVolumeBoundaries(block: Block) async {
         let fee = await ivy.config.relayFee * 3
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
 
-        // State trees (most important for light client queries)
+        // State trees — full nodes announce "/" (entire state), also specific subtrees
         let frontierCID = block.frontier.rawCID
         if !frontierCID.isEmpty {
             await ivy.publishPinAnnounce(rootCID: frontierCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+            await ivy.publishPinAnnounce(rootCID: frontierCID, selector: "/accountState", expiry: expiry, signature: Data(), fee: fee)
+            await ivy.publishPinAnnounce(rootCID: frontierCID, selector: "/generalState", expiry: expiry, signature: Data(), fee: fee)
         }
         let homesteadCID = block.homestead.rawCID
         if !homesteadCID.isEmpty {
-            await ivy.publishPinAnnounce(rootCID: homesteadCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+            await ivy.publishPinAnnounce(rootCID: homesteadCID, selector: "/accountState", expiry: expiry, signature: Data(), fee: fee)
         }
 
         // Transaction tree
