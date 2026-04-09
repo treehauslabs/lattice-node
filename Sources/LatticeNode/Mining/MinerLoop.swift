@@ -259,11 +259,14 @@ public actor MinerLoop {
     ) async -> UInt64? {
         let rangePerWorker = totalBatchSize / UInt64(workerCount)
 
+        // Wrap in Sendable box to satisfy strict concurrency
+        let box = SendableMineArgs(midstate: midstate, targetDifficulty: targetDifficulty, rangePerWorker: rangePerWorker)
+
         return await withTaskGroup(of: UInt64?.self) { group in
             for i in 0..<workerCount {
                 let startNonce = nonceOffset &+ UInt64(i) &* rangePerWorker
                 group.addTask {
-                    mineBatchFree(midstate: midstate, targetDifficulty: targetDifficulty, startNonce: startNonce, count: rangePerWorker)
+                    mineBatchFree(midstate: box.midstate, targetDifficulty: box.targetDifficulty, startNonce: startNonce, count: box.rangePerWorker)
                 }
             }
             for await result in group {
@@ -431,6 +434,13 @@ public actor MinerLoop {
             nonce: startNonce
         )
     }
+}
+
+// Sendable wrapper for mining arguments that cross task boundaries.
+private struct SendableMineArgs: @unchecked Sendable {
+    let midstate: SHA256
+    let targetDifficulty: UInt256
+    let rangePerWorker: UInt64
 }
 
 // Free function for parallel mining — outside the actor so addTask closures don't capture self.
