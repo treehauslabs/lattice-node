@@ -235,7 +235,7 @@ extension LatticeNode {
                        let blk = Block(data: data) {
                         if let txDict = try? await blk.transactions.resolveRecursive(fetcher: fetcher).node,
                            let txEntries = try? txDict.allKeysAndValues() {
-                            let changeset = await extractStateChangeset(block: blk, blockHash: block.blockHash, txEntries: txEntries)
+                            let changeset = extractStateChangeset(block: blk, blockHash: block.blockHash, txEntries: txEntries, store: store)
                             await store.applyBlock(changeset)
                         }
                     }

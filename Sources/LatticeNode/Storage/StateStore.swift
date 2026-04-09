@@ -85,6 +85,45 @@ public actor StateStore {
         return Self.decodeAccount(data)
     }
 
+    /// Batch fetch nonces for multiple addresses in a single SQL query.
+    /// Returns [address: nonce] for found accounts; missing addresses omitted.
+    public nonisolated func batchGetNonces(addresses: [String]) -> [String: UInt64] {
+        guard !addresses.isEmpty else { return [:] }
+        let paths = addresses.map { "account:\($0)" }
+        let placeholders = (1...paths.count).map { "?\($0)" }.joined(separator: ",")
+        let sql = "SELECT path, value FROM state WHERE path IN (\(placeholders))"
+        let params = paths.map { SQLiteValue.text($0) }
+        guard let rows = try? readDb.query(sql, params: params) else { return [:] }
+        var result: [String: UInt64] = [:]
+        result.reserveCapacity(rows.count)
+        for row in rows {
+            guard let path = row["path"]?.textValue,
+                  let data = row["value"]?.blobValue,
+                  let account = Self.decodeAccount(data) else { continue }
+            let address = String(path.dropFirst("account:".count))
+            result[address] = account.nonce
+        }
+        return result
+    }
+
+    /// Batch fetch raw values for multiple paths in a single SQL query.
+    /// Used by applyBlock to pre-fetch old values before the write transaction.
+    public nonisolated func batchGetValues(paths: [String]) -> [String: Data] {
+        guard !paths.isEmpty else { return [:] }
+        let placeholders = (1...paths.count).map { "?\($0)" }.joined(separator: ",")
+        let sql = "SELECT path, value FROM state WHERE path IN (\(placeholders))"
+        let params = paths.map { SQLiteValue.text($0) }
+        guard let rows = try? readDb.query(sql, params: params) else { return [:] }
+        var result: [String: Data] = [:]
+        result.reserveCapacity(rows.count)
+        for row in rows {
+            if let path = row["path"]?.textValue, let data = row["value"]?.blobValue {
+                result[path] = data
+            }
+        }
+        return result
+    }
+
     public func setAccount(address: String, balance: UInt64, nonce: UInt64, atHeight: UInt64) {
         let path = "account:\(address)"
         let account = AccountState(balance: balance, nonce: nonce)
@@ -223,29 +262,45 @@ public actor StateStore {
 
     public func applyBlock(_ changes: StateChangeset) {
         let log = NodeLogger("statestore")
+
+        // Pre-fetch all old values in a single batch query on readDb.
+        // This replaces N individual reads inside the write transaction
+        // with one SELECT ... IN (...) on the read connection.
+        var allPaths: [String] = []
+        allPaths.reserveCapacity(changes.accountUpdates.count + changes.generalUpdates.count)
+        for update in changes.accountUpdates {
+            allPaths.append("account:\(update.address)")
+        }
+        for update in changes.generalUpdates {
+            allPaths.append("general:\(update.key)")
+        }
+        let oldValues = batchGetValues(paths: allPaths)
+
+        // Pre-encode all account data outside the transaction
+        let encodedAccounts: [(path: String, data: Data)] = changes.accountUpdates.map { update in
+            let path = "account:\(update.address)"
+            let account = AccountState(balance: update.balance, nonce: update.nonce)
+            return (path: path, data: Self.encodeAccount(account))
+        }
+
         do {
             try db.beginTransaction()
 
-            for update in changes.accountUpdates {
-                let path = "account:\(update.address)"
-                let account = AccountState(balance: update.balance, nonce: update.nonce)
-                let data = Self.encodeAccount(account)
-                let oldValue = currentValue(forPath: path)
+            for encoded in encodedAccounts {
                 try db.execute(
                     "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
-                    params: [.text(path), .blob(data), .int(Int64(changes.height))]
+                    params: [.text(encoded.path), .blob(encoded.data), .int(Int64(changes.height))]
                 )
-                recordDiff(height: changes.height, path: path, oldValue: oldValue)
+                recordDiff(height: changes.height, path: encoded.path, oldValue: oldValues[encoded.path])
             }
 
             for update in changes.generalUpdates {
                 let path = "general:\(update.key)"
-                let oldValue = currentValue(forPath: path)
                 try db.execute(
                     "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
                     params: [.text(path), .blob(update.value), .int(Int64(changes.height))]
                 )
-                recordDiff(height: changes.height, path: path, oldValue: oldValue)
+                recordDiff(height: changes.height, path: path, oldValue: oldValues[path])
             }
 
             try db.execute(

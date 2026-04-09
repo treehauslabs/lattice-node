@@ -96,82 +96,100 @@ extension LatticeNode {
             block = try? await header.resolve(fetcher: fetcher).node
         }
         if let block {
+            // Build mempool-aware fetcher: pre-compute Volume CIDs from mempool
+            // transactions so resolveRecursive hits in-memory cache instead of network.
+            // Each transaction in the block is a VolumeImpl<Transaction> boundary —
+            // the cache short-circuits both fetch() and provide() (pinner discovery).
+            let txFetcher: Fetcher
+            if let network = networks[directory] {
+                let mempoolTxs = await network.nodeMempool.allTransactions()
+                var txDataCache: [String: Data] = [:]
+                txDataCache.reserveCapacity(mempoolTxs.count * 2)
+                for tx in mempoolTxs {
+                    if let data = tx.toData() {
+                        let volumeCID = VolumeImpl<Transaction>(node: tx).rawCID
+                        txDataCache[volumeCID] = data
+                    }
+                    // Also cache body data so body resolution is in-memory too
+                    if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
+                        txDataCache[tx.body.rawCID] = bodyData
+                    }
+                }
+                txFetcher = txDataCache.isEmpty ? fetcher : MempoolAwareFetcher(inner: fetcher, cache: txDataCache)
+            } else {
+                txFetcher = fetcher
+            }
+
             // Resolve transactions once — used for fees, state changeset, and receipts
             let txEntries: [String: HeaderImpl<Transaction>]
-            if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
+            if let txDict = try? await block.transactions.resolveRecursive(fetcher: txFetcher).node,
                let entries = try? txDict.allKeysAndValues() {
                 txEntries = entries
             } else {
                 txEntries = [:]
             }
 
-            // Record fees from resolved transactions
+            let store = stateStores[directory]
+            let network = networks[directory]
+
+            // Parallel Phase: extract changeset + build receipts concurrently.
+            // extractStateChangeset uses batch SQL (1 query for all nonces).
+            // Receipt building runs concurrently using a task group for JSON encoding.
+            let blockHash = header.rawCID
+            let blockHeight = block.index
+            let blockTimestamp = block.timestamp
+
+            async let receiptTask = buildReceiptsParallel(
+                txEntries: txEntries, blockHash: blockHash,
+                blockHeight: blockHeight, blockTimestamp: blockTimestamp
+            )
+
+            let changeset = extractStateChangeset(
+                block: block, blockHash: blockHash,
+                txEntries: txEntries, store: store
+            )
+
+            // Extract fees inline (lightweight — just reads from already-resolved tx bodies)
             var txFees: [UInt64] = []
             for (_, txHeader) in txEntries {
                 if let fee = txHeader.node?.body.node?.fee, fee > 0 {
                     txFees.append(fee)
                 }
             }
+
+            // Wait for receipts
+            let (generalEntries, txHistoryEntries) = await receiptTask
+
+            // Sequential Phase: apply state, emit events, index receipts
+            if let store {
+                await store.applyBlock(changeset)
+            }
+
+            // Batch mempool nonce update — one actor hop instead of N
+            if let network {
+                let nonceUpdates = changeset.accountUpdates.map {
+                    (sender: $0.address, nonce: $0.nonce)
+                }
+                await network.nodeMempool.batchUpdateConfirmedNonces(updates: nonceUpdates)
+            }
+
+            if let store {
+                await store.batchIndexReceipts(generalEntries: generalEntries, txHistory: txHistoryEntries)
+            }
+
             if !txFees.isEmpty {
-                await feeEstimator.recordBlock(height: block.index, transactionFees: txFees)
+                await feeEstimator.recordBlock(height: blockHeight, transactionFees: txFees)
             }
 
             await subscriptions.emit(.newBlock(
-                hash: header.rawCID,
-                height: block.index,
+                hash: blockHash,
+                height: blockHeight,
                 directory: directory,
-                timestamp: block.timestamp
+                timestamp: blockTimestamp
             ))
 
             await metrics.increment("lattice_blocks_accepted_total")
-            await metrics.set("lattice_chain_height", value: Double(block.index))
-
-            if let store = stateStores[directory] {
-                let changeset = await extractStateChangeset(
-                    block: block,
-                    blockHash: header.rawCID,
-                    txEntries: txEntries
-                )
-                await store.applyBlock(changeset)
-
-                if let network = networks[directory] {
-                    for update in changeset.accountUpdates {
-                        await network.nodeMempool.updateConfirmedNonce(sender: update.address, nonce: update.nonce)
-                    }
-                }
-
-                // Collect all receipt data locally, then batch-write in one transaction
-                var generalEntries: [(key: String, value: Data, height: UInt64)] = []
-                var txHistoryEntries: [(address: String, txCID: String, blockHash: String, height: UInt64)] = []
-
-                for (cid, txHeader) in txEntries {
-                    // Receipt index entry
-                    struct ReceiptIdx: Codable { let blockHash: String; let blockHeight: UInt64 }
-                    if let idxData = try? JSONEncoder().encode(ReceiptIdx(blockHash: header.rawCID, blockHeight: block.index)) {
-                        generalEntries.append((key: "receipt-idx:\(cid)", value: idxData, height: block.index))
-                    }
-
-                    if let tx = txHeader.node, let body = tx.body.node {
-                        for action in body.accountActions {
-                            txHistoryEntries.append((address: action.owner, txCID: cid, blockHash: header.rawCID, height: block.index))
-                        }
-                        let actions = body.accountActions.map {
-                            TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
-                        }
-                        let receipt = TransactionReceipt(
-                            txCID: cid, blockHash: header.rawCID, blockHeight: block.index,
-                            timestamp: block.timestamp, fee: body.fee,
-                            sender: body.signers.first ?? "", status: "confirmed",
-                            accountActions: actions
-                        )
-                        if let data = try? JSONEncoder().encode(receipt) {
-                            generalEntries.append((key: "receipt:\(cid)", value: data, height: block.index))
-                        }
-                    }
-                }
-
-                await store.batchIndexReceipts(generalEntries: generalEntries, txHistory: txHistoryEntries)
-            }
+            await metrics.set("lattice_chain_height", value: Double(blockHeight))
         }
 
         let tipAfter = await chain.getMainChainTip()
@@ -236,6 +254,25 @@ extension LatticeNode {
 
         // Step 1: Roll back StateStore and resolve orphaned block transactions (newest first)
         // orphanedBlockHashes is already newest-to-oldest order
+        // Build mempool-aware fetcher once for all orphaned blocks
+        let reorgFetcher: Fetcher
+        if let network {
+            let mempoolTxs = await network.nodeMempool.allTransactions()
+            var txDataCache: [String: Data] = [:]
+            txDataCache.reserveCapacity(mempoolTxs.count * 2)
+            for tx in mempoolTxs {
+                if let data = tx.toData() {
+                    txDataCache[VolumeImpl<Transaction>(node: tx).rawCID] = data
+                }
+                if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
+                    txDataCache[tx.body.rawCID] = bodyData
+                }
+            }
+            reorgFetcher = txDataCache.isEmpty ? fetcher : MempoolAwareFetcher(inner: fetcher, cache: txDataCache)
+        } else {
+            reorgFetcher = fetcher
+        }
+
         var orphanedBlockTxs: [(block: Block, txEntries: [String: HeaderImpl<Transaction>])] = []
         for blockHash in orphanedBlockHashes {
             guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
@@ -244,7 +281,7 @@ extension LatticeNode {
                 continue
             }
             let txEntries: [String: HeaderImpl<Transaction>]
-            if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
+            if let txDict = try? await block.transactions.resolveRecursive(fetcher: reorgFetcher).node,
                let entries = try? txDict.allKeysAndValues() {
                 txEntries = entries
             } else {
@@ -571,8 +608,9 @@ extension LatticeNode {
     func extractStateChangeset(
         block: Block,
         blockHash: String,
-        txEntries: [String: HeaderImpl<Transaction>]
-    ) async -> StateChangeset {
+        txEntries: [String: HeaderImpl<Transaction>],
+        store: StateStore?
+    ) -> StateChangeset {
         var senderTxCounts: [String: UInt64] = [:]
         var accountChanges: [(address: String, oldBalance: UInt64, newBalance: UInt64)] = []
 
@@ -587,8 +625,18 @@ extension LatticeNode {
             }
         }
 
-        let dir = genesisConfig.spec.directory
-        let store = stateStores[dir]
+        // Batch fetch all nonces in a single SQL query instead of N individual lookups
+        let addressesNeedingNonce = Set(
+            accountChanges
+                .filter { $0.oldBalance != 0 && $0.oldBalance != $0.newBalance }
+                .map { $0.address }
+        )
+        let nonces: [String: UInt64]
+        if let store, !addressesNeedingNonce.isEmpty {
+            nonces = store.batchGetNonces(addresses: Array(addressesNeedingNonce))
+        } else {
+            nonces = [:]
+        }
 
         var accountUpdates: [(address: String, balance: UInt64, nonce: UInt64)] = []
 
@@ -597,7 +645,7 @@ extension LatticeNode {
                 let txCount = senderTxCounts[change.address] ?? 0
                 accountUpdates.append((address: change.address, balance: change.newBalance, nonce: txCount))
             } else if change.oldBalance != change.newBalance {
-                let currentNonce = await store?.getNonce(address: change.address) ?? 0
+                let currentNonce = nonces[change.address] ?? 0
                 let txCount = senderTxCounts[change.address] ?? 0
                 accountUpdates.append((address: change.address, balance: change.newBalance, nonce: currentNonce + txCount))
             }
@@ -611,6 +659,76 @@ extension LatticeNode {
             difficulty: block.difficulty.toHexString(),
             stateRoot: block.frontier.rawCID
         )
+    }
+
+    /// Build receipt index entries and tx history concurrently.
+    /// Each transaction's receipt is independent — JSON encoding runs in parallel via TaskGroup.
+    nonisolated func buildReceiptsParallel(
+        txEntries: [String: HeaderImpl<Transaction>],
+        blockHash: String,
+        blockHeight: UInt64,
+        blockTimestamp: Int64
+    ) async -> (
+        generalEntries: [(key: String, value: Data, height: UInt64)],
+        txHistory: [(address: String, txCID: String, blockHash: String, height: UInt64)]
+    ) {
+        struct TxReceiptData: Sendable {
+            let generalEntries: [(key: String, value: Data, height: UInt64)]
+            let txHistory: [(address: String, txCID: String, blockHash: String, height: UInt64)]
+        }
+
+        let txList = Array(txEntries)
+
+        // Process transactions in parallel — each receipt is independent
+        let results: [TxReceiptData] = await withTaskGroup(of: TxReceiptData.self) { group in
+            for (cid, txHeader) in txList {
+                group.addTask {
+                    var generalEntries: [(key: String, value: Data, height: UInt64)] = []
+                    var txHistory: [(address: String, txCID: String, blockHash: String, height: UInt64)] = []
+
+                    struct ReceiptIdx: Codable { let blockHash: String; let blockHeight: UInt64 }
+                    if let idxData = try? JSONEncoder().encode(ReceiptIdx(blockHash: blockHash, blockHeight: blockHeight)) {
+                        generalEntries.append((key: "receipt-idx:\(cid)", value: idxData, height: blockHeight))
+                    }
+
+                    if let tx = txHeader.node, let body = tx.body.node {
+                        for action in body.accountActions {
+                            txHistory.append((address: action.owner, txCID: cid, blockHash: blockHash, height: blockHeight))
+                        }
+                        let actions = body.accountActions.map {
+                            TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
+                        }
+                        let receipt = TransactionReceipt(
+                            txCID: cid, blockHash: blockHash, blockHeight: blockHeight,
+                            timestamp: blockTimestamp, fee: body.fee,
+                            sender: body.signers.first ?? "", status: "confirmed",
+                            accountActions: actions
+                        )
+                        if let data = try? JSONEncoder().encode(receipt) {
+                            generalEntries.append((key: "receipt:\(cid)", value: data, height: blockHeight))
+                        }
+                    }
+
+                    return TxReceiptData(generalEntries: generalEntries, txHistory: txHistory)
+                }
+            }
+
+            var collected: [TxReceiptData] = []
+            collected.reserveCapacity(txList.count)
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+
+        // Merge results
+        var allGeneral: [(key: String, value: Data, height: UInt64)] = []
+        var allTxHistory: [(address: String, txCID: String, blockHash: String, height: UInt64)] = []
+        for result in results {
+            allGeneral.append(contentsOf: result.generalEntries)
+            allTxHistory.append(contentsOf: result.txHistory)
+        }
+        return (generalEntries: allGeneral, txHistory: allTxHistory)
     }
 
     func emitReorgEvent(directory: String, oldTip: String, newTip: String, depth: UInt64) async {

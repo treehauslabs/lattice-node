@@ -105,6 +105,14 @@ public actor NodeMempool {
         return selected
     }
 
+    /// Batch update confirmed nonces for multiple senders in one actor call.
+    /// Avoids N individual actor hops from the block processing loop.
+    public func batchUpdateConfirmedNonces(updates: [(sender: String, nonce: UInt64)]) {
+        for update in updates {
+            updateConfirmedNonce(sender: update.sender, nonce: update.nonce)
+        }
+    }
+
     public func updateConfirmedNonce(sender: String, nonce: UInt64) {
         byAccount[sender, default: AccountTxQueue()].confirmedNonce = nonce
         let confirmed = nonce
