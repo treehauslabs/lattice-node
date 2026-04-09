@@ -35,12 +35,14 @@ extension LatticeNode {
         }
         let added = await network.submitTransaction(transaction)
         if added {
-            // Store body to CAS so peers can fetch it after gossip
-            if let bodyData = transaction.body.node?.toData() {
+            let bodyData = transaction.body.node?.toData()
+            // Store body to CAS so we can serve it to others
+            if let bodyData {
                 await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
             }
             await metrics.increment("lattice_transactions_submitted_total")
-            await network.gossipTransaction(cid: transaction.body.rawCID)
+            // Gossip with full body — no fetch roundtrip for receivers
+            await network.gossipTransaction(cid: transaction.body.rawCID, bodyData: bodyData)
             let fee = transaction.body.node?.fee ?? 0
             let sender = transaction.body.node?.signers.first ?? ""
             await subscriptions.emit(.newTransaction(
