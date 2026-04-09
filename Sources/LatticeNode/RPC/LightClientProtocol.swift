@@ -36,7 +36,7 @@ public enum LightClientProtocol {
         stateRoot: String,
         timestamp: Int64
     ) async -> LightClientProof {
-        let account = await stateStore.getAccount(address: address)
+        let account = stateStore.getAccount(address: address)
         return LightClientProof(
             blockHash: blockHash,
             blockHeight: blockHeight,

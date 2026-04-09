@@ -216,7 +216,7 @@ extension LatticeNode {
                         }
                     }
                     for (address, nonce) in senderNonces {
-                        let balance = await store.getBalance(address: address) ?? 0
+                        let balance = store.getBalance(address: address) ?? 0
                         await store.setAccount(address: address, balance: balance, nonce: nonce, atHeight: result.tipBlockIndex)
                     }
 

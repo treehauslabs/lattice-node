@@ -2,6 +2,10 @@ import Foundation
 
 public actor StateStore {
     private let db: SQLiteDatabase
+    /// Separate read-only connection. SQLite WAL allows concurrent readers
+    /// without blocking the writer. Nonisolated read methods use this to
+    /// bypass actor serialization — callers no longer queue behind writes.
+    private nonisolated(unsafe) let readDb: SQLiteDatabase
     private let chain: String
 
     public init(storagePath: URL, chain: String) throws {
@@ -9,6 +13,7 @@ public actor StateStore {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let dbPath = dir.appendingPathComponent("state.db").path
         self.db = try SQLiteDatabase(path: dbPath)
+        self.readDb = try SQLiteDatabase(path: dbPath)
         self.chain = chain
         try createTables()
     }
@@ -45,45 +50,45 @@ public actor StateStore {
         try db.execute("CREATE INDEX IF NOT EXISTS idx_tx_history_addr ON tx_history(address, height DESC)")
     }
 
-    // MARK: - Account State
+    // MARK: - Account State (nonisolated reads via readDb)
 
-    public func getBalance(address: String) -> UInt64? {
+    public nonisolated func getBalance(address: String) -> UInt64? {
         let path = "account:\(address)"
-        guard let rows = try? db.query(
+        guard let rows = try? readDb.query(
             "SELECT value FROM state WHERE path = ?1",
             params: [.text(path)]
         ), let row = rows.first, let data = row["value"]?.blobValue else {
             return nil
         }
-        return decodeAccount(data)?.balance
+        return Self.decodeAccount(data)?.balance
     }
 
-    public func getNonce(address: String) -> UInt64? {
+    public nonisolated func getNonce(address: String) -> UInt64? {
         let path = "account:\(address)"
-        guard let rows = try? db.query(
+        guard let rows = try? readDb.query(
             "SELECT value FROM state WHERE path = ?1",
             params: [.text(path)]
         ), let row = rows.first, let data = row["value"]?.blobValue else {
             return nil
         }
-        return decodeAccount(data)?.nonce
+        return Self.decodeAccount(data)?.nonce
     }
 
-    public func getAccount(address: String) -> AccountState? {
+    public nonisolated func getAccount(address: String) -> AccountState? {
         let path = "account:\(address)"
-        guard let rows = try? db.query(
+        guard let rows = try? readDb.query(
             "SELECT value FROM state WHERE path = ?1",
             params: [.text(path)]
         ), let row = rows.first, let data = row["value"]?.blobValue else {
             return nil
         }
-        return decodeAccount(data)
+        return Self.decodeAccount(data)
     }
 
     public func setAccount(address: String, balance: UInt64, nonce: UInt64, atHeight: UInt64) {
         let path = "account:\(address)"
         let account = AccountState(balance: balance, nonce: nonce)
-        let data = encodeAccount(account)
+        let data = Self.encodeAccount(account)
         let oldValue = currentValue(forPath: path)
         try? db.execute(
             "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
@@ -101,8 +106,8 @@ public actor StateStore {
         )
     }
 
-    public func getTransactionHistory(address: String, limit: Int = 50) -> [(txCID: String, blockHash: String, height: UInt64)] {
-        guard let rows = try? db.query(
+    public nonisolated func getTransactionHistory(address: String, limit: Int = 50) -> [(txCID: String, blockHash: String, height: UInt64)] {
+        guard let rows = try? readDb.query(
             "SELECT txCID, blockHash, height FROM tx_history WHERE address = ?1 ORDER BY height DESC LIMIT ?2",
             params: [.text(address), .int(Int64(limit))]
         ) else { return [] }
@@ -121,9 +126,9 @@ public actor StateStore {
 
     // MARK: - General State
 
-    public func getGeneral(key: String) -> Data? {
+    public nonisolated func getGeneral(key: String) -> Data? {
         let path = "general:\(key)"
-        guard let rows = try? db.query(
+        guard let rows = try? readDb.query(
             "SELECT value FROM state WHERE path = ?1",
             params: [.text(path)]
         ), let row = rows.first else { return nil }
@@ -140,9 +145,9 @@ public actor StateStore {
         recordDiff(height: atHeight, path: path, oldValue: oldValue)
     }
 
-    public func queryGeneralKeys(prefix: String) throws -> [(key: String, data: Data)] {
+    public nonisolated func queryGeneralKeys(prefix: String) throws -> [(key: String, data: Data)] {
         let fullPrefix = "general:\(prefix)"
-        let rows = try db.query(
+        let rows = try readDb.query(
             "SELECT path, value FROM state WHERE path LIKE ?1",
             params: [.text(fullPrefix + "%")]
         )
@@ -156,15 +161,15 @@ public actor StateStore {
 
     // MARK: - Chain Metadata
 
-    public func getChainTip() -> String? {
-        guard let rows = try? db.query(
+    public nonisolated func getChainTip() -> String? {
+        guard let rows = try? readDb.query(
             "SELECT value FROM state WHERE path = 'meta:chain-tip'"
         ), let row = rows.first else { return nil }
         return row["value"]?.blobValue.flatMap { String(data: $0, encoding: .utf8) }
     }
 
-    public func getHeight() -> UInt64? {
-        guard let rows = try? db.query(
+    public nonisolated func getHeight() -> UInt64? {
+        guard let rows = try? readDb.query(
             "SELECT value FROM state WHERE path = 'meta:height'"
         ), let row = rows.first, let data = row["value"]?.blobValue else { return nil }
         guard let str = String(data: data, encoding: .utf8) else { return nil }
@@ -196,7 +201,7 @@ public actor StateStore {
             for update in changes.accountUpdates {
                 let path = "account:\(update.address)"
                 let account = AccountState(balance: update.balance, nonce: update.nonce)
-                let data = encodeAccount(account)
+                let data = Self.encodeAccount(account)
                 let oldValue = currentValue(forPath: path)
                 try db.execute(
                     "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
@@ -279,8 +284,8 @@ public actor StateStore {
 
     // MARK: - State Expiry
 
-    public func queryAccountsBelowHeight(_ cutoff: UInt64) throws -> [StateExpiry.ExpiredAccount] {
-        let rows = try db.query(
+    public nonisolated func queryAccountsBelowHeight(_ cutoff: UInt64) throws -> [StateExpiry.ExpiredAccount] {
+        let rows = try readDb.query(
             "SELECT path, value, height FROM state WHERE path LIKE 'account:%' AND height < ?1",
             params: [.int(Int64(cutoff))]
         )
@@ -289,7 +294,7 @@ public actor StateStore {
             guard let path = row["path"]?.textValue,
                   let data = row["value"]?.blobValue,
                   let h = row["height"]?.intValue,
-                  let account = decodeAccount(data) else { return nil }
+                  let account = Self.decodeAccount(data) else { return nil }
             let address = String(path.dropFirst("account:".count))
             return StateExpiry.ExpiredAccount(
                 address: address, balance: account.balance,
@@ -324,8 +329,8 @@ public actor StateStore {
             return false
         }
 
-        guard let proofAccount = decodeAccount(proof),
-              let storedAccount = decodeAccount(value),
+        guard let proofAccount = Self.decodeAccount(proof),
+              let storedAccount = Self.decodeAccount(value),
               proofAccount == storedAccount else { return false }
 
         try? db.execute(
@@ -360,7 +365,7 @@ public actor StateStore {
         }
     }
 
-    private func encodeAccount(_ account: AccountState) -> Data {
+    private static func encodeAccount(_ account: AccountState) -> Data {
         var data = Data(count: 16)
         data.withUnsafeMutableBytes { ptr in
             ptr.storeBytes(of: account.balance.littleEndian, as: UInt64.self)
@@ -369,7 +374,7 @@ public actor StateStore {
         return data
     }
 
-    private func decodeAccount(_ data: Data) -> AccountState? {
+    private static func decodeAccount(_ data: Data) -> AccountState? {
         // Fast path: 16-byte binary format
         if data.count == 16 {
             return data.withUnsafeBytes { ptr in

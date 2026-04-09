@@ -73,7 +73,8 @@ extension LatticeNode {
     func processBlockAndRecoverReorg(
         header: BlockHeader,
         directory: String,
-        fetcher: Fetcher
+        fetcher: Fetcher,
+        resolvedBlock: Block? = nil
     ) async -> Bool {
         let chain: ChainState
         if directory == genesisConfig.spec.directory {
@@ -88,7 +89,13 @@ extension LatticeNode {
         let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
         guard accepted else { return false }
 
-        if let block = try? await header.resolve(fetcher: fetcher).node {
+        let block: Block?
+        if let r = resolvedBlock {
+            block = r
+        } else {
+            block = try? await header.resolve(fetcher: fetcher).node
+        }
+        if let block {
             // Resolve transactions once — used for fees, state changeset, and receipts
             let txEntries: [String: HeaderImpl<Transaction>]
             if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
@@ -155,6 +162,7 @@ extension LatticeNode {
         }
 
         let tipAfter = await chain.getMainChainTip()
+        tipCaches[directory]?.update(tipAfter)
         if tipBefore != tipAfter {
             let parentOfNewTip = await chain.getConsensusBlock(hash: tipAfter)?.previousBlockHash
             if parentOfNewTip != tipBefore {
@@ -238,7 +246,7 @@ extension LatticeNode {
                         if action.oldBalance == 0 {
                             await store.deleteAccount(address: action.owner)
                         } else if action.newBalance != action.oldBalance {
-                            let existingNonce = await store.getNonce(address: action.owner) ?? 0
+                            let existingNonce = store.getNonce(address: action.owner) ?? 0
                             await store.setAccount(address: action.owner, balance: action.oldBalance, nonce: existingNonce, atHeight: block.index)
                         }
                     }
@@ -338,7 +346,7 @@ extension LatticeNode {
                         if action.oldBalance == 0 {
                             await store.deleteAccount(address: action.owner)
                         } else if action.newBalance != action.oldBalance {
-                            let nonce = await store.getNonce(address: action.owner) ?? 0
+                            let nonce = store.getNonce(address: action.owner) ?? 0
                             await store.setAccount(address: action.owner, balance: action.oldBalance, nonce: nonce, atHeight: childBlock.index)
                         }
                     }
@@ -444,7 +452,8 @@ extension LatticeNode {
         let directory = await network.directory
         let header = HeaderImpl<Block>(rawCID: cid)
         let accepted = await processBlockAndRecoverReorg(
-            header: header, directory: directory, fetcher: await network.ivyFetcher
+            header: header, directory: directory, fetcher: await network.ivyFetcher,
+            resolvedBlock: block
         )
         if accepted {
             tally.recordSuccess(peer: peer)

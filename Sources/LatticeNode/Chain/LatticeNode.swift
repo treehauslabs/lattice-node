@@ -32,6 +32,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public let anchorPeers: AnchorPeers
     public let metrics: NodeMetrics
     public var stateStores: [String: StateStore]
+    var tipCaches: [String: TipCache]
 
     // MARK: - Initialization
 
@@ -124,6 +125,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         } else {
             self.stateStores = [:]
         }
+        self.tipCaches = [genesisConfig.spec.directory: TipCache(tip: genesis.blockHash)]
     }
 
     public func stateStore(for directory: String) -> StateStore? {
@@ -207,6 +209,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             if let store = try? StateStore(storagePath: self.config.storagePath, chain: directory) {
                 stateStores[directory] = store
             }
+        }
+        if tipCaches[directory] == nil {
+            tipCaches[directory] = TipCache(tip: "")
         }
         try await network.start()
     }

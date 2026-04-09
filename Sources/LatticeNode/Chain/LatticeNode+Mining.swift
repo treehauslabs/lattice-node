@@ -16,6 +16,7 @@ extension LatticeNode {
             publicKeyHex: config.publicKey,
             privateKeyHex: config.privateKey
         )
+        let tipCache = tipCaches[directory]
         let miner = MinerLoop(
             chainState: chainState,
             mempool: network.nodeMempool,
@@ -25,7 +26,8 @@ extension LatticeNode {
             childContextProvider: { [weak self] in
                 await self?.buildChildMiningContexts() ?? []
             },
-            batchSize: config.resources.miningBatchSize
+            batchSize: config.resources.miningBatchSize,
+            tipCache: tipCache
         )
         await miner.setDelegate(self)
         miners[directory] = miner
@@ -60,7 +62,8 @@ extension LatticeNode {
         let accepted = await processBlockAndRecoverReorg(
             header: header,
             directory: directory,
-            fetcher: network.ivyFetcher
+            fetcher: network.ivyFetcher,
+            resolvedBlock: block
         )
         if accepted, let removals = pendingRemovals {
             await network.pruneConfirmedTransactions(txCIDs: removals.nexusTxCIDs)

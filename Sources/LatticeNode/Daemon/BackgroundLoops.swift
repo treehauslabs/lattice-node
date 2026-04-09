@@ -68,7 +68,7 @@ func startGarbageCollectionLoop(node: LatticeNode, retentionDepth: UInt64, expir
 
             for directory in await node.allDirectories() {
                 guard let store = await node.stateStore(for: directory) else { continue }
-                let height = await store.getHeight() ?? 0
+                let height = store.getHeight() ?? 0
 
                 if height > retentionDepth {
                     await store.pruneDiffs(belowHeight: height - retentionDepth)

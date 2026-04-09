@@ -12,6 +12,7 @@ public actor MinerLoop {
     private let identity: MinerIdentity?
     private let childContextProvider: (@Sendable () async -> [ChildMiningContext])?
     private let batchSize: UInt64
+    private let tipCache: TipCache?
     private var mining: Bool
     private var currentTask: Task<Void, Never>?
     private var nonceOffset: UInt64 = 0
@@ -25,7 +26,8 @@ public actor MinerLoop {
         identity: MinerIdentity? = nil,
         childContexts: [ChildMiningContext] = [],
         childContextProvider: (@Sendable () async -> [ChildMiningContext])? = nil,
-        batchSize: UInt64 = 10_000
+        batchSize: UInt64 = 10_000,
+        tipCache: TipCache? = nil
     ) {
         self.chainState = chainState
         self.mempool = mempool
@@ -34,6 +36,7 @@ public actor MinerLoop {
         self.identity = identity
         self.childContextProvider = childContextProvider ?? { childContexts }
         self.batchSize = batchSize
+        self.tipCache = tipCache
         self.mining = false
     }
 
@@ -111,7 +114,13 @@ public actor MinerLoop {
                 let workerCount = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
 
                 while mining && !Task.isCancelled {
-                    let currentTip = await chainState.getMainChainTip()
+                    // Lock-free tip check avoids actor hop into ChainState per batch
+                    let currentTip: String
+                    if let cached = tipCache?.tip {
+                        currentTip = cached
+                    } else {
+                        currentTip = await chainState.getMainChainTip()
+                    }
                     if currentTip != previousBlockHash { break }
 
                     let foundNonce = await mineParallel(
@@ -346,46 +355,59 @@ public actor MinerLoop {
     }
 
     private func buildChildBlocks(contexts: [ChildMiningContext], nexusBlock: Block, timestamp: Int64) async -> ChildBlockResult {
-        var blocks: [String: Block] = [:]
-        var pendingRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)] = []
-
-        for ctx in contexts {
-            do {
-                let childTipHash = await ctx.chainState.getMainChainTip()
-                let childTipData = try await ctx.fetcher.fetch(rawCid: childTipHash)
-                guard let childTip = Block(data: childTipData) else { continue }
-
-                let childTxs = await ctx.mempool.selectTransactions(
-                    maxCount: max(0, Int(ctx.spec.maxNumberOfTransactionsPerBlock) - 1)
-                )
-
-                let childDifficulty = childTip.nextDifficulty
-                let childNextDifficulty = ctx.spec.calculateMinimumDifficulty(
-                    previousDifficulty: childDifficulty,
-                    blockTimestamp: timestamp,
-                    previousTimestamp: childTip.timestamp
-                )
-
-                let childBlock = try await BlockBuilder.buildBlock(
-                    previous: childTip,
-                    transactions: childTxs,
-                    parentChainBlock: nexusBlock,
-                    timestamp: timestamp,
-                    difficulty: childDifficulty,
-                    nextDifficulty: childNextDifficulty,
-                    nonce: 0,
-                    fetcher: ctx.fetcher
-                )
-                blocks[ctx.directory] = childBlock
-                let cids = Set(childTxs.map { $0.body.rawCID })
-                if !cids.isEmpty {
-                    pendingRemovals.append((mempool: ctx.mempool, txCIDs: cids))
-                }
-            } catch {
-                continue
-            }
+        guard !contexts.isEmpty else {
+            return ChildBlockResult(blocks: [:], pendingChildTxRemovals: [])
         }
-        return ChildBlockResult(blocks: blocks, pendingChildTxRemovals: pendingRemovals)
+
+        // Build all child blocks in parallel — they're independent
+        return await withTaskGroup(of: (String, Block, NodeMempool, Set<String>)?.self) { group in
+            for ctx in contexts {
+                group.addTask {
+                    do {
+                        let childTipHash = await ctx.chainState.getMainChainTip()
+                        let childTipData = try await ctx.fetcher.fetch(rawCid: childTipHash)
+                        guard let childTip = Block(data: childTipData) else { return nil }
+
+                        let childTxs = await ctx.mempool.selectTransactions(
+                            maxCount: max(0, Int(ctx.spec.maxNumberOfTransactionsPerBlock) - 1)
+                        )
+
+                        let childDifficulty = childTip.nextDifficulty
+                        let childNextDifficulty = ctx.spec.calculateMinimumDifficulty(
+                            previousDifficulty: childDifficulty,
+                            blockTimestamp: timestamp,
+                            previousTimestamp: childTip.timestamp
+                        )
+
+                        let childBlock = try await BlockBuilder.buildBlock(
+                            previous: childTip,
+                            transactions: childTxs,
+                            parentChainBlock: nexusBlock,
+                            timestamp: timestamp,
+                            difficulty: childDifficulty,
+                            nextDifficulty: childNextDifficulty,
+                            nonce: 0,
+                            fetcher: ctx.fetcher
+                        )
+                        let cids = Set(childTxs.map { $0.body.rawCID })
+                        return (ctx.directory, childBlock, ctx.mempool, cids)
+                    } catch {
+                        return nil
+                    }
+                }
+            }
+
+            var blocks: [String: Block] = [:]
+            var pendingRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)] = []
+            for await result in group {
+                guard let (dir, block, mempool, cids) = result else { continue }
+                blocks[dir] = block
+                if !cids.isEmpty {
+                    pendingRemovals.append((mempool: mempool, txCIDs: cids))
+                }
+            }
+            return ChildBlockResult(blocks: blocks, pendingChildTxRemovals: pendingRemovals)
+        }
     }
 
     // MARK: - Helpers

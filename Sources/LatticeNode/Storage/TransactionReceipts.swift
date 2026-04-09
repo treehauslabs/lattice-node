@@ -34,12 +34,12 @@ public actor TransactionReceiptStore {
     }
 
     public func getReceipt(txCID: String) async -> TransactionReceipt? {
-        if let data = await store.getGeneral(key: "receipt:\(txCID)"),
+        if let data = store.getGeneral(key: "receipt:\(txCID)"),
            let receipt = try? JSONDecoder().decode(TransactionReceipt.self, from: data) {
             return receipt
         }
 
-        guard let indexData = await store.getGeneral(key: "receipt-idx:\(txCID)"),
+        guard let indexData = store.getGeneral(key: "receipt-idx:\(txCID)"),
               let index = try? JSONDecoder().decode(ReceiptIndex.self, from: indexData) else { return nil }
 
         return await deriveFromCAS(txCID: txCID, index: index)

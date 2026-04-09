@@ -81,7 +81,7 @@ public struct TransactionValidator: Sendable {
 
         if !isCoinbase {
             let sender = body.signers.first ?? ""
-            let confirmedNonce = await stateStore?.getNonce(address: sender) ?? 0
+            let confirmedNonce = stateStore?.getNonce(address: sender) ?? 0
             if body.nonce < confirmedNonce {
                 return .failure(.nonceAlreadyUsed(nonce: body.nonce))
             }

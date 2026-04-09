@@ -20,7 +20,7 @@ public actor StateExpiry {
         guard currentHeight > expiryBlocks else { return [] }
         let cutoff = currentHeight - expiryBlocks
 
-        guard let rows = try? await store.queryAccountsBelowHeight(cutoff) else {
+        guard let rows = try? store.queryAccountsBelowHeight(cutoff) else {
             return []
         }
         return rows

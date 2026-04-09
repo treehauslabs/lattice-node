@@ -44,7 +44,7 @@ extension LatticeNode {
     public func getBalance(address: String, directory: String? = nil) async throws -> UInt64 {
         let dir = directory ?? genesisConfig.spec.directory
 
-        if let store = stateStores[dir], let balance = await store.getBalance(address: address) {
+        if let store = stateStores[dir], let balance = store.getBalance(address: address) {
             return balance
         }
 

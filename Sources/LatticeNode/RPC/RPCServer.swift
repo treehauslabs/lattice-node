@@ -212,7 +212,7 @@ enum RPCRoutes {
         let dir = node.genesisConfig.spec.directory
         let nonce: UInt64
         if let store = await node.stateStore(for: dir) {
-            nonce = await store.getNonce(address: address) ?? 0
+            nonce = store.getNonce(address: address) ?? 0
         } else {
             nonce = 0
         }
@@ -251,7 +251,7 @@ enum RPCRoutes {
         let chain = await node.lattice.nexus.chain
         let height = await chain.getHighestBlockIndex()
         let tip = await chain.getMainChainTip()
-        let stateRoot = await store.getChainTip() ?? ""
+        let stateRoot = store.getChainTip() ?? ""
 
         let proof = await LightClientProtocol.buildAccountProof(
             address: address,
@@ -286,7 +286,7 @@ enum RPCRoutes {
         guard let store = await node.stateStore(for: dir) else {
             return jsonError("State store not available", status: .internalServerError)
         }
-        let history = await store.getTransactionHistory(address: address)
+        let history = store.getTransactionHistory(address: address)
         struct Entry: Encodable { let txCID: String; let blockHash: String; let height: UInt64 }
         struct R: Encodable { let address: String; let transactions: [Entry]; let count: Int }
         return json(R(
