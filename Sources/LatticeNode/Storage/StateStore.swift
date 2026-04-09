@@ -83,8 +83,7 @@ public actor StateStore {
     public func setAccount(address: String, balance: UInt64, nonce: UInt64, atHeight: UInt64) {
         let path = "account:\(address)"
         let account = AccountState(balance: balance, nonce: nonce)
-        guard let data = encodeAccount(account) else { return }
-
+        let data = encodeAccount(account)
         let oldValue = currentValue(forPath: path)
         try? db.execute(
             "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
@@ -197,7 +196,7 @@ public actor StateStore {
             for update in changes.accountUpdates {
                 let path = "account:\(update.address)"
                 let account = AccountState(balance: update.balance, nonce: update.nonce)
-                guard let data = encodeAccount(account) else { continue }
+                let data = encodeAccount(account)
                 let oldValue = currentValue(forPath: path)
                 try db.execute(
                     "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
@@ -325,7 +324,9 @@ public actor StateStore {
             return false
         }
 
-        guard proof == value else { return false }
+        guard let proofAccount = decodeAccount(proof),
+              let storedAccount = decodeAccount(value),
+              proofAccount == storedAccount else { return false }
 
         try? db.execute(
             "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
@@ -359,11 +360,25 @@ public actor StateStore {
         }
     }
 
-    private func encodeAccount(_ account: AccountState) -> Data? {
-        try? JSONEncoder().encode(account)
+    private func encodeAccount(_ account: AccountState) -> Data {
+        var data = Data(count: 16)
+        data.withUnsafeMutableBytes { ptr in
+            ptr.storeBytes(of: account.balance.littleEndian, as: UInt64.self)
+            ptr.storeBytes(of: account.nonce.littleEndian, toByteOffset: 8, as: UInt64.self)
+        }
+        return data
     }
 
     private func decodeAccount(_ data: Data) -> AccountState? {
-        try? JSONDecoder().decode(AccountState.self, from: data)
+        // Fast path: 16-byte binary format
+        if data.count == 16 {
+            return data.withUnsafeBytes { ptr in
+                let balance = UInt64(littleEndian: ptr.load(as: UInt64.self))
+                let nonce = UInt64(littleEndian: ptr.load(fromByteOffset: 8, as: UInt64.self))
+                return AccountState(balance: balance, nonce: nonce)
+            }
+        }
+        // Fallback: JSON format from existing databases
+        return try? JSONDecoder().decode(AccountState.self, from: data)
     }
 }

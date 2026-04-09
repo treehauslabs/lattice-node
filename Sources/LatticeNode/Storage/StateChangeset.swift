@@ -1,6 +1,6 @@
 import Foundation
 
-public struct AccountState: Codable, Sendable {
+public struct AccountState: Codable, Sendable, Equatable {
     public let balance: UInt64
     public let nonce: UInt64
 

@@ -98,6 +98,14 @@ public actor MinerLoop {
                 )
 
                 let prefixBytes = difficultyHashPrefixBytes(template)
+                // Precompute SHA256 midstate for the fixed prefix — each nonce attempt
+                // clones this state and hashes only the 1-20 nonce digits instead of
+                // re-processing ~400-500 prefix bytes (~6-7 SHA256 blocks saved per nonce)
+                let midstate: SHA256 = prefixBytes.withUnsafeBufferPointer { ptr in
+                    var h = SHA256()
+                    h.update(bufferPointer: UnsafeRawBufferPointer(ptr))
+                    return h
+                }
                 let targetDifficulty = previousBlock.nextDifficulty
                 let batchSize = self.batchSize
                 let workerCount = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
@@ -107,7 +115,7 @@ public actor MinerLoop {
                     if currentTip != previousBlockHash { break }
 
                     let foundNonce = await mineParallel(
-                        prefixBytes: prefixBytes,
+                        midstate: midstate,
                         targetDifficulty: targetDifficulty,
                         totalBatchSize: batchSize,
                         workerCount: workerCount
@@ -160,67 +168,68 @@ public actor MinerLoop {
     }
 
     nonisolated private func mineBatch(
-        prefixBytes: ContiguousArray<UInt8>,
+        midstate: SHA256,
         targetDifficulty: UInt256,
         startNonce: UInt64,
         count: UInt64
     ) -> UInt64? {
         let end = startNonce &+ count
         var nonce = startNonce
-        let prefixLen = prefixBytes.count
 
-        // Working buffer: prefix + max 20 digits for UInt64
-        var buffer = prefixBytes
-        buffer.reserveCapacity(prefixLen + 20)
-
-        // Scratch space for nonce→ASCII conversion (digits in reverse)
-        var digitBuf: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+        // Stack buffer for nonce→ASCII digits (max 20 for UInt64.max)
+        var nonceBuf: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
                        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
             (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
 
         while nonce < end {
-            // Check cancellation every 1024 nonces (cheap bitwise check)
             if nonce & 0x3FF == 0 && Task.isCancelled { return nil }
 
-            // Reset buffer to prefix length
-            buffer.removeSubrange(prefixLen...)
-
-            // Convert nonce to ASCII digits without String allocation
-            var n = nonce
-            var digitCount = 0
-            if n == 0 {
-                buffer.append(0x30) // '0'
+            // Convert nonce to forward-order ASCII digits on stack
+            var nonceLen = 0
+            if nonce == 0 {
+                nonceBuf.0 = 0x30 // '0'
+                nonceLen = 1
             } else {
-                withUnsafeMutablePointer(to: &digitBuf) { ptr in
-                    let digits = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
+                var n = nonce
+                var digitCount = 0
+                withUnsafeMutablePointer(to: &nonceBuf) { ptr in
+                    let buf = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
                     while n > 0 {
-                        digits[digitCount] = UInt8(0x30 &+ (n % 10))
+                        buf[digitCount] = UInt8(0x30 &+ (n % 10))
                         n /= 10
                         digitCount &+= 1
                     }
-                    // Append digits in reverse order
-                    var i = digitCount &- 1
-                    while i >= 0 {
-                        buffer.append(digits[i])
-                        i &-= 1
+                    // Reverse in place
+                    var lo = 0
+                    var hi = digitCount &- 1
+                    while lo < hi {
+                        let tmp = buf[lo]
+                        buf[lo] = buf[hi]
+                        buf[hi] = tmp
+                        lo &+= 1
+                        hi &-= 1
                     }
                 }
+                nonceLen = digitCount
             }
 
-            // SHA-256 → UInt256 without intermediate Data allocations
-            let hash: UInt256 = buffer.withUnsafeBufferPointer { ptr in
-                var hasher = SHA256()
-                hasher.update(bufferPointer: UnsafeRawBufferPointer(ptr))
-                let digest = hasher.finalize()
-                return digest.withUnsafeBytes { raw in
-                    let p = raw.bindMemory(to: UInt64.self)
-                    return UInt256([
-                        UInt64(bigEndian: p[0]),
-                        UInt64(bigEndian: p[1]),
-                        UInt64(bigEndian: p[2]),
-                        UInt64(bigEndian: p[3])
-                    ])
-                }
+            // Clone midstate (copies ~112 bytes of SHA256 internal state),
+            // hash only the nonce suffix, finalize
+            var hasher = midstate
+            withUnsafePointer(to: &nonceBuf) { ptr in
+                hasher.update(bufferPointer: UnsafeRawBufferPointer(
+                    start: UnsafeRawPointer(ptr), count: nonceLen
+                ))
+            }
+            let digest = hasher.finalize()
+            let hash: UInt256 = digest.withUnsafeBytes { raw in
+                let p = raw.bindMemory(to: UInt64.self)
+                return UInt256([
+                    UInt64(bigEndian: p[0]),
+                    UInt64(bigEndian: p[1]),
+                    UInt64(bigEndian: p[2]),
+                    UInt64(bigEndian: p[3])
+                ])
             }
 
             if targetDifficulty >= hash {
@@ -232,7 +241,7 @@ public actor MinerLoop {
     }
 
     private func mineParallel(
-        prefixBytes: ContiguousArray<UInt8>,
+        midstate: SHA256,
         targetDifficulty: UInt256,
         totalBatchSize: UInt64,
         workerCount: Int
@@ -245,7 +254,7 @@ public actor MinerLoop {
                 let startNonce = baseOffset &+ UInt64(i) &* rangePerWorker
                 group.addTask {
                     self.mineBatch(
-                        prefixBytes: prefixBytes,
+                        midstate: midstate,
                         targetDifficulty: targetDifficulty,
                         startNonce: startNonce,
                         count: rangePerWorker

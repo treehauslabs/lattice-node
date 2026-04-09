@@ -22,6 +22,9 @@ public final class SQLiteDatabase: @unchecked Sendable {
         sqlite3_busy_timeout(db, 5000)
         try execute("PRAGMA journal_mode=WAL")
         try execute("PRAGMA synchronous=NORMAL")
+        try execute("PRAGMA cache_size=-65536")     // 64MB page cache (default ~2MB)
+        try execute("PRAGMA mmap_size=268435456")   // 256MB memory-mapped I/O
+        try execute("PRAGMA temp_store=MEMORY")     // Temp tables in memory
     }
 
     deinit {
