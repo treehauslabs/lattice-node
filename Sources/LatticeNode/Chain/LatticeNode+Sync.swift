@@ -182,65 +182,37 @@ extension LatticeNode {
         await persistChainState(directory: nexusDir)
 
         if let store = stateStores[nexusDir] {
-            log.info("Rebuilding StateStore from tip state via CAS...")
-            do {
-                let tipData = try await fetcher.fetch(rawCid: result.tipBlockHash)
-                guard let tipBlock = Block(data: tipData) else { throw SyncError.invalidBlock(result.tipBlockIndex) }
+            log.info("Rebuilding StateStore via block replay (sparse — no full state pull)...")
 
-                let frontier = try await tipBlock.frontier.resolve(fetcher: fetcher)
-                guard let state = frontier.node else { throw SyncError.invalidBlock(result.tipBlockIndex) }
-
-                let accounts = try await state.accountState.resolveRecursive(fetcher: fetcher)
-                if let accountDict = accounts.node, let entries = try? accountDict.allKeysAndValues() {
-                    for (address, balance) in entries {
-                        await store.setAccount(
-                            address: address,
-                            balance: balance,
-                            nonce: 0,
-                            atHeight: result.tipBlockIndex
-                        )
-                    }
-
-                    var senderNonces: [String: UInt64] = [:]
-                    for blockMeta in result.persisted.blocks.sorted(by: { $0.blockIndex < $1.blockIndex }) {
-                        if let data = try? await fetcher.fetch(rawCid: blockMeta.blockHash),
-                           let blk = Block(data: data),
-                           let txDict = try? await blk.transactions.resolveRecursive(fetcher: fetcher).node,
-                           let txEntries = try? txDict.allKeysAndValues() {
-                            for (_, txHeader) in txEntries {
-                                if let body = txHeader.node?.body.node, body.fee > 0 {
-                                    let sender = body.signers.first ?? ""
-                                    senderNonces[sender, default: 0] += 1
-                                }
-                            }
-                        }
-                    }
-                    for (address, nonce) in senderNonces {
-                        let balance = store.getBalance(address: address) ?? 0
-                        await store.setAccount(address: address, balance: balance, nonce: nonce, atHeight: result.tipBlockIndex)
-                    }
-
-                    log.info("StateStore rebuilt: \(entries.count) accounts, \(senderNonces.count) nonces from \(result.persisted.blocks.count) blocks")
-                }
-
-                await store.setChainTip(
-                    hash: result.tipBlockHash,
-                    height: result.tipBlockIndex,
-                    stateRoot: tipBlock.frontier.rawCID
-                )
-            } catch {
-                log.error("CAS state rebuild failed: \(error), falling back to block replay")
-                for block in result.persisted.blocks {
-                    if let data = try? await fetcher.fetch(rawCid: block.blockHash),
-                       let blk = Block(data: data) {
-                        if let txDict = try? await blk.transactions.resolveRecursive(fetcher: fetcher).node,
-                           let txEntries = try? txDict.allKeysAndValues() {
-                            let changeset = extractStateChangeset(block: blk, blockHash: block.blockHash, txEntries: txEntries, store: store)
-                            await store.applyBlock(changeset)
-                        }
-                    }
+            // Replay synced blocks in order: each block's accountActions carry
+            // oldBalance/newBalance, so we derive state from transactions alone.
+            // This avoids resolveRecursive on the account state tree entirely.
+            let sortedBlocks = result.persisted.blocks.sorted { $0.blockIndex < $1.blockIndex }
+            for blockMeta in sortedBlocks {
+                guard let data = try? await fetcher.fetch(rawCid: blockMeta.blockHash),
+                      let blk = Block(data: data) else { continue }
+                if let txDict = try? await blk.transactions.resolveRecursive(fetcher: fetcher).node,
+                   let txEntries = try? txDict.allKeysAndValues() {
+                    let changeset = extractStateChangeset(
+                        block: blk, blockHash: blockMeta.blockHash,
+                        txEntries: txEntries, store: store
+                    )
+                    await store.applyBlock(changeset)
                 }
             }
+
+            // Set tip metadata from the last synced block
+            if let tipMeta = sortedBlocks.last,
+               let tipData = try? await fetcher.fetch(rawCid: tipMeta.blockHash),
+               let tipBlock = Block(data: tipData) {
+                await store.setChainTip(
+                    hash: tipMeta.blockHash,
+                    height: tipBlock.index,
+                    stateRoot: tipBlock.frontier.rawCID
+                )
+            }
+
+            log.info("StateStore rebuilt from \(sortedBlocks.count) blocks (sparse replay)")
         }
 
         await reprocessSyncedBlocksForChildChains(persisted: result.persisted, fetcher: fetcher, network: network)

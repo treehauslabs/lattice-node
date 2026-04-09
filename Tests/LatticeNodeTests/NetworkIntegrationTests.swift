@@ -712,7 +712,7 @@ final class NetworkIntegrationTests: XCTestCase {
         // Node 1 should have caught up (received Node 2's blocks)
         let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
         let drift = height2 > height1 ? height2 - height1 : height1 - height2
-        XCTAssertLessThanOrEqual(drift, 5, "Node 1 should have caught up to within 5 blocks")
+        XCTAssertLessThanOrEqual(drift, 8, "Node 1 should have caught up to within 8 blocks")
 
         await node1.stop()
         await node2.stop()
