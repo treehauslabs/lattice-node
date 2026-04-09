@@ -65,8 +65,6 @@ extension LatticeNode {
             return "Signers do not match signatures"
         case .duplicateAccountOwner(let owner):
             return "Duplicate account action for owner: \(owner)"
-        case .balanceMismatch(let owner, let expected, let claimed):
-            return "Balance mismatch for \(owner): on-chain \(expected), claimed \(claimed)"
         case .insufficientBalance(let owner, let balance, let required):
             return "Insufficient balance for \(owner): has \(balance), needs \(required)"
         case .noStateAvailable:

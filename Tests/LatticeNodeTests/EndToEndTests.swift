@@ -59,7 +59,7 @@ final class SmokeTests: XCTestCase {
                 previous: prev, timestamp: t + Int64(i) * 1000,
                 difficulty: UInt256(1000), nonce: UInt64(i), fetcher: f
             )
-            let header = HeaderImpl<Block>(node: block)
+            let header = VolumeImpl<Block>(node: block)
             await f.store(rawCid: header.rawCID, data: block.toData()!)
             let result = await chain.submitBlock(
                 parentBlockHeaderAndIndex: nil, blockHeader: header, block: block
@@ -85,7 +85,7 @@ final class SmokeTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let mempool = NodeMempool(maxSize: 100)
 
-        await f.store(rawCid: HeaderImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
+        await f.store(rawCid: VolumeImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
 
         let miner = MinerLoop(
             chainState: chain, mempool: mempool, fetcher: f,
@@ -119,7 +119,7 @@ final class SmokeTests: XCTestCase {
             )
             let _ = await chain.submitBlock(
                 parentBlockHeaderAndIndex: nil,
-                blockHeader: HeaderImpl<Block>(node: block), block: block
+                blockHeader: VolumeImpl<Block>(node: block), block: block
             )
             prev = block
         }
@@ -139,7 +139,7 @@ final class SmokeTests: XCTestCase {
         )
         let result = await restored.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: block6), block: block6
+            blockHeader: VolumeImpl<Block>(node: block6), block: block6
         )
         XCTAssertTrue(result.extendsMainChain)
         let rh = await restored.getHighestBlockIndex()
@@ -164,7 +164,7 @@ final class SmokeTests: XCTestCase {
         )
         let _ = await chain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: b1), block: b1
+            blockHeader: VolumeImpl<Block>(node: b1), block: b1
         )
 
         let persisted = await chain.persist()
@@ -213,7 +213,7 @@ final class MultiChainEndToEndTests: XCTestCase {
         )
         let result = await nexusChain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: nexusBlock1), block: nexusBlock1
+            blockHeader: VolumeImpl<Block>(node: nexusBlock1), block: nexusBlock1
         )
         XCTAssertTrue(result.extendsMainChain)
         let nh = await nexusChain.getHighestBlockIndex()
@@ -230,7 +230,7 @@ final class MultiChainEndToEndTests: XCTestCase {
         let childPremine = childSpec.premineAmount()
 
         let childPremineBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, oldBalance: 0, newBalance: childPremine)],
+            accountActions: [AccountAction(owner: kpAddr, delta: Int64(childPremine))],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
             settleActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
@@ -245,7 +245,7 @@ final class MultiChainEndToEndTests: XCTestCase {
         let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
-        await f.store(rawCid: HeaderImpl<Block>(node: childGenesis).rawCID, data: childGenesis.toData()!)
+        await f.store(rawCid: VolumeImpl<Block>(node: childGenesis).rawCID, data: childGenesis.toData()!)
 
         let childMempool = NodeMempool(maxSize: 100)
 
@@ -254,8 +254,8 @@ final class MultiChainEndToEndTests: XCTestCase {
         let childReward = childSpec.rewardAtBlock(0)
         let transferBody = TransactionBody(
             accountActions: [
-                AccountAction(owner: kpAddr, oldBalance: childPremine, newBalance: childPremine - 100),
-                AccountAction(owner: receiverAddr, oldBalance: 0, newBalance: 100 + childReward)
+                AccountAction(owner: kpAddr, delta: Int64(childPremine - 100) - Int64(childPremine)),
+                AccountAction(owner: receiverAddr, delta: Int64(100 + childReward))
             ],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
             settleActions: [], signers: [kpAddr], fee: 0, nonce: 1
@@ -302,8 +302,8 @@ final class MultiChainEndToEndTests: XCTestCase {
         let chainA = ChainState.fromGenesis(block: childAGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let chainB = ChainState.fromGenesis(block: childBGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
-        await f.store(rawCid: HeaderImpl<Block>(node: childAGenesis).rawCID, data: childAGenesis.toData()!)
-        await f.store(rawCid: HeaderImpl<Block>(node: childBGenesis).rawCID, data: childBGenesis.toData()!)
+        await f.store(rawCid: VolumeImpl<Block>(node: childAGenesis).rawCID, data: childAGenesis.toData()!)
+        await f.store(rawCid: VolumeImpl<Block>(node: childBGenesis).rawCID, data: childBGenesis.toData()!)
 
         let mempoolA = NodeMempool(maxSize: 100)
         let mempoolB = NodeMempool(maxSize: 100)
@@ -548,17 +548,17 @@ final class TwoNodeEndToEndTests: XCTestCase {
                 previous: prev, timestamp: t + Int64(i) * 1000,
                 difficulty: UInt256(1000), nonce: UInt64(i), fetcher: fA
             )
-            await fA.store(rawCid: HeaderImpl<Block>(node: block).rawCID, data: block.toData()!)
+            await fA.store(rawCid: VolumeImpl<Block>(node: block).rawCID, data: block.toData()!)
             let _ = await genesisA.chainState.submitBlock(
                 parentBlockHeaderAndIndex: nil,
-                blockHeader: HeaderImpl<Block>(node: block), block: block
+                blockHeader: VolumeImpl<Block>(node: block), block: block
             )
             blocks.append(block)
             prev = block
         }
 
         for block in blocks {
-            let header = HeaderImpl<Block>(node: block)
+            let header = VolumeImpl<Block>(node: block)
             await fB.store(rawCid: header.rawCID, data: block.toData()!)
             let _ = await genesisB.chainState.submitBlock(
                 parentBlockHeaderAndIndex: nil, blockHeader: header, block: block
@@ -591,7 +591,7 @@ final class TwoNodeEndToEndTests: XCTestCase {
             )
             let _ = await genesisB.chainState.submitBlock(
                 parentBlockHeaderAndIndex: nil,
-                blockHeader: HeaderImpl<Block>(node: b), block: b
+                blockHeader: VolumeImpl<Block>(node: b), block: b
             )
             shortPrev = b
         }
@@ -607,7 +607,7 @@ final class TwoNodeEndToEndTests: XCTestCase {
             )
             let _ = await genesisA.chainState.submitBlock(
                 parentBlockHeaderAndIndex: nil,
-                blockHeader: HeaderImpl<Block>(node: b), block: b
+                blockHeader: VolumeImpl<Block>(node: b), block: b
             )
             longBlocks.append(b)
             longPrev = b
@@ -616,7 +616,7 @@ final class TwoNodeEndToEndTests: XCTestCase {
         for block in longBlocks {
             let _ = await genesisB.chainState.submitBlock(
                 parentBlockHeaderAndIndex: nil,
-                blockHeader: HeaderImpl<Block>(node: block), block: block
+                blockHeader: VolumeImpl<Block>(node: block), block: block
             )
         }
 
@@ -655,7 +655,7 @@ final class MultiChainReceptionTests: XCTestCase {
             childBlocks: ["Payments": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
-        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+        let header1 = VolumeImpl<Block>(node: nexusBlock1)
 
         let result = await nexusChain.submitBlock(
             parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
@@ -695,7 +695,7 @@ final class MultiChainReceptionTests: XCTestCase {
             childBlocks: ["Payments": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
-        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+        let header1 = VolumeImpl<Block>(node: nexusBlock1)
 
         let resultA = await chainA.submitBlock(
             parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
@@ -750,7 +750,7 @@ final class MultiChainReceptionTests: XCTestCase {
             childBlocks: ["Payments": childBlock1],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
-        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+        let header1 = VolumeImpl<Block>(node: nexusBlock1)
 
         let result = await nexusChain.submitBlock(
             parentBlockHeaderAndIndex: nil, blockHeader: header1, block: nexusBlock1
@@ -776,7 +776,7 @@ final class MultiChainReceptionTests: XCTestCase {
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let header = HeaderImpl<Block>(node: genesis)
+        let header = VolumeImpl<Block>(node: genesis)
         let storer = BufferedStorer()
         try header.storeRecursively(storer: storer)
         XCTAssertGreaterThan(storer.entries.count, 1)
@@ -806,7 +806,7 @@ final class AcornStorageTests: XCTestCase {
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
 
-        let header = HeaderImpl<Block>(node: genesis)
+        let header = VolumeImpl<Block>(node: genesis)
         let blockData = genesis.toData()!
 
         await f.store(rawCid: header.rawCID, data: blockData)
@@ -827,8 +827,8 @@ final class AcornStorageTests: XCTestCase {
         let restored = Block(data: data)
         XCTAssertNotNil(restored)
 
-        let originalCID = HeaderImpl<Block>(node: genesis).rawCID
-        let restoredCID = HeaderImpl<Block>(node: restored!).rawCID
+        let originalCID = VolumeImpl<Block>(node: genesis).rawCID
+        let restoredCID = VolumeImpl<Block>(node: restored!).rawCID
         XCTAssertEqual(originalCID, restoredCID)
     }
 
@@ -857,7 +857,7 @@ final class AcornStorageTests: XCTestCase {
                 previous: prev, timestamp: t + Int64(i) * 1000,
                 difficulty: UInt256(1000), nonce: UInt64(i), fetcher: f
             )
-            let header = HeaderImpl<Block>(node: block)
+            let header = VolumeImpl<Block>(node: block)
             await f.store(rawCid: header.rawCID, data: block.toData()!)
             cids.append(header.rawCID)
             prev = block
@@ -900,7 +900,7 @@ private struct MultiChainEnv {
             spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
         let premineBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, oldBalance: 0, newBalance: childSpec.premineAmount())],
+            accountActions: [AccountAction(owner: kpAddr, delta: Int64(childSpec.premineAmount()))],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
             peerActions: [], settleActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
@@ -910,10 +910,10 @@ private struct MultiChainEnv {
         )
 
         let nexusStorer = BufferedStorer()
-        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: nexusStorer)
+        try VolumeImpl<Block>(node: nexusGenesis).storeRecursively(storer: nexusStorer)
         await nexusStorer.flush(to: f)
         let childStorer = BufferedStorer()
-        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: childStorer)
+        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: childStorer)
         await childStorer.flush(to: f)
 
         let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
@@ -943,14 +943,14 @@ private struct MultiChainEnv {
     func submitNexus(_ block: Block) async -> SubmissionResult {
         await nexusChain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: block), block: block
+            blockHeader: VolumeImpl<Block>(node: block), block: block
         )
     }
 
     func extractChildren(from block: Block) async -> [String] {
         await nexusLevel.extractAndProcessChildBlocks(
             parentBlock: block,
-            parentBlockHeader: HeaderImpl<Block>(node: block),
+            parentBlockHeader: VolumeImpl<Block>(node: block),
             fetcher: f
         )
     }
@@ -1126,8 +1126,8 @@ final class MultiChainBalanceAndStateTests: XCTestCase {
 
         let transferBody = TransactionBody(
             accountActions: [
-                AccountAction(owner: env.kpAddr, oldBalance: premineAmount, newBalance: premineAmount - 500),
-                AccountAction(owner: receiverAddr, oldBalance: 0, newBalance: 500)
+                AccountAction(owner: env.kpAddr, delta: Int64(premineAmount - 500) - Int64(premineAmount)),
+                AccountAction(owner: receiverAddr, delta: Int64(500))
             ],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
             peerActions: [], settleActions: [], signers: [env.kpAddr], fee: 0, nonce: 1
@@ -1140,7 +1140,7 @@ final class MultiChainBalanceAndStateTests: XCTestCase {
         )
         let childResult = await env.childChain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: childBlock1), block: childBlock1
+            blockHeader: VolumeImpl<Block>(node: childBlock1), block: childBlock1
         )
         XCTAssertTrue(childResult.extendsMainChain)
 
@@ -1185,7 +1185,7 @@ final class MultiChainMiningContextTests: XCTestCase {
             spec: nexusSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
         let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
-        await f.store(rawCid: HeaderImpl<Block>(node: nexusGenesis).rawCID, data: nexusGenesis.toData()!)
+        await f.store(rawCid: VolumeImpl<Block>(node: nexusGenesis).rawCID, data: nexusGenesis.toData()!)
 
         var contexts: [ChildMiningContext] = []
         for dir in ["Payments", "Identity", "Data"] {
@@ -1194,7 +1194,7 @@ final class MultiChainMiningContextTests: XCTestCase {
                 spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
             )
             let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
-            await f.store(rawCid: HeaderImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
+            await f.store(rawCid: VolumeImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
             contexts.append(ChildMiningContext(
                 directory: dir, chainState: chain,
                 mempool: NodeMempool(maxSize: 100), fetcher: f, spec: spec
@@ -1270,11 +1270,11 @@ final class MultiChainDiscoveryTests: XCTestCase {
         )
         let _ = await nexusChain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: nexusBlock1), block: nexusBlock1
+            blockHeader: VolumeImpl<Block>(node: nexusBlock1), block: nexusBlock1
         )
         let _ = await nexusLevel.extractAndProcessChildBlocks(
             parentBlock: nexusBlock1,
-            parentBlockHeader: HeaderImpl<Block>(node: nexusBlock1),
+            parentBlockHeader: VolumeImpl<Block>(node: nexusBlock1),
             fetcher: f
         )
 
@@ -1308,11 +1308,11 @@ final class MultiChainDiscoveryTests: XCTestCase {
         )
         let _ = await nexusChain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: nexusBlock1), block: nexusBlock1
+            blockHeader: VolumeImpl<Block>(node: nexusBlock1), block: nexusBlock1
         )
         let _ = await nexusLevel.extractAndProcessChildBlocks(
             parentBlock: nexusBlock1,
-            parentBlockHeader: HeaderImpl<Block>(node: nexusBlock1),
+            parentBlockHeader: VolumeImpl<Block>(node: nexusBlock1),
             fetcher: f
         )
 
@@ -1337,10 +1337,10 @@ final class MultiChainDiscoveryTests: XCTestCase {
         let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
 
         let genesisStorer = BufferedStorer()
-        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: genesisStorer)
+        try VolumeImpl<Block>(node: nexusGenesis).storeRecursively(storer: genesisStorer)
         await genesisStorer.flush(to: f)
         let childGenesisStorer = BufferedStorer()
-        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: childGenesisStorer)
+        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: childGenesisStorer)
         await childGenesisStorer.flush(to: f)
 
         // Block 1: introduce child chain genesis
@@ -1349,7 +1349,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
             childBlocks: ["Payments": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
-        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+        let header1 = VolumeImpl<Block>(node: nexusBlock1)
         let storer1 = BufferedStorer()
         try header1.storeRecursively(storer: storer1)
         await storer1.flush(to: f)
@@ -1373,7 +1373,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
             childBlocks: ["Payments": childBlock1],
             timestamp: sharedTimestamp, difficulty: UInt256(1000), nonce: 2, fetcher: f
         )
-        let header2 = HeaderImpl<Block>(node: nexusBlock2)
+        let header2 = VolumeImpl<Block>(node: nexusBlock2)
         let storer2 = BufferedStorer()
         try header2.storeRecursively(storer: storer2)
         await storer2.flush(to: f)
@@ -1414,10 +1414,10 @@ final class MultiChainDiscoveryTests: XCTestCase {
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 
         let genesisStorer = BufferedStorer()
-        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: genesisStorer)
+        try VolumeImpl<Block>(node: nexusGenesis).storeRecursively(storer: genesisStorer)
         await genesisStorer.flush(to: f)
         let childGenesisStorer = BufferedStorer()
-        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: childGenesisStorer)
+        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: childGenesisStorer)
         await childGenesisStorer.flush(to: f)
 
         // Build child block with DIFFERENT timestamp than nexus block
@@ -1430,7 +1430,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
             childBlocks: ["Payments": childBlock1],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
-        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+        let header1 = VolumeImpl<Block>(node: nexusBlock1)
         let storer1 = BufferedStorer()
         try header1.storeRecursively(storer: storer1)
         await storer1.flush(to: f)
@@ -1466,10 +1466,10 @@ final class MultiChainDiscoveryTests: XCTestCase {
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 
         let genesisStorer = BufferedStorer()
-        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: genesisStorer)
+        try VolumeImpl<Block>(node: nexusGenesis).storeRecursively(storer: genesisStorer)
         await genesisStorer.flush(to: f)
         let childGenesisStorer = BufferedStorer()
-        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: childGenesisStorer)
+        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: childGenesisStorer)
         await childGenesisStorer.flush(to: f)
 
         // Build child block with SAME timestamp as nexus block
@@ -1483,7 +1483,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
             childBlocks: ["Payments": childBlock1],
             timestamp: sharedTimestamp, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
-        let header1 = HeaderImpl<Block>(node: nexusBlock1)
+        let header1 = VolumeImpl<Block>(node: nexusBlock1)
         let storer1 = BufferedStorer()
         try header1.storeRecursively(storer: storer1)
         await storer1.flush(to: f)
@@ -1522,10 +1522,10 @@ final class MultiChainDiscoveryTests: XCTestCase {
             // Slightly wasteful but ensures both are stored
         }
         let gs1 = BufferedStorer()
-        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
+        try VolumeImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
         await gs1.flush(to: f)
         let gs2 = BufferedStorer()
-        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
+        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
         await gs2.flush(to: f)
 
         var prevNexus = nexusGenesis
@@ -1541,7 +1541,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
                 childBlocks: ["Payments": childBlock],
                 timestamp: ts, difficulty: UInt256(1000), nonce: UInt64(i), fetcher: f
             )
-            let header = HeaderImpl<Block>(node: nexusBlock)
+            let header = VolumeImpl<Block>(node: nexusBlock)
             let storer = BufferedStorer()
             try header.storeRecursively(storer: storer)
             await storer.flush(to: f)
@@ -1594,7 +1594,7 @@ final class FullMiningIntegrationTests: XCTestCase {
         let mempool = NodeMempool(maxSize: 100)
 
         let genesisStorer = BufferedStorer()
-        try HeaderImpl<Block>(node: genesis).storeRecursively(storer: genesisStorer)
+        try VolumeImpl<Block>(node: genesis).storeRecursively(storer: genesisStorer)
         await genesisStorer.flush(to: f)
 
         let miner = MinerLoop(
@@ -1613,7 +1613,7 @@ final class FullMiningIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(minedBlocks.count, 0, "Miner should produce at least one block")
 
         for (block, _) in minedBlocks {
-            let header = HeaderImpl<Block>(node: block)
+            let header = VolumeImpl<Block>(node: block)
             let storer = BufferedStorer()
             try header.storeRecursively(storer: storer)
             await storer.flush(to: f)
@@ -1648,10 +1648,10 @@ final class FullMiningIntegrationTests: XCTestCase {
         let nexusLevel = ChainLevel(chain: nexusChain, children: ["Payments": childLevel])
 
         let gs1 = BufferedStorer()
-        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
+        try VolumeImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
         await gs1.flush(to: f)
         let gs2 = BufferedStorer()
-        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
+        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
         await gs2.flush(to: f)
 
         let childMempool = NodeMempool(maxSize: 100)
@@ -1684,7 +1684,7 @@ final class FullMiningIntegrationTests: XCTestCase {
         XCTAssertTrue(childKeys?.contains("Payments") ?? false, "Mined block should include Payments child block")
 
         // Submit through full pipeline
-        let header = HeaderImpl<Block>(node: firstBlock)
+        let header = VolumeImpl<Block>(node: firstBlock)
         let storer = BufferedStorer()
         try header.storeRecursively(storer: storer)
         await storer.flush(to: f)
@@ -1731,10 +1731,10 @@ final class FullMiningIntegrationTests: XCTestCase {
         let nexusLevelB = ChainLevel(chain: chainB, children: ["Payments": childLevelB])
 
         let gs1 = BufferedStorer()
-        try HeaderImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
+        try VolumeImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
         await gs1.flush(to: f)
         let gs2 = BufferedStorer()
-        try HeaderImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
+        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
         await gs2.flush(to: f)
 
         let childCtx = ChildMiningContext(
@@ -1758,7 +1758,7 @@ final class FullMiningIntegrationTests: XCTestCase {
 
         // Submit miner A's first block to both nodes
         let block = minedBlocks[0].0
-        let header = HeaderImpl<Block>(node: block)
+        let header = VolumeImpl<Block>(node: block)
         let storer = BufferedStorer()
         try header.storeRecursively(storer: storer)
         await storer.flush(to: f)
@@ -1806,7 +1806,7 @@ final class CASIsolationTests: XCTestCase {
         let kpAddr = addr(kp.publicKey)
 
         let premineBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, oldBalance: 0, newBalance: childSpec.premineAmount())],
+            accountActions: [AccountAction(owner: kpAddr, delta: Int64(childSpec.premineAmount()))],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
             peerActions: [], settleActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
@@ -1815,7 +1815,7 @@ final class CASIsolationTests: XCTestCase {
             timestamp: t, difficulty: UInt256(1000), fetcher: nexusCAS
         )
 
-        let genesisHeader = HeaderImpl<Block>(node: childGenesis)
+        let genesisHeader = VolumeImpl<Block>(node: childGenesis)
         let storer = BufferedStorer()
         try genesisHeader.storeRecursively(storer: storer)
         await storer.flush(to: nexusCAS)
@@ -1851,7 +1851,7 @@ final class CASIsolationTests: XCTestCase {
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: nexusCAS
         )
-        let genesisHeader = HeaderImpl<Block>(node: childGenesis)
+        let genesisHeader = VolumeImpl<Block>(node: childGenesis)
         let storer = BufferedStorer()
         try genesisHeader.storeRecursively(storer: storer)
         await storer.flush(to: nexusCAS)
@@ -1907,11 +1907,11 @@ final class MultiChainDiscoveryRemainingTests: XCTestCase {
         )
         let _ = await nexusChain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: nexusBlock1), block: nexusBlock1
+            blockHeader: VolumeImpl<Block>(node: nexusBlock1), block: nexusBlock1
         )
         let _ = await nexusLevel.extractAndProcessChildBlocks(
             parentBlock: nexusBlock1,
-            parentBlockHeader: HeaderImpl<Block>(node: nexusBlock1),
+            parentBlockHeader: VolumeImpl<Block>(node: nexusBlock1),
             fetcher: f
         )
 

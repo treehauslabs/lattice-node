@@ -218,7 +218,7 @@ final class MempoolAdversarialTests: XCTestCase {
         let addr = CryptoUtils.createAddress(from: kp.publicKey)
 
         let body1 = TransactionBody(
-            accountActions: [AccountAction(owner: addr, oldBalance: 1000, newBalance: 0)],
+            accountActions: [AccountAction(owner: addr, delta: -Int64(1000))],
             actions: [], swapActions: [], swapClaimActions: [],
             genesisActions: [], peerActions: [], settleActions: [],
             signers: [addr], fee: UInt64.max - 10, nonce: 1
@@ -231,7 +231,7 @@ final class MempoolAdversarialTests: XCTestCase {
 
         // Try to replace with same nonce but lower fee — should fail even with overflow
         let body2 = TransactionBody(
-            accountActions: [AccountAction(owner: addr, oldBalance: 1000, newBalance: 0)],
+            accountActions: [AccountAction(owner: addr, delta: -Int64(1000))],
             actions: [], swapActions: [], swapClaimActions: [],
             genesisActions: [], peerActions: [], settleActions: [],
             signers: [addr], fee: 5, nonce: 1
@@ -255,7 +255,7 @@ final class MempoolAdversarialTests: XCTestCase {
             let kp = CryptoUtils.generateKeyPair()
             let addr = CryptoUtils.createAddress(from: kp.publicKey)
             let body = TransactionBody(
-                accountActions: [AccountAction(owner: addr, oldBalance: 1000, newBalance: 0)],
+                accountActions: [AccountAction(owner: addr, delta: -Int64(1000))],
                 actions: [], swapActions: [], swapClaimActions: [],
                 genesisActions: [], peerActions: [], settleActions: [],
                 signers: [addr], fee: UInt64(i + 1), nonce: 0
@@ -289,7 +289,7 @@ final class MempoolAdversarialTests: XCTestCase {
         var accepted = 0
         for i in 0..<20 {
             let body = TransactionBody(
-                accountActions: [AccountAction(owner: addr, oldBalance: 1000, newBalance: UInt64(999 - i))],
+                accountActions: [AccountAction(owner: addr, delta: Int64(UInt64(999 - i)) - Int64(1000))],
                 actions: [], swapActions: [], swapClaimActions: [],
                 genesisActions: [], peerActions: [], settleActions: [],
                 signers: [addr], fee: UInt64(100 + i), nonce: UInt64(i)

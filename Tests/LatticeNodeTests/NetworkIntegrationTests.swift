@@ -341,8 +341,8 @@ final class NetworkIntegrationTests: XCTestCase {
 
             let txBody = TransactionBody(
                 accountActions: [
-                    AccountAction(owner: minerAddr, oldBalance: minerBalance, newBalance: minerBalance - amount - fee),
-                    AccountAction(owner: receiverAddr, oldBalance: 0, newBalance: amount + reward)
+                    AccountAction(owner: minerAddr, delta: Int64(minerBalance - amount - fee) - Int64(minerBalance)),
+                    AccountAction(owner: receiverAddr, delta: Int64(amount + reward))
                 ],
                 actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
                 settleActions: [], signers: [minerAddr], fee: fee, nonce: 0
@@ -863,8 +863,8 @@ final class NetworkIntegrationTests: XCTestCase {
         let amount: UInt64 = 100
         let txBody = TransactionBody(
             accountActions: [
-                AccountAction(owner: minerAddr, oldBalance: minerBalance, newBalance: minerBalance - amount - fee),
-                AccountAction(owner: receiverAddr, oldBalance: 0, newBalance: amount)
+                AccountAction(owner: minerAddr, delta: Int64(minerBalance - amount - fee) - Int64(minerBalance)),
+                AccountAction(owner: receiverAddr, delta: Int64(amount))
             ],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
             settleActions: [], signers: [minerAddr], fee: fee, nonce: 0
@@ -948,8 +948,8 @@ final class NetworkIntegrationTests: XCTestCase {
         let fee: UInt64 = 1
         let txBody = TransactionBody(
             accountActions: [
-                AccountAction(owner: minerAddr, oldBalance: minerBalance, newBalance: minerBalance - amount - fee),
-                AccountAction(owner: receiverAddr, oldBalance: 0, newBalance: amount)
+                AccountAction(owner: minerAddr, delta: Int64(minerBalance - amount - fee) - Int64(minerBalance)),
+                AccountAction(owner: receiverAddr, delta: Int64(amount))
             ],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
             settleActions: [], signers: [minerAddr], fee: fee, nonce: 0
@@ -1030,8 +1030,8 @@ final class NetworkIntegrationTests: XCTestCase {
 
             let txBody = TransactionBody(
                 accountActions: [
-                    AccountAction(owner: minerAddr, oldBalance: balance, newBalance: balance - amount - fee),
-                    AccountAction(owner: receiverAddr, oldBalance: 0, newBalance: amount)
+                    AccountAction(owner: minerAddr, delta: Int64(balance - amount - fee) - Int64(balance)),
+                    AccountAction(owner: receiverAddr, delta: Int64(amount))
                 ],
                 actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
                 settleActions: [], signers: [minerAddr], fee: fee, nonce: nonce

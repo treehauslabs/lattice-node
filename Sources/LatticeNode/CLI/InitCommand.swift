@@ -129,7 +129,7 @@ struct InitCommand: ParsableCommand {
             difficulty: UInt256(1000),
             fetcher: fetcher
         )
-        let genesisHeader = HeaderImpl<Block>(node: genesis)
+        let genesisHeader = VolumeImpl<Block>(node: genesis)
         let chain = ChainState.fromGenesis(block: genesis)
 
         print("Lattice node started")
@@ -149,7 +149,7 @@ struct InitCommand: ParsableCommand {
                 nonce: UInt64(i),
                 fetcher: fetcher
             )
-            let header = HeaderImpl<Block>(node: block)
+            let header = VolumeImpl<Block>(node: block)
             let result = await chain.submitBlock(
                 parentBlockHeaderAndIndex: nil,
                 blockHeader: header,
@@ -211,7 +211,7 @@ struct InitCommand: ParsableCommand {
             fetcher: fetcher
         )
         let chain = ChainState.fromGenesis(block: genesis)
-        let genesisHeader = HeaderImpl<Block>(node: genesis)
+        let genesisHeader = VolumeImpl<Block>(node: genesis)
         print("  Genesis: \\(String(genesisHeader.rawCID.prefix(24)))...")
         print("  Initial reward: \\(spec.initialReward) tokens")
         print("  Halving every: \\(spec.halvingInterval) blocks")
@@ -271,7 +271,7 @@ struct InitCommand: ParsableCommand {
             fetcher: fetcher
         )
         let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let nexusHeader = HeaderImpl<Block>(node: nexusGenesis)
+        let nexusHeader = VolumeImpl<Block>(node: nexusGenesis)
         print("  Nexus genesis: \\(String(nexusHeader.rawCID.prefix(24)))...")
 
         let childGenesis = try await BlockBuilder.buildGenesis(
@@ -281,7 +281,7 @@ struct InitCommand: ParsableCommand {
             fetcher: fetcher
         )
         let childChain = ChainState.fromGenesis(block: childGenesis)
-        let childHeader = HeaderImpl<Block>(node: childGenesis)
+        let childHeader = VolumeImpl<Block>(node: childGenesis)
         print("  Child genesis:  \\(String(childHeader.rawCID.prefix(24)))...")
 
         let nexusLevel = ChainLevel(chain: nexusChain, children: [:])

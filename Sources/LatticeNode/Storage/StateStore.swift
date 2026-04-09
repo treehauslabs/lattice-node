@@ -95,6 +95,26 @@ public actor StateStore {
         return result
     }
 
+    /// Batch fetch balances for multiple addresses in a single SQL query.
+    public nonisolated func batchGetBalances(addresses: [String]) -> [String: UInt64] {
+        guard !addresses.isEmpty else { return [:] }
+        let paths = addresses.map { "account:\($0)" }
+        let placeholders = (1...paths.count).map { "?\($0)" }.joined(separator: ",")
+        let sql = "SELECT path, value FROM state WHERE path IN (\(placeholders))"
+        let params = paths.map { SQLiteValue.text($0) }
+        guard let rows = try? readDb.query(sql, params: params) else { return [:] }
+        var result: [String: UInt64] = [:]
+        result.reserveCapacity(rows.count)
+        for row in rows {
+            guard let path = row["path"]?.textValue,
+                  let data = row["value"]?.blobValue,
+                  let account = Self.decodeAccount(data) else { continue }
+            let address = String(path.dropFirst("account:".count))
+            result[address] = account.balance
+        }
+        return result
+    }
+
     /// Batch fetch raw values for multiple paths in a single SQL query.
     /// Used by applyBlock to pre-fetch old values before the write transaction.
     public nonisolated func batchGetValues(paths: [String]) -> [String: Data] {

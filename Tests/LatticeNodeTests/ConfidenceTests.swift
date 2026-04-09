@@ -28,7 +28,7 @@ final class StateRootVerificationTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: s, timestamp: t, difficulty: UInt256.max, fetcher: f
         )
-        let genesisHeader = HeaderImpl<Block>(node: genesis)
+        let genesisHeader = VolumeImpl<Block>(node: genesis)
         let storer = BufferedStorer()
         try genesisHeader.storeRecursively(storer: storer)
         await storer.flush(to: f)
@@ -36,7 +36,7 @@ final class StateRootVerificationTests: XCTestCase {
         // Build a block with a coinbase tx
         let reward = s.rewardAtBlock(1)
         let coinbaseBody = TransactionBody(
-            accountActions: [AccountAction(owner: minerAddr, oldBalance: 0, newBalance: reward)],
+            accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward))],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
             settleActions: [], signers: [minerAddr], fee: 0, nonce: 1
         )
@@ -46,7 +46,7 @@ final class StateRootVerificationTests: XCTestCase {
             previous: genesis, transactions: [coinbaseTx],
             timestamp: t + 1000, difficulty: UInt256.max, nonce: 1, fetcher: f
         )
-        let blockHeader = HeaderImpl<Block>(node: block)
+        let blockHeader = VolumeImpl<Block>(node: block)
         let storer2 = BufferedStorer()
         try blockHeader.storeRecursively(storer: storer2)
         await storer2.flush(to: f)
@@ -88,7 +88,7 @@ final class StateRootVerificationTests: XCTestCase {
 
         let premineAmount = s.premineAmount()
         let premineBody = TransactionBody(
-            accountActions: [AccountAction(owner: senderAddr, oldBalance: 0, newBalance: premineAmount)],
+            accountActions: [AccountAction(owner: senderAddr, delta: Int64(premineAmount))],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
             settleActions: [], signers: [senderAddr], fee: 0, nonce: 0
         )
@@ -97,7 +97,7 @@ final class StateRootVerificationTests: XCTestCase {
             timestamp: t, difficulty: UInt256.max, fetcher: f
         )
         let gs = BufferedStorer()
-        try HeaderImpl<Block>(node: genesis).storeRecursively(storer: gs)
+        try VolumeImpl<Block>(node: genesis).storeRecursively(storer: gs)
         await gs.flush(to: f)
 
         // Build block with transfer + fee
@@ -106,8 +106,8 @@ final class StateRootVerificationTests: XCTestCase {
         let reward = s.rewardAtBlock(1)
         let txBody = TransactionBody(
             accountActions: [
-                AccountAction(owner: senderAddr, oldBalance: premineAmount, newBalance: premineAmount - transfer - fee),
-                AccountAction(owner: receiverAddr, oldBalance: 0, newBalance: transfer + reward)
+                AccountAction(owner: senderAddr, delta: Int64(premineAmount - transfer - fee) - Int64(premineAmount)),
+                AccountAction(owner: receiverAddr, delta: Int64(transfer + reward))
             ],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
             settleActions: [], signers: [senderAddr], fee: fee, nonce: 1
@@ -119,7 +119,7 @@ final class StateRootVerificationTests: XCTestCase {
             timestamp: t + 1000, difficulty: UInt256.max, nonce: 1, fetcher: f
         )
         let bs = BufferedStorer()
-        try HeaderImpl<Block>(node: block).storeRecursively(storer: bs)
+        try VolumeImpl<Block>(node: block).storeRecursively(storer: bs)
         await bs.flush(to: f)
 
         // Verify state
@@ -231,7 +231,7 @@ final class MempoolLoadTests: XCTestCase {
             let senderAddr = addr(kp.publicKey)
             for nonce in 0..<100 {
                 let body = TransactionBody(
-                    accountActions: [AccountAction(owner: senderAddr, oldBalance: UInt64(1000 + nonce), newBalance: UInt64(999 + nonce))],
+                    accountActions: [AccountAction(owner: senderAddr, delta: -1)],
                     actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
                     settleActions: [], signers: [senderAddr], fee: UInt64(senderIdx * 100 + nonce + 1), nonce: UInt64(nonce)
                 )
@@ -268,7 +268,7 @@ final class MempoolLoadTests: XCTestCase {
         // Fill mempool with low-fee txs
         for i in 0..<100 {
             let body = TransactionBody(
-                accountActions: [AccountAction(owner: senderAddr, oldBalance: 1000, newBalance: 999)],
+                accountActions: [AccountAction(owner: senderAddr, delta: Int64(999) - Int64(1000))],
                 actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
                 settleActions: [], signers: [senderAddr], fee: 1, nonce: UInt64(i)
             )
@@ -281,7 +281,7 @@ final class MempoolLoadTests: XCTestCase {
         let kp2 = CryptoUtils.generateKeyPair()
         let addr2 = addr(kp2.publicKey)
         let highFeeBody = TransactionBody(
-            accountActions: [AccountAction(owner: addr2, oldBalance: 1000, newBalance: 999)],
+            accountActions: [AccountAction(owner: addr2, delta: Int64(999) - Int64(1000))],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
             settleActions: [], signers: [addr2], fee: 100, nonce: 0
         )
@@ -300,7 +300,7 @@ final class MempoolLoadTests: XCTestCase {
         // Add 10 txs with nonces 0-9
         for i in 0..<10 {
             let body = TransactionBody(
-                accountActions: [AccountAction(owner: senderAddr, oldBalance: 1000, newBalance: 999)],
+                accountActions: [AccountAction(owner: senderAddr, delta: Int64(999) - Int64(1000))],
                 actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
                 settleActions: [], signers: [senderAddr], fee: UInt64(i + 1), nonce: UInt64(i)
             )
@@ -339,7 +339,7 @@ final class LongChainSyncTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: s, timestamp: t, difficulty: UInt256.max, fetcher: f
         )
-        let genesisHeader = HeaderImpl<Block>(node: genesis)
+        let genesisHeader = VolumeImpl<Block>(node: genesis)
         let genesisStorer = BufferedStorer()
         try genesisHeader.storeRecursively(storer: genesisStorer)
         await genesisStorer.flush(to: f)
@@ -352,7 +352,7 @@ final class LongChainSyncTests: XCTestCase {
                 previous: prev, timestamp: t + Int64(i) * 1000,
                 difficulty: UInt256.max, nonce: UInt64(i), fetcher: f
             )
-            let header = HeaderImpl<Block>(node: block)
+            let header = VolumeImpl<Block>(node: block)
             await f.store(rawCid: header.rawCID, data: block.toData()!)
             let storer = BufferedStorer()
             try header.storeRecursively(storer: storer)
@@ -360,7 +360,7 @@ final class LongChainSyncTests: XCTestCase {
             prev = block
         }
 
-        let tipCID = HeaderImpl<Block>(node: prev).rawCID
+        let tipCID = VolumeImpl<Block>(node: prev).rawCID
 
         // Snapshot sync from tip
         let syncer = ChainSyncer(
@@ -396,7 +396,7 @@ final class LongChainSyncTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: s, timestamp: t, difficulty: UInt256.max, fetcher: f
         )
-        let genesisHeader = HeaderImpl<Block>(node: genesis)
+        let genesisHeader = VolumeImpl<Block>(node: genesis)
         let genesisStorer = BufferedStorer()
         try genesisHeader.storeRecursively(storer: genesisStorer)
         await genesisStorer.flush(to: f)
@@ -408,7 +408,7 @@ final class LongChainSyncTests: XCTestCase {
                 previous: prev, timestamp: t + Int64(i) * 1000,
                 difficulty: UInt256.max, nonce: UInt64(i), fetcher: f
             )
-            let header = HeaderImpl<Block>(node: block)
+            let header = VolumeImpl<Block>(node: block)
             await f.store(rawCid: header.rawCID, data: block.toData()!)
             let storer = BufferedStorer()
             try header.storeRecursively(storer: storer)
@@ -416,7 +416,7 @@ final class LongChainSyncTests: XCTestCase {
             prev = block
         }
 
-        let tipCID = HeaderImpl<Block>(node: prev).rawCID
+        let tipCID = VolumeImpl<Block>(node: prev).rawCID
 
         let syncer = ChainSyncer(
             fetcher: f,
@@ -442,7 +442,7 @@ final class LongChainSyncTests: XCTestCase {
         )
         let submitResult = await chain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: block101), block: block101
+            blockHeader: VolumeImpl<Block>(node: block101), block: block101
         )
         XCTAssertTrue(submitResult.extendsMainChain, "Restored chain should accept new blocks")
     }
@@ -474,7 +474,7 @@ final class RestartResilienceTests: XCTestCase {
             )
             let _ = await chain.submitBlock(
                 parentBlockHeaderAndIndex: nil,
-                blockHeader: HeaderImpl<Block>(node: block), block: block
+                blockHeader: VolumeImpl<Block>(node: block), block: block
             )
             prev = block
         }
@@ -502,7 +502,7 @@ final class RestartResilienceTests: XCTestCase {
             )
             let result = await restored.submitBlock(
                 parentBlockHeaderAndIndex: nil,
-                blockHeader: HeaderImpl<Block>(node: block), block: block
+                blockHeader: VolumeImpl<Block>(node: block), block: block
             )
             XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend restored chain")
             prev = block
@@ -524,7 +524,7 @@ final class RestartResilienceTests: XCTestCase {
         // Add some txs
         for i in 0..<5 {
             let body = TransactionBody(
-                accountActions: [AccountAction(owner: senderAddr, oldBalance: 1000, newBalance: 999)],
+                accountActions: [AccountAction(owner: senderAddr, delta: Int64(999) - Int64(1000))],
                 actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
                 settleActions: [], signers: [senderAddr], fee: UInt64(i + 1), nonce: UInt64(i)
             )

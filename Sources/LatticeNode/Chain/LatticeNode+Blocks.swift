@@ -25,7 +25,7 @@ extension LatticeNode {
     // MARK: - Recursive Block Storage
 
     func storeBlockRecursively(_ block: Block, network: ChainNetwork) async {
-        let header = HeaderImpl<Block>(node: block)
+        let header = VolumeImpl<Block>(node: block)
         let storer = BufferedStorer()
         do {
             try header.storeRecursively(storer: storer)
@@ -64,7 +64,7 @@ extension LatticeNode {
         await network.storeLocally(cid: cid, data: data)
         guard let block = Block(data: data) else { return }
         let storer = BufferedStorer()
-        let header = HeaderImpl<Block>(node: block)
+        let header = VolumeImpl<Block>(node: block)
         do {
             try header.storeRecursively(storer: storer)
         } catch {
@@ -167,7 +167,7 @@ extension LatticeNode {
         // orphanedBlockHashes is already newest-to-oldest order
         let reorgFetcher = await buildMempoolAwareFetcher(directory: dir, baseFetcher: fetcher)
 
-        var orphanedBlockTxs: [(block: Block, txEntries: [String: HeaderImpl<Transaction>])] = []
+        var orphanedBlockTxs: [(block: Block, txEntries: [String: VolumeImpl<Transaction>])] = []
         for blockHash in orphanedBlockHashes {
             guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
                   let block = Block(data: blockData) else {
@@ -181,11 +181,18 @@ extension LatticeNode {
                 for (_, txHeader) in txEntries {
                     guard let body = txHeader.node?.body.node else { continue }
                     for action in body.accountActions {
-                        if action.oldBalance == 0 {
+                        let currentBalance = store.getBalance(address: action.owner) ?? 0
+                        let previousBalance: UInt64
+                        if action.delta > 0 {
+                            previousBalance = currentBalance - UInt64(action.delta)
+                        } else {
+                            previousBalance = currentBalance + UInt64(-action.delta)
+                        }
+                        if previousBalance == 0 {
                             await store.deleteAccount(address: action.owner)
-                        } else if action.newBalance != action.oldBalance {
+                        } else {
                             let existingNonce = store.getNonce(address: action.owner) ?? 0
-                            await store.setAccount(address: action.owner, balance: action.oldBalance, nonce: existingNonce, atHeight: block.index)
+                            await store.setAccount(address: action.owner, balance: previousBalance, nonce: existingNonce, atHeight: block.index)
                         }
                     }
                 }
@@ -260,7 +267,7 @@ extension LatticeNode {
 
             for childDir in childDirs {
                 guard let store = stateStores[childDir] else { continue }
-                guard let childBlockHeader: HeaderImpl<Block> = try? childDict.get(key: childDir) else { continue }
+                guard let childBlockHeader: VolumeImpl<Block> = try? childDict.get(key: childDir) else { continue }
                 let childBlock: Block
                 if let n = childBlockHeader.node {
                     childBlock = n
@@ -275,11 +282,18 @@ extension LatticeNode {
                 for (_, txHeader) in childTxEntries {
                     guard let body = txHeader.node?.body.node else { continue }
                     for action in body.accountActions {
-                        if action.oldBalance == 0 {
+                        let currentBalance = store.getBalance(address: action.owner) ?? 0
+                        let previousBalance: UInt64
+                        if action.delta > 0 {
+                            previousBalance = currentBalance - UInt64(action.delta)
+                        } else {
+                            previousBalance = currentBalance + UInt64(-action.delta)
+                        }
+                        if previousBalance == 0 {
                             await store.deleteAccount(address: action.owner)
-                        } else if action.newBalance != action.oldBalance {
+                        } else {
                             let nonce = store.getNonce(address: action.owner) ?? 0
-                            await store.setAccount(address: action.owner, balance: action.oldBalance, nonce: nonce, atHeight: childBlock.index)
+                            await store.setAccount(address: action.owner, balance: previousBalance, nonce: nonce, atHeight: childBlock.index)
                         }
                     }
                 }
@@ -382,7 +396,7 @@ extension LatticeNode {
         }
 
         let directory = await network.directory
-        let header = HeaderImpl<Block>(rawCID: cid)
+        let header = VolumeImpl<Block>(rawCID: cid)
         let accepted = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: await network.ivyFetcher,
             resolvedBlock: block
@@ -417,7 +431,7 @@ extension LatticeNode {
 
         let resolveFetcher: any Fetcher = await network.ivyFetcher
 
-        let header = HeaderImpl<Block>(rawCID: cid)
+        let header = VolumeImpl<Block>(rawCID: cid)
 
         if let block = try? await header.resolve(fetcher: resolveFetcher).node {
             if !isBlockTimestampValid(block) {
@@ -502,7 +516,7 @@ extension LatticeNode {
     }
 
     /// Resolve a block's transaction dictionary into keyed entries.
-    func resolveBlockTransactions(block: Block, fetcher: Fetcher) async -> [String: HeaderImpl<Transaction>] {
+    func resolveBlockTransactions(block: Block, fetcher: Fetcher) async -> [String: VolumeImpl<Transaction>] {
         if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
            let entries = try? txDict.allKeysAndValues() {
             return entries
@@ -514,7 +528,7 @@ extension LatticeNode {
     private func applyAcceptedBlock(
         block: Block,
         blockHash: String,
-        txEntries: [String: HeaderImpl<Transaction>],
+        txEntries: [String: VolumeImpl<Transaction>],
         directory: String
     ) async {
         let store = stateStores[directory]
@@ -574,11 +588,13 @@ extension LatticeNode {
     func extractStateChangeset(
         block: Block,
         blockHash: String,
-        txEntries: [String: HeaderImpl<Transaction>],
+        txEntries: [String: VolumeImpl<Transaction>],
         store: StateStore?
     ) -> StateChangeset {
         var senderTxCounts: [String: UInt64] = [:]
-        var accountChanges: [(address: String, oldBalance: UInt64, newBalance: UInt64)] = []
+        // Aggregate deltas per address across all transactions
+        var addressOrder: [String] = []
+        var netDeltas: [String: Int64] = [:]
 
         for (_, txHeader) in txEntries {
             guard let body = txHeader.node?.body.node else { continue }
@@ -587,32 +603,44 @@ extension LatticeNode {
                 senderTxCounts[sender, default: 0] += 1
             }
             for action in body.accountActions {
-                accountChanges.append((action.owner, action.oldBalance, action.newBalance))
+                if netDeltas[action.owner] == nil {
+                    addressOrder.append(action.owner)
+                }
+                netDeltas[action.owner, default: 0] += action.delta
             }
         }
 
-        // Batch fetch all nonces in a single SQL query instead of N individual lookups
-        var addressesNeedingNonce = Set<String>()
-        for change in accountChanges where change.oldBalance != 0 && change.oldBalance != change.newBalance {
-            addressesNeedingNonce.insert(change.address)
-        }
+        // Remove zero-net-delta addresses
+        addressOrder.removeAll { netDeltas[$0] == 0 }
+
+        // Batch fetch current balances for all affected addresses
+        let currentBalances: [String: UInt64]
         let nonces: [String: UInt64]
-        if let store, !addressesNeedingNonce.isEmpty {
-            nonces = store.batchGetNonces(addresses: Array(addressesNeedingNonce))
+        if let store, !addressOrder.isEmpty {
+            currentBalances = store.batchGetBalances(addresses: addressOrder)
+            nonces = store.batchGetNonces(addresses: addressOrder)
         } else {
+            currentBalances = [:]
             nonces = [:]
         }
 
         var accountUpdates: [(address: String, balance: UInt64, nonce: UInt64)] = []
 
-        for change in accountChanges {
-            if change.oldBalance == 0 {
-                let txCount = senderTxCounts[change.address] ?? 0
-                accountUpdates.append((address: change.address, balance: change.newBalance, nonce: txCount))
-            } else if change.oldBalance != change.newBalance {
-                let currentNonce = nonces[change.address] ?? 0
-                let txCount = senderTxCounts[change.address] ?? 0
-                accountUpdates.append((address: change.address, balance: change.newBalance, nonce: currentNonce + txCount))
+        for address in addressOrder {
+            let delta = netDeltas[address]!
+            let current = currentBalances[address] ?? 0
+            let newBalance: UInt64
+            if delta > 0 {
+                newBalance = current + UInt64(delta)
+            } else {
+                newBalance = current - UInt64(-delta)
+            }
+            let currentNonce = nonces[address] ?? 0
+            let txCount = senderTxCounts[address] ?? 0
+            if current == 0 {
+                accountUpdates.append((address: address, balance: newBalance, nonce: txCount))
+            } else {
+                accountUpdates.append((address: address, balance: newBalance, nonce: currentNonce + txCount))
             }
         }
 
@@ -629,7 +657,7 @@ extension LatticeNode {
     /// Build receipt index entries and tx history concurrently.
     /// Each transaction's receipt is independent — JSON encoding runs in parallel via TaskGroup.
     nonisolated func buildReceiptsParallel(
-        txEntries: [String: HeaderImpl<Transaction>],
+        txEntries: [String: VolumeImpl<Transaction>],
         blockHash: String,
         blockHeight: UInt64,
         blockTimestamp: Int64
@@ -662,7 +690,7 @@ extension LatticeNode {
                         actions.reserveCapacity(body.accountActions.count)
                         for action in body.accountActions {
                             txHistory.append((address: action.owner, txCID: cid, blockHash: blockHash, height: blockHeight))
-                            actions.append(TransactionReceipt.ReceiptAction(owner: action.owner, oldBalance: action.oldBalance, newBalance: action.newBalance))
+                            actions.append(TransactionReceipt.ReceiptAction(owner: action.owner, delta: action.delta))
                         }
                         let receipt = TransactionReceipt(
                             txCID: cid, blockHash: blockHash, blockHeight: blockHeight,

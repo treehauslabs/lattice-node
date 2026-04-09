@@ -65,22 +65,13 @@ struct SendCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let recipientBalance = (try? await fetchJSON("\(rpc)/api/balance/\(to)")["balance"] as? UInt64) ?? 0
-
         let senderAction = AccountAction(
             owner: senderAddress,
-            oldBalance: balance,
-            newBalance: balance - totalCost
+            delta: -Int64(totalCost)
         )
-        let (recipientNew, recipientOverflow) = recipientBalance.addingReportingOverflow(amount)
-        guard !recipientOverflow else {
-            printError("Recipient balance would overflow UInt64")
-            throw ExitCode.failure
-        }
         let recipientAction = AccountAction(
             owner: to,
-            oldBalance: recipientBalance,
-            newBalance: recipientNew
+            delta: Int64(amount)
         )
 
         let body = TransactionBody(

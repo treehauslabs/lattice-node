@@ -164,7 +164,7 @@ extension LatticeNode {
         for blockMeta in persisted.blocks {
             guard let blockData = try? await fetcher.fetch(rawCid: blockMeta.blockHash),
                   let block = Block(data: blockData) else { continue }
-            let header = HeaderImpl<Block>(node: block)
+            let header = VolumeImpl<Block>(node: block)
 
             let storer = BufferedStorer()
             try? header.storeRecursively(storer: storer)
@@ -185,7 +185,7 @@ extension LatticeNode {
             log.info("Rebuilding StateStore via block replay (sparse — no full state pull)...")
 
             // Replay synced blocks in order: each block's accountActions carry
-            // oldBalance/newBalance, so we derive state from transactions alone.
+            // balance deltas, so we derive state from transactions alone.
             // This avoids resolveRecursive on the account state tree entirely.
             let sortedBlocks = result.persisted.blocks.sorted { $0.blockIndex < $1.blockIndex }
             for blockMeta in sortedBlocks {

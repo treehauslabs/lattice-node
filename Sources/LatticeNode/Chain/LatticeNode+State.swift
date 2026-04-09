@@ -66,7 +66,7 @@ extension LatticeNode {
     public func getBlock(hash: String) async throws -> Block? {
         let dir = genesisConfig.spec.directory
         guard let network = networks[dir] else { return nil }
-        let header = HeaderImpl<Block>(rawCID: hash)
+        let header = VolumeImpl<Block>(rawCID: hash)
         return try await header.resolve(fetcher: network.fetcher).node
     }
 

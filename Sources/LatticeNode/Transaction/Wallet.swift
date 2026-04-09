@@ -35,22 +35,16 @@ public struct Wallet: Sendable {
     public func buildTransfer(
         to recipient: String,
         amount: UInt64,
-        senderOldBalance: UInt64,
-        recipientOldBalance: UInt64,
         fee: UInt64 = 0,
         nonce: UInt64 = 0
     ) -> Transaction? {
-        guard senderOldBalance >= amount + fee else { return nil }
-
         let senderAction = AccountAction(
             owner: address,
-            oldBalance: senderOldBalance,
-            newBalance: senderOldBalance - amount - fee
+            delta: -Int64(amount + fee)
         )
         let recipientAction = AccountAction(
             owner: recipient,
-            oldBalance: recipientOldBalance,
-            newBalance: recipientOldBalance + amount
+            delta: Int64(amount)
         )
 
         let body = TransactionBody(
@@ -78,16 +72,13 @@ public struct Wallet: Sendable {
     public func buildActionTransaction(
         actions: [Action],
         fee: UInt64 = 0,
-        senderOldBalance: UInt64 = 0,
         nonce: UInt64 = 0
     ) -> Transaction? {
         var accountActions: [AccountAction] = []
         if fee > 0 {
-            guard senderOldBalance >= fee else { return nil }
             accountActions.append(AccountAction(
                 owner: address,
-                oldBalance: senderOldBalance,
-                newBalance: senderOldBalance - fee
+                delta: -Int64(fee)
             ))
         }
 

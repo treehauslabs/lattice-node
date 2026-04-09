@@ -62,7 +62,7 @@ struct DiagCommand: AsyncParsableCommand {
 
         // 6. Full block JSON and CID
         let blockJSON = block.toData().flatMap { String(data: $0, encoding: .utf8) } ?? "ERROR"
-        let blockHeader = HeaderImpl<Block>(node: block)
+        let blockHeader = VolumeImpl<Block>(node: block)
         print("5. Genesis Block")
         print("   JSON: \(blockJSON)")
         print("   CID:  \(blockHeader.rawCID)\n")

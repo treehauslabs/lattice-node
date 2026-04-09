@@ -139,7 +139,7 @@ final class LatticeNodeTests: XCTestCase {
         )
         let _ = await chain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: b1), block: b1
+            blockHeader: VolumeImpl<Block>(node: b1), block: b1
         )
 
         let persisted = await chain.persist()
@@ -172,7 +172,7 @@ final class LatticeNodeTests: XCTestCase {
         )
         let _ = await chain.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: b1), block: b1
+            blockHeader: VolumeImpl<Block>(node: b1), block: b1
         )
 
         let persisted = await chain.persist()
@@ -184,7 +184,7 @@ final class LatticeNodeTests: XCTestCase {
         )
         let result = await restored.submitBlock(
             parentBlockHeaderAndIndex: nil,
-            blockHeader: HeaderImpl<Block>(node: b2), block: b2
+            blockHeader: VolumeImpl<Block>(node: b2), block: b2
         )
         XCTAssertTrue(result.extendsMainChain)
         let height = await restored.getHighestBlockIndex()
@@ -246,7 +246,7 @@ final class LatticeNodeTests: XCTestCase {
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: fetcher
         )
 
-        let header = HeaderImpl<Block>(node: block)
+        let header = VolumeImpl<Block>(node: block)
         XCTAssertFalse(header.rawCID.isEmpty)
     }
 }

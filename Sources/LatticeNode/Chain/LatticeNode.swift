@@ -88,16 +88,16 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
                 retentionDepth: config.retentionDepth
             )
             let genesisBlock = try await buildGenesisBlock(nexusNetwork.fetcher)
-            let blockHash = HeaderImpl<Block>(node: genesisBlock).rawCID
+            let blockHash = VolumeImpl<Block>(node: genesisBlock).rawCID
             genesis = GenesisResult(block: genesisBlock, blockHash: blockHash, chainState: restoredChain)
         } else {
             let genesisBlock = try await buildGenesisBlock(nexusNetwork.fetcher)
-            let blockHash = HeaderImpl<Block>(node: genesisBlock).rawCID
+            let blockHash = VolumeImpl<Block>(node: genesisBlock).rawCID
             let chainState = ChainState.fromGenesis(block: genesisBlock, retentionDepth: config.retentionDepth)
             genesis = GenesisResult(block: genesisBlock, blockHash: blockHash, chainState: chainState)
         }
 
-        let genesisHeader = HeaderImpl<Block>(node: genesis.block)
+        let genesisHeader = VolumeImpl<Block>(node: genesis.block)
         let storer = BufferedStorer()
         do {
             try genesisHeader.storeRecursively(storer: storer)

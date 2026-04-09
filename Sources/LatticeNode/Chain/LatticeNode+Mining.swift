@@ -47,7 +47,7 @@ extension LatticeNode {
 
     public func submitMinedBlock(directory: String, block: Block, pendingRemovals: MinedBlockPendingRemovals? = nil) async {
         guard let network = networks[directory] else { return }
-        let header = HeaderImpl<Block>(node: block)
+        let header = VolumeImpl<Block>(node: block)
         guard let blockData = block.toData() else { return }
 
         await storeBlockRecursively(block, network: network)

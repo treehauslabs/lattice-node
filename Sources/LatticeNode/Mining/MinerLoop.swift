@@ -65,7 +65,7 @@ public actor MinerLoop {
                     continue
                 }
 
-                let previousBlockHash = HeaderImpl<Block>(node: previousBlock).rawCID
+                let previousBlockHash = VolumeImpl<Block>(node: previousBlock).rawCID
                 let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
 
                 // Phase 1: Parallel — tx selection overlaps with child context fetch
@@ -146,7 +146,7 @@ public actor MinerLoop {
                         )
 
                         let delegate = self.delegate
-                        let hash = HeaderImpl<Block>(node: mined).rawCID
+                        let hash = VolumeImpl<Block>(node: mined).rawCID
                         Task.detached { await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals) }
                         break
                     }
@@ -302,17 +302,9 @@ public actor MinerLoop {
         if payoutOverflow { return nil }
         guard payout > 0 else { return nil }
 
-        let currentBalance = try await lookupBalance(
-            address: identity.address,
-            frontier: previousBlock.frontier
-        )
-
-        guard currentBalance <= UInt64.max - payout else { return nil }
-
         let accountAction = AccountAction(
             owner: identity.address,
-            oldBalance: currentBalance,
-            newBalance: currentBalance + payout
+            delta: Int64(payout)
         )
 
         let body = TransactionBody(
@@ -338,15 +330,6 @@ public actor MinerLoop {
             signatures: [identity.publicKeyHex: signature],
             body: bodyHeader
         )
-    }
-
-    private func lookupBalance(address: String, frontier: LatticeStateHeader) async throws -> UInt64 {
-        let resolved = try await frontier.resolve(fetcher: fetcher)
-        guard let state = resolved.node else { return 0 }
-        let accountResolved = try await state.accountState.resolve(paths: [[address]: .targeted], fetcher: fetcher)
-        guard let accountDict = accountResolved.node else { return 0 }
-        guard let balance = try? accountDict.get(key: address) else { return 0 }
-        return balance
     }
 
     // MARK: - Child Block Building (Merged Mining)

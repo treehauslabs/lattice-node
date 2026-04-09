@@ -14,8 +14,7 @@ public struct TransactionReceipt: Codable, Sendable {
 
     public struct ReceiptAction: Codable, Sendable {
         public let owner: String
-        public let oldBalance: UInt64
-        public let newBalance: UInt64
+        public let delta: Int64
     }
 }
 
@@ -62,7 +61,7 @@ public actor TransactionReceiptStore {
             paths: [[txCID]: .targeted], fetcher: fetcher
         ).node else { return nil }
 
-        guard let txHeader: HeaderImpl<Transaction> = try? txDict.get(key: txCID) else { return nil }
+        guard let txHeader: VolumeImpl<Transaction> = try? txDict.get(key: txCID) else { return nil }
 
         // The transaction value may need resolution after targeted dict resolve
         let tx: Transaction
@@ -83,7 +82,7 @@ public actor TransactionReceiptStore {
         }
 
         let actions = body.accountActions.map {
-            TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
+            TransactionReceipt.ReceiptAction(owner: $0.owner, delta: $0.delta)
         }
         return TransactionReceipt(
             txCID: txCID, blockHash: index.blockHash, blockHeight: index.blockHeight,

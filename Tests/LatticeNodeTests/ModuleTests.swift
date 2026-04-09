@@ -16,8 +16,6 @@ private func makeTx(wallet: Wallet, fee: UInt64, nonce: UInt64 = 0, recipientAdd
     return wallet.buildTransfer(
         to: recipient,
         amount: 1,
-        senderOldBalance: fee + 100,
-        recipientOldBalance: 0,
         fee: fee,
         nonce: nonce
     )!

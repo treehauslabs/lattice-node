@@ -74,8 +74,7 @@ public enum NexusGenesis {
         let premineAmount = spec.premineAmount()
         let accountAction = AccountAction(
             owner: ownerAddress,
-            oldBalance: 0,
-            newBalance: premineAmount
+            delta: Int64(premineAmount)
         )
         let body = TransactionBody(
             accountActions: [accountAction],
@@ -107,7 +106,7 @@ public enum NexusGenesis {
 
     public static func create(fetcher: Fetcher) async throws -> GenesisResult {
         let block = try await buildGenesisBlock(config: config, fetcher: fetcher)
-        let blockHash = HeaderImpl<Block>(node: block).rawCID
+        let blockHash = VolumeImpl<Block>(node: block).rawCID
         let chainState = ChainState.fromGenesis(block: block, retentionDepth: DEFAULT_RETENTION_DEPTH)
         return GenesisResult(block: block, blockHash: blockHash, chainState: chainState)
     }

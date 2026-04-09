@@ -13,7 +13,6 @@ public enum TransactionValidationError: Error, Sendable {
     case invalidSignatures
     case signerMismatch
     case duplicateAccountOwner(String)
-    case balanceMismatch(owner: String, expected: UInt64, claimed: UInt64)
     case insufficientBalance(owner: String, balance: UInt64, required: UInt64)
     case noStateAvailable
     case swapSignerMismatch
@@ -102,7 +101,7 @@ public struct TransactionValidator: Sendable {
         }
 
         let signerSet = Set(body.signers)
-        for action in body.accountActions where action.newBalance < action.oldBalance {
+        for action in body.accountActions where action.isDebit {
             if !signerSet.contains(action.owner) {
                 return .signerMismatch
             }
@@ -166,6 +165,10 @@ public struct TransactionValidator: Sendable {
     }
 
     private func validateBalances(_ body: TransactionBody) async -> TransactionValidationError? {
+        // Only need to check debits have sufficient balance
+        let debitActions = body.accountActions.filter { $0.isDebit }
+        guard !debitActions.isEmpty else { return nil }
+
         guard let snapshot = await chainState.tipSnapshot else {
             return .noStateAvailable
         }
@@ -182,34 +185,22 @@ public struct TransactionValidator: Sendable {
             await frontierCache?.set(frontierCID: snapshot.frontierCID, state: state)
         }
 
-        let ownerKeys = body.accountActions.map { $0.owner }
+        let ownerKeys = debitActions.map { $0.owner }
         var accountPaths = [[String]: ResolutionStrategy]()
         for key in ownerKeys { accountPaths[[key]] = .targeted }
         guard let accountDict = try? await state.accountState.resolve(paths: accountPaths, fetcher: fetcher).node else {
             return .stateResolutionFailed
         }
 
-        for action in body.accountActions {
+        for action in debitActions {
             let actualBalance: UInt64 = (try? accountDict.get(key: action.owner)) ?? 0
-
-            if action.oldBalance != actualBalance {
-                return .balanceMismatch(
+            let debitAmount = action.absoluteAmount
+            if actualBalance < debitAmount {
+                return .insufficientBalance(
                     owner: action.owner,
-                    expected: actualBalance,
-                    claimed: action.oldBalance
+                    balance: actualBalance,
+                    required: debitAmount
                 )
-            }
-
-            if action.newBalance < action.oldBalance {
-                let debit = action.oldBalance - action.newBalance
-                let totalNeeded = debit + body.fee
-                if actualBalance < totalNeeded {
-                    return .insufficientBalance(
-                        owner: action.owner,
-                        balance: actualBalance,
-                        required: totalNeeded
-                    )
-                }
             }
         }
 
@@ -228,16 +219,17 @@ public struct TransactionValidator: Sendable {
         var totalDebits: UInt64 = 0
         var totalCredits: UInt64 = 0
         for action in body.accountActions {
-            if action.newBalance < action.oldBalance {
-                let (newDebits, dOverflow) = totalDebits.addingReportingOverflow(action.oldBalance - action.newBalance)
+            if action.delta < 0 {
+                let (newDebits, dOverflow) = totalDebits.addingReportingOverflow(UInt64(-action.delta))
                 if dOverflow { return .balanceNotConserved(totalDebits: totalDebits, totalCredits: totalCredits, fee: body.fee) }
                 totalDebits = newDebits
-            } else if action.newBalance > action.oldBalance {
-                let (newCredits, cOverflow) = totalCredits.addingReportingOverflow(action.newBalance - action.oldBalance)
+            } else if action.delta > 0 {
+                let (newCredits, cOverflow) = totalCredits.addingReportingOverflow(UInt64(action.delta))
                 if cOverflow { return .balanceNotConserved(totalDebits: totalDebits, totalCredits: totalCredits, fee: body.fee) }
                 totalCredits = newCredits
             }
         }
+        // Conservation: debits = credits + fee (for non-coinbase transactions)
         let (creditsWithFee, feeOverflow) = totalCredits.addingReportingOverflow(body.fee)
         if feeOverflow || totalDebits != creditsWithFee {
             return .balanceNotConserved(
