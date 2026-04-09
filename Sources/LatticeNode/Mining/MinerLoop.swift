@@ -66,23 +66,26 @@ public actor MinerLoop {
                 }
 
                 let previousBlockHash = HeaderImpl<Block>(node: previousBlock).rawCID
+                let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
 
+                // Phase 1: Parallel — tx selection overlaps with child context fetch
                 let maxTxCount = max(0, Int(spec.maxNumberOfTransactionsPerBlock) - 1)
-                var transactions = await mempool.selectTransactions(maxCount: maxTxCount)
+                async let txAsync = mempool.selectTransactions(maxCount: maxTxCount)
+                let currentChildContexts = await childContextProvider?() ?? []
+                var transactions = await txAsync
 
+                // Build child blocks in parallel, coinbase sequentially (depends on transactions)
+                async let childResultAsync = buildChildBlocks(
+                    contexts: currentChildContexts,
+                    nexusBlock: previousBlock, timestamp: blockTimestamp
+                )
                 if let coinbase = try? await buildCoinbaseTransaction(
                     previousBlock: previousBlock,
                     mempoolTransactions: transactions
                 ) {
                     transactions.insert(coinbase, at: 0)
                 }
-
-                let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
-                let currentChildContexts = await childContextProvider?() ?? []
-                let childResult = await buildChildBlocks(
-                    contexts: currentChildContexts,
-                    nexusBlock: previousBlock, timestamp: blockTimestamp
-                )
+                let childResult = await childResultAsync
                 let blockDifficulty = previousBlock.nextDifficulty
                 let computedNextDifficulty = spec.calculateMinimumDifficulty(
                     previousDifficulty: blockDifficulty,

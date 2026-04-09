@@ -6,6 +6,9 @@ import UInt256
 import cashew
 import Acorn
 import ArrayTrie
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Real-network integration tests: two LatticeNode instances with real Ivy TCP connections.
 /// These test the actual deployment flow: node boot, peer discovery, block propagation, and sync.

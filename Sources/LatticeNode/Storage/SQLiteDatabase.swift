@@ -8,6 +8,7 @@ import CSQLite
 public final class SQLiteDatabase: @unchecked Sendable {
     private let db: OpaquePointer
     private let lock = NSLock()
+    private var stmtCache: [String: OpaquePointer] = [:]
 
     public init(path: String) throws {
         var handle: OpaquePointer?
@@ -28,20 +29,30 @@ public final class SQLiteDatabase: @unchecked Sendable {
     }
 
     deinit {
+        for (_, stmt) in stmtCache {
+            sqlite3_finalize(stmt)
+        }
+        stmtCache.removeAll()
         sqlite3_close(db)
     }
 
-    @discardableResult
-    public func execute(_ sql: String, params: [SQLiteValue] = []) throws -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-
+    /// Get a cached prepared statement, or prepare and cache a new one.
+    /// Caller must hold `lock`. Statement is reset and bindings cleared.
+    private func cachedStatement(for sql: String) throws -> OpaquePointer {
+        if let cached = stmtCache[sql] {
+            sqlite3_reset(cached)
+            sqlite3_clear_bindings(cached)
+            return cached
+        }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
             throw SQLiteError.prepareFailed(String(cString: sqlite3_errmsg(db)))
         }
-        defer { sqlite3_finalize(stmt) }
+        stmtCache[sql] = stmt
+        return stmt
+    }
 
+    private func bindParams(_ stmt: OpaquePointer, params: [SQLiteValue]) {
         for (i, param) in params.enumerated() {
             let idx = Int32(i + 1)
             switch param {
@@ -57,8 +68,19 @@ public final class SQLiteDatabase: @unchecked Sendable {
                 sqlite3_bind_null(stmt, idx)
             }
         }
+    }
+
+    @discardableResult
+    public func execute(_ sql: String, params: [SQLiteValue] = []) throws -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let stmt = try cachedStatement(for: sql)
+        bindParams(stmt, params: params)
 
         let rc = sqlite3_step(stmt)
+        // Reset immediately to release WAL read locks held by completed statements
+        sqlite3_reset(stmt)
         guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
             throw SQLiteError.executeFailed(String(cString: sqlite3_errmsg(db)))
         }
@@ -69,27 +91,8 @@ public final class SQLiteDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            throw SQLiteError.prepareFailed(String(cString: sqlite3_errmsg(db)))
-        }
-        defer { sqlite3_finalize(stmt) }
-
-        for (i, param) in params.enumerated() {
-            let idx = Int32(i + 1)
-            switch param {
-            case .text(let s):
-                sqlite3_bind_text(stmt, idx, s, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-            case .int(let v):
-                sqlite3_bind_int64(stmt, idx, v)
-            case .blob(let d):
-                d.withUnsafeBytes { ptr in
-                    sqlite3_bind_blob(stmt, idx, ptr.baseAddress, Int32(d.count), unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-                }
-            case .null:
-                sqlite3_bind_null(stmt, idx)
-            }
-        }
+        let stmt = try cachedStatement(for: sql)
+        bindParams(stmt, params: params)
 
         var rows: [[String: SQLiteValue]] = []
         let colCount = sqlite3_column_count(stmt)
@@ -117,6 +120,8 @@ public final class SQLiteDatabase: @unchecked Sendable {
             }
             rows.append(row)
         }
+        // Reset to release WAL read locks after consuming all rows
+        sqlite3_reset(stmt)
         return rows
     }
 

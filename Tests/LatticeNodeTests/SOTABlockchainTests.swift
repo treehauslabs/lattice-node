@@ -7,6 +7,9 @@ import cashew
 import Acorn
 import Tally
 import AcornDiskWorker
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// SOTA blockchain tests: 90+ tests across 30 categories.
 /// Inspired by Bitcoin Core, CometBFT, GossipSub, Jepsen, Ethereum Hive.
@@ -1468,6 +1471,7 @@ final class MoreInvalidDataTests: XCTestCase {
 // MARK: - CATEGORY 9: RPC Conformance [P2]
 // ============================================================================
 
+#if !os(Linux)
 final class RPCConformanceTests: XCTestCase {
 
     func testBlockQueryByIndexAndHash() async throws {
@@ -1535,6 +1539,7 @@ final class RPCConformanceTests: XCTestCase {
         await node.stop()
     }
 }
+#endif
 
 // ============================================================================
 // MARK: - CATEGORY 8: Peer Management [P2]

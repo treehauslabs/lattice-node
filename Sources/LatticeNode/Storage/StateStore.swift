@@ -106,6 +106,34 @@ public actor StateStore {
         )
     }
 
+    /// Batch-write receipt index entries and tx history in a single SQLite transaction.
+    /// Replaces N individual writes with 1 transaction commit.
+    public func batchIndexReceipts(
+        generalEntries: [(key: String, value: Data, height: UInt64)],
+        txHistory: [(address: String, txCID: String, blockHash: String, height: UInt64)]
+    ) {
+        guard !generalEntries.isEmpty || !txHistory.isEmpty else { return }
+        do {
+            try db.beginTransaction()
+            for entry in generalEntries {
+                let path = "general:\(entry.key)"
+                try db.execute(
+                    "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
+                    params: [.text(path), .blob(entry.value), .int(Int64(entry.height))]
+                )
+            }
+            for entry in txHistory {
+                try db.execute(
+                    "INSERT OR IGNORE INTO tx_history (address, txCID, blockHash, height) VALUES (?1, ?2, ?3, ?4)",
+                    params: [.text(entry.address), .text(entry.txCID), .text(entry.blockHash), .int(Int64(entry.height))]
+                )
+            }
+            try db.commit()
+        } catch {
+            try? db.rollbackTransaction()
+        }
+    }
+
     public nonisolated func getTransactionHistory(address: String, limit: Int = 50) -> [(txCID: String, blockHash: String, height: UInt64)] {
         guard let rows = try? readDb.query(
             "SELECT txCID, blockHash, height FROM tx_history WHERE address = ?1 ORDER BY height DESC LIMIT ?2",

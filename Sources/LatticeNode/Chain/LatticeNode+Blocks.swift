@@ -140,24 +140,37 @@ extension LatticeNode {
                     }
                 }
 
-                let receiptStore = TransactionReceiptStore(store: store, fetcher: fetcher)
+                // Collect all receipt data locally, then batch-write in one transaction
+                var generalEntries: [(key: String, value: Data, height: UInt64)] = []
+                var txHistoryEntries: [(address: String, txCID: String, blockHash: String, height: UInt64)] = []
+
                 for (cid, txHeader) in txEntries {
-                    await receiptStore.indexReceipt(txCID: cid, blockHash: header.rawCID, blockHeight: block.index)
+                    // Receipt index entry
+                    struct ReceiptIdx: Codable { let blockHash: String; let blockHeight: UInt64 }
+                    if let idxData = try? JSONEncoder().encode(ReceiptIdx(blockHash: header.rawCID, blockHeight: block.index)) {
+                        generalEntries.append((key: "receipt-idx:\(cid)", value: idxData, height: block.index))
+                    }
+
                     if let tx = txHeader.node, let body = tx.body.node {
                         for action in body.accountActions {
-                            await store.indexTransaction(address: action.owner, txCID: cid, blockHash: header.rawCID, height: block.index)
+                            txHistoryEntries.append((address: action.owner, txCID: cid, blockHash: header.rawCID, height: block.index))
                         }
                         let actions = body.accountActions.map {
                             TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
                         }
-                        await receiptStore.saveReceipt(TransactionReceipt(
+                        let receipt = TransactionReceipt(
                             txCID: cid, blockHash: header.rawCID, blockHeight: block.index,
                             timestamp: block.timestamp, fee: body.fee,
                             sender: body.signers.first ?? "", status: "confirmed",
                             accountActions: actions
-                        ))
+                        )
+                        if let data = try? JSONEncoder().encode(receipt) {
+                            generalEntries.append((key: "receipt:\(cid)", value: data, height: block.index))
+                        }
                     }
                 }
+
+                await store.batchIndexReceipts(generalEntries: generalEntries, txHistory: txHistoryEntries)
             }
         }
 
