@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 #if canImport(SQLite3)
 import SQLite3
 #else
@@ -7,7 +8,7 @@ import CSQLite
 
 public final class SQLiteDatabase: @unchecked Sendable {
     private let db: OpaquePointer
-    private let lock = NSLock()
+    private let lock = Mutex(())
     private var stmtCache: [String: OpaquePointer] = [:]
 
     public init(path: String) throws {
@@ -72,57 +73,55 @@ public final class SQLiteDatabase: @unchecked Sendable {
 
     @discardableResult
     public func execute(_ sql: String, params: [SQLiteValue] = []) throws -> Int {
-        lock.lock()
-        defer { lock.unlock() }
+        try lock.withLock { _ in
+            let stmt = try cachedStatement(for: sql)
+            bindParams(stmt, params: params)
 
-        let stmt = try cachedStatement(for: sql)
-        bindParams(stmt, params: params)
-
-        let rc = sqlite3_step(stmt)
-        // Reset immediately to release WAL read locks held by completed statements
-        sqlite3_reset(stmt)
-        guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
-            throw SQLiteError.executeFailed(String(cString: sqlite3_errmsg(db)))
+            let rc = sqlite3_step(stmt)
+            // Reset immediately to release WAL read locks held by completed statements
+            sqlite3_reset(stmt)
+            guard rc == SQLITE_DONE || rc == SQLITE_ROW else {
+                throw SQLiteError.executeFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            return Int(sqlite3_changes(db))
         }
-        return Int(sqlite3_changes(db))
     }
 
     public func query(_ sql: String, params: [SQLiteValue] = []) throws -> [[String: SQLiteValue]] {
-        lock.lock()
-        defer { lock.unlock() }
+        try lock.withLock { _ in
+            let stmt = try cachedStatement(for: sql)
+            bindParams(stmt, params: params)
 
-        let stmt = try cachedStatement(for: sql)
-        bindParams(stmt, params: params)
+            var rows: [[String: SQLiteValue]] = []
+            let colCount = sqlite3_column_count(stmt)
 
-        var rows: [[String: SQLiteValue]] = []
-        let colCount = sqlite3_column_count(stmt)
-
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            var row: [String: SQLiteValue] = [:]
-            for i in 0..<colCount {
-                let name = String(cString: sqlite3_column_name(stmt, i))
-                let type = sqlite3_column_type(stmt, i)
-                switch type {
-                case SQLITE_INTEGER:
-                    row[name] = .int(sqlite3_column_int64(stmt, i))
-                case SQLITE_TEXT:
-                    row[name] = .text(String(cString: sqlite3_column_text(stmt, i)))
-                case SQLITE_BLOB:
-                    let len = sqlite3_column_bytes(stmt, i)
-                    if let ptr = sqlite3_column_blob(stmt, i) {
-                        row[name] = .blob(Data(bytes: ptr, count: Int(len)))
-                    } else {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                var row: [String: SQLiteValue] = [:]
+                for i in 0..<colCount {
+                    let name = String(cString: sqlite3_column_name(stmt, i))
+                    let type = sqlite3_column_type(stmt, i)
+                    switch type {
+                    case SQLITE_INTEGER:
+                        row[name] = .int(sqlite3_column_int64(stmt, i))
+                    case SQLITE_TEXT:
+                        row[name] = .text(String(cString: sqlite3_column_text(stmt, i)))
+                    case SQLITE_BLOB:
+                        let len = sqlite3_column_bytes(stmt, i)
+                        if let ptr = sqlite3_column_blob(stmt, i) {
+                            row[name] = .blob(Data(bytes: ptr, count: Int(len)))
+                        } else {
+                            row[name] = .null
+                        }
+                    default:
                         row[name] = .null
                     }
-                default:
-                    row[name] = .null
                 }
+                rows.append(row)
             }
-            rows.append(row)
+            // Reset to release WAL read locks after consuming all rows
+            sqlite3_reset(stmt)
+            return rows
         }
-        // Reset to release WAL read locks after consuming all rows
-        sqlite3_reset(stmt)
-        return rows
     }
 
     public func beginTransaction() throws {
