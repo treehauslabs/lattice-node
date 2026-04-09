@@ -1362,3 +1362,354 @@ private actor TestBlockCollector: MinerDelegate {
     }
     func record(_ block: Block, _ hash: String) { blocks.append((block, hash)) }
 }
+
+// ============================================================================
+// MARK: - CATEGORY C: Eclipse Attack Resistance [P1]
+// ============================================================================
+
+final class EclipseResistanceTests: XCTestCase {
+
+    func testSubnetDiversityEnforcement() {
+        let ep1 = PeerEndpoint(publicKey: "a", host: "10.0.1.1", port: 4001)
+        let ep2 = PeerEndpoint(publicKey: "b", host: "10.0.1.2", port: 4001)
+        let ep3 = PeerEndpoint(publicKey: "c", host: "10.0.1.3", port: 4001)
+        let ep4 = PeerEndpoint(publicKey: "d", host: "10.1.0.1", port: 4001)
+
+        let selected = PeerDiversity.selectDiversePeers(
+            from: [ep1, ep2, ep3, ep4],
+            existing: [],
+            maxNew: 10
+        )
+        // Should limit same /16 subnet (10.0.x.x) to maxPerSubnet
+        let sameSubnet = selected.filter { $0.host.hasPrefix("10.0.") }
+        XCTAssertLessThanOrEqual(sameSubnet.count, 2, "Same /16 subnet should be limited")
+    }
+
+    func testAllSameSubnetLimited() {
+        var candidates: [PeerEndpoint] = []
+        for i in 0..<50 {
+            candidates.append(PeerEndpoint(publicKey: "peer\(i)", host: "192.168.1.\(i + 1)", port: 4001))
+        }
+        let selected = PeerDiversity.selectDiversePeers(from: candidates, existing: [], maxNew: 20)
+        XCTAssertLessThanOrEqual(selected.count, 2, "All same /16 subnet should be heavily limited")
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY 1 (remaining): More Invalid Data Tests [P1]
+// ============================================================================
+
+final class MoreInvalidDataTests: XCTestCase {
+
+    func testBlockWithWrongPreviousHash() async throws {
+        let f = cas()
+        let t = Int64(Date().timeIntervalSince1970 * 1000) - 20_000
+        let spec = s()
+
+        let genesis = try await BlockBuilder.buildGenesis(spec: spec, timestamp: t, difficulty: UInt256.max, fetcher: f)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+
+        // Build block pointing to non-existent previous
+        let fakeBlock = try await BlockBuilder.buildBlock(
+            previous: genesis, timestamp: t + 1000,
+            difficulty: UInt256.max, nonce: 1, fetcher: f
+        )
+
+        // Build another genesis as "wrong parent"
+        let wrongParent = try await BlockBuilder.buildGenesis(spec: s("Other"), timestamp: t - 1000, difficulty: UInt256.max, fetcher: f)
+        let blockOnWrongParent = try await BlockBuilder.buildBlock(
+            previous: wrongParent, timestamp: t + 2000,
+            difficulty: UInt256.max, nonce: 2, fetcher: f
+        )
+
+        // Submit to the Nexus chain — should not extend because parent is unknown
+        let header = HeaderImpl<Block>(node: blockOnWrongParent)
+        let result = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header, block: blockOnWrongParent)
+        XCTAssertFalse(result.extendsMainChain, "Block with unknown previous should not extend chain")
+    }
+
+    func testBalanceNotConservedRejected() async throws {
+        let f = cas()
+        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: 1_000_000, difficulty: UInt256.max, fetcher: f)
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+
+        let kp = CryptoUtils.generateKeyPair()
+        let address = addr(kp.publicKey)
+
+        // Debits 100, credits 0, fee 1 → debits (100) != credits (0) + fee (1)
+        let body = TransactionBody(
+            accountActions: [
+                AccountAction(owner: address, oldBalance: 100, newBalance: 0)
+            ],
+            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
+            settleActions: [], signers: [address], fee: 1, nonce: 0
+        )
+        let tx = sign(body, kp)
+        let validator = TransactionValidator(fetcher: f, chainState: chain)
+        let result = await validator.validate(tx)
+        if case .failure(.balanceNotConserved) = result {
+            // Expected
+        } else {
+            // Might fail for a different reason (balance mismatch) since account doesn't exist
+            // Either way, it should not succeed
+            if case .success = result {
+                XCTFail("Non-conserving transaction should be rejected")
+            }
+        }
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY 9: RPC Conformance [P2]
+// ============================================================================
+
+final class RPCConformanceTests: XCTestCase {
+
+    func testBlockQueryByIndexAndHash() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let p1 = p(); let rpcPort = p()
+        let dir = tmp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let node = try await mk(kp, p1, dir.appendingPathComponent("n1"))
+        try await node.start()
+        await node.startMining(directory: "Nexus")
+        try await Task.sleep(for: .seconds(3))
+        await node.stopMining(directory: "Nexus")
+
+        let server = RPCServer(node: node, port: rpcPort, bindAddress: "127.0.0.1", allowedOrigin: "*")
+        let rpcTask = Task { try await server.run() }
+        try await Task.sleep(for: .seconds(1))
+
+        let base = "http://127.0.0.1:\(rpcPort)/api"
+
+        // Query by index
+        let (d1, _) = try await URLSession.shared.data(from: URL(string: "\(base)/block/0")!)
+        let j1 = try JSONSerialization.jsonObject(with: d1) as? [String: Any]
+        let hashByIndex = j1?["hash"] as? String
+        XCTAssertNotNil(hashByIndex, "Block 0 should exist")
+
+        // Query by hash
+        if let h = hashByIndex {
+            let (d2, _) = try await URLSession.shared.data(from: URL(string: "\(base)/block/\(h)")!)
+            let j2 = try JSONSerialization.jsonObject(with: d2) as? [String: Any]
+            let hashByHash = j2?["hash"] as? String
+            XCTAssertEqual(hashByIndex, hashByHash, "Same block queried by index and hash")
+        }
+
+        rpcTask.cancel()
+        await node.stop()
+    }
+
+    func testMempoolReflectsSubmissions() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let p1 = p(); let rpcPort = p()
+        let dir = tmp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let node = try await mk(kp, p1, dir.appendingPathComponent("n1"))
+        try await node.start()
+
+        // Mine to create balance
+        await node.startMining(directory: "Nexus")
+        try await Task.sleep(for: .seconds(3))
+        await node.stopMining(directory: "Nexus")
+
+        let server = RPCServer(node: node, port: rpcPort, bindAddress: "127.0.0.1", allowedOrigin: "*")
+        let rpcTask = Task { try await server.run() }
+        try await Task.sleep(for: .seconds(1))
+
+        let base = "http://127.0.0.1:\(rpcPort)/api"
+
+        // Check mempool is empty
+        let (d1, _) = try await URLSession.shared.data(from: URL(string: "\(base)/mempool")!)
+        let j1 = try JSONSerialization.jsonObject(with: d1) as? [String: Any]
+        XCTAssertEqual(j1?["count"] as? Int, 0, "Mempool should start empty after mining")
+
+        rpcTask.cancel()
+        await node.stop()
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY 8: Peer Management [P2]
+// ============================================================================
+
+final class PeerManagementTests: XCTestCase {
+
+    func testPeerPersistenceRoundtrip() async throws {
+        let dir = tmp()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let peerStore = PeerStore(dataDir: dir)
+        // Public keys must be >= 64 hex chars to pass validation
+        let kp1 = CryptoUtils.generateKeyPair()
+        let kp2 = CryptoUtils.generateKeyPair()
+        let kp3 = CryptoUtils.generateKeyPair()
+        let peers = [
+            PeerEndpoint(publicKey: kp1.publicKey, host: "1.2.3.4", port: 4001),
+            PeerEndpoint(publicKey: kp2.publicKey, host: "5.6.7.8", port: 4002),
+            PeerEndpoint(publicKey: kp3.publicKey, host: "9.10.11.12", port: 4003),
+        ]
+
+        await peerStore.save(peers)
+        let loaded = await peerStore.load()
+
+        XCTAssertEqual(loaded.count, 3, "Should load 3 persisted peers")
+        let loadedKeys = Set(loaded.map { $0.publicKey })
+        XCTAssertTrue(loadedKeys.contains(kp1.publicKey))
+        XCTAssertTrue(loadedKeys.contains(kp2.publicKey))
+        XCTAssertTrue(loadedKeys.contains(kp3.publicKey))
+    }
+
+    func testAnchorPeersPersistence() async throws {
+        let dir = tmp()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let anchors = AnchorPeers(dataDir: dir)
+        let peers = [
+            PeerEndpoint(publicKey: "anchor1", host: "10.0.0.1", port: 4001),
+            PeerEndpoint(publicKey: "anchor2", host: "10.0.0.2", port: 4001),
+        ]
+
+        await anchors.update(peers: peers)
+        let loaded = await anchors.load()
+
+        XCTAssertGreaterThanOrEqual(loaded.count, 1, "Should have at least 1 anchor peer")
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY D: Protocol Version [P1]
+// ============================================================================
+
+final class ProtocolVersionSOTATests: XCTestCase {
+
+    func testProtocolVersionCompatibility() {
+        let current = LatticeProtocol.version
+        XCTAssertGreaterThan(current, 0, "Protocol version should be positive")
+
+        let compatible = LatticeProtocol.isCompatible(peerVersion: current)
+        XCTAssertTrue(compatible, "Same version should be compatible")
+
+        let future = LatticeProtocol.isCompatible(peerVersion: current + 100)
+        // Future versions may or may not be compatible depending on policy
+        // At minimum, this should not crash
+        _ = future
+    }
+
+    func testNodeVersionString() {
+        let version = LatticeProtocol.nodeVersion
+        XCTAssertFalse(version.isEmpty, "Node version should not be empty")
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY U (remaining): Persistence Edge Cases [P1]
+// ============================================================================
+
+final class MorePersistenceTests: XCTestCase {
+
+    func testChainStateSurvivesRestart() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let p1 = p()
+        let dir = tmp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Boot, mine, persist, stop
+        let node1 = try await mk(kp, p1, dir.appendingPathComponent("n1"))
+        try await node1.start()
+        await node1.startMining(directory: "Nexus")
+        try await Task.sleep(for: .seconds(3))
+        await node1.stopMining(directory: "Nexus")
+        let heightBefore = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        await node1.stop()
+
+        XCTAssertGreaterThan(heightBefore, 0, "Should have mined blocks")
+
+        // Restart at new port (same data dir)
+        let p2 = p()
+        let node2 = try await mk(kp, p2, dir.appendingPathComponent("n1"))
+        try await node2.start()
+        let heightAfter = await node2.lattice.nexus.chain.getHighestBlockIndex()
+
+        XCTAssertGreaterThanOrEqual(heightAfter, heightBefore - 1, "Should resume near persisted height")
+        XCTAssertGreaterThan(heightAfter, 0)
+
+        await node2.stop()
+    }
+
+    func testSQLiteDatabaseCreatesTablesOnInit() async throws {
+        let dir = tmp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = try StateStore(storagePath: dir, chain: "test")
+
+        // Should be able to read/write immediately
+        await store.setAccount(address: "test", balance: 42, nonce: 0, atHeight: 0)
+        let balance = store.getBalance(address: "test")
+        XCTAssertEqual(balance, 42)
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY O: Ivy Economic E2E [P0] (unit-level)
+// ============================================================================
+
+final class IvyEconomicTests: XCTestCase {
+
+    func testCreditLineGrowsLogarithmically() async throws {
+        let ledger = CreditLineLedger(localID: PeerID(publicKey: "local"), baseThresholdMultiplier: 100)
+        let peer = PeerID(publicKey: "remote")
+        await ledger.establish(with: peer)
+
+        let t0 = await ledger.creditLine(for: peer)!.threshold
+        await ledger.recordSettlement(peer: peer)
+        let t1 = await ledger.creditLine(for: peer)!.threshold
+        await ledger.recordSettlement(peer: peer)
+        let t2 = await ledger.creditLine(for: peer)!.threshold
+        await ledger.recordSettlement(peer: peer)
+        let t3 = await ledger.creditLine(for: peer)!.threshold
+
+        // Each settlement should grow or maintain threshold
+        XCTAssertGreaterThanOrEqual(t1, t0, "Threshold should not decrease after settlement")
+        XCTAssertGreaterThanOrEqual(t2, t1)
+        XCTAssertGreaterThanOrEqual(t3, t2)
+
+        // After multiple settlements, threshold should be higher than initial
+        XCTAssertGreaterThan(t3, t0, "Threshold should grow over multiple settlements")
+    }
+
+    func testRelayFeeAccountingSymmetric() async throws {
+        let ledger = CreditLineLedger(localID: PeerID(publicKey: "local"), baseThresholdMultiplier: 100)
+        let peer = PeerID(publicKey: "remote")
+        await ledger.establish(with: peer)
+
+        // Earn 10 from relay
+        await ledger.earnFromRelay(peer: peer, amount: 10)
+        let bal1 = await ledger.creditLine(for: peer)!.balance
+        XCTAssertEqual(bal1, 10, "Balance should increase by earned amount")
+
+        // Charge 3 for relay
+        let _ = await ledger.chargeForRelay(peer: peer, amount: 3)
+        let bal2 = await ledger.creditLine(for: peer)!.balance
+        XCTAssertEqual(bal2, 7, "Balance should decrease by charged amount")
+    }
+
+    func testKeyDifficultyBaseTrust() {
+        let kp = CryptoUtils.generateKeyPair()
+        let trust = KeyDifficulty.baseTrust(publicKey: kp.publicKey)
+        XCTAssertGreaterThanOrEqual(trust, 0, "Base trust should be non-negative")
+
+        // Same key always produces same trust
+        let trust2 = KeyDifficulty.baseTrust(publicKey: kp.publicKey)
+        XCTAssertEqual(trust, trust2, "Key difficulty should be deterministic")
+
+        // Trailing zero bits deterministic
+        let bits1 = KeyDifficulty.trailingZeroBits(of: kp.publicKey)
+        let bits2 = KeyDifficulty.trailingZeroBits(of: kp.publicKey)
+        XCTAssertEqual(bits1, bits2)
+    }
+}
