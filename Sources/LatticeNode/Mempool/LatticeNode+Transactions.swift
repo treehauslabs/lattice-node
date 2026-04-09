@@ -24,7 +24,7 @@ extension LatticeNode {
             ? await lattice.nexus.chain
             : await lattice.nexus.children[directory]?.chain
         if let chain {
-            let validator = TransactionValidator(fetcher: await network.fetcher, chainState: chain, stateStore: stateStores[directory])
+            let validator = TransactionValidator(fetcher: await network.fetcher, chainState: chain, stateStore: stateStores[directory], frontierCache: frontierCaches[directory])
             let result = await validator.validate(transaction)
             switch result {
             case .failure(let error):

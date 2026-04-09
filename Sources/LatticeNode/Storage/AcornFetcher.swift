@@ -22,6 +22,13 @@ public actor AcornFetcher: Fetcher {
         let cid = ContentIdentifier(rawValue: rawCid)
         await worker.store(cid: cid, data: data)
     }
+
+    public func storeBatch(_ entries: [(String, Data)]) async {
+        for (cid, data) in entries {
+            let contentId = ContentIdentifier(rawValue: cid)
+            await worker.store(cid: contentId, data: data)
+        }
+    }
 }
 
 public enum FetcherError: Error {

@@ -9,14 +9,10 @@ final class BufferedStorer: Storer {
     }
 
     func flush(to network: ChainNetwork) async {
-        for (cid, data) in entries {
-            await network.storeLocally(cid: cid, data: data)
-        }
+        await network.storeBatch(entries)
     }
 
     func flush(to fetcher: AcornFetcher) async {
-        for (cid, data) in entries {
-            await fetcher.store(rawCid: cid, data: data)
-        }
+        await fetcher.storeBatch(entries)
     }
 }

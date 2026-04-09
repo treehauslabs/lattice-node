@@ -141,6 +141,13 @@ public actor ChainNetwork: IvyDelegate {
         await localCAS.store(cid: contentId, data: data)
     }
 
+    public func storeBatch(_ entries: [(String, Data)]) async {
+        for (cid, data) in entries {
+            let contentId = ContentIdentifier(rawValue: cid)
+            await localCAS.store(cid: contentId, data: data)
+        }
+    }
+
     // MARK: - Block Operations (backward compat aliases)
 
     public func publishBlock(cid: String, data: Data) async {

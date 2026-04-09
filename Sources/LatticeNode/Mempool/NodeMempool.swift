@@ -174,12 +174,12 @@ public actor NodeMempool {
     public func feeHistogram(bucketCount: Int = 10) -> [(minFee: UInt64, maxFee: UInt64, count: Int)] {
         guard !sortedEntries.isEmpty else { return [] }
 
-        let fees = sortedEntries.map { $0.fee }.sorted()
-        let minFee = fees.first!
-        let maxFee = fees.last!
+        // sortedEntries is descending by fee — last is min, first is max
+        let maxFee = sortedEntries.first!.fee
+        let minFee = sortedEntries.last!.fee
 
         if minFee == maxFee {
-            return [(minFee: minFee, maxFee: maxFee, count: fees.count)]
+            return [(minFee: minFee, maxFee: maxFee, count: sortedEntries.count)]
         }
 
         let range = maxFee - minFee
@@ -189,7 +189,10 @@ public actor NodeMempool {
         for i in 0..<bucketCount {
             let lo = minFee + UInt64(i) * bucketSize
             let hi = (i == bucketCount - 1) ? maxFee : lo + bucketSize - 1
-            let c = fees.filter { $0 >= lo && $0 <= hi }.count
+            // Binary search in descending array: count entries with fee in [lo, hi]
+            let hiIdx = sortedEntries.binarySearchDescending { $0.fee > hi }
+            let loIdx = sortedEntries.binarySearchDescending { $0.fee >= lo }
+            let c = loIdx - hiIdx
             if c > 0 {
                 buckets.append((minFee: lo, maxFee: hi, count: c))
             }
@@ -234,7 +237,8 @@ public actor NodeMempool {
         byCID[entry.cid] = entry
         byAccount[entry.sender, default: AccountTxQueue()].txsByNonce[entry.nonce] = entry
 
-        let insertIndex = sortedEntries.firstIndex { $0.fee < entry.fee } ?? sortedEntries.endIndex
+        // Binary search for insertion point in descending-fee array: O(log n)
+        let insertIndex = sortedEntries.binarySearchDescending { $0.fee >= entry.fee }
         sortedEntries.insert(entry, at: insertIndex)
     }
 
@@ -255,4 +259,22 @@ public actor NodeMempool {
         }
     }
 
+}
+
+extension Array {
+    /// Binary search on a descending-sorted array.
+    /// Returns the index of the first element where `predicate` returns false.
+    func binarySearchDescending(predicate: (Element) -> Bool) -> Int {
+        var lo = 0
+        var hi = count
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2
+            if predicate(self[mid]) {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        return lo
+    }
 }

@@ -20,12 +20,13 @@ extension LatticeNode {
             let randomTarget = UUID().uuidString
             let _ = await network.ivy.findNode(target: randomTarget)
 
-            let connectedPeers = await network.ivy.router.allPeers().map { $0.endpoint }
+            let allKnown = await network.ivy.router.allPeers()
+            let connectedPeers = allKnown.map { $0.endpoint }
             let connected = connectedPeers.count
+            let connectedKeys = Set(connectedPeers.map { $0.publicKey })
 
             if connected < PeerDiversity.targetOutbound {
-                let known = await network.ivy.router.allPeers()
-                let candidates = known.map { $0.endpoint }
+                let candidates = connectedPeers
                 let diverse = PeerDiversity.selectDiversePeers(
                     from: candidates,
                     existing: connectedPeers,
@@ -38,9 +39,8 @@ extension LatticeNode {
 
             let overrepresented = PeerDiversity.findOverrepresentedPeers(peers: connectedPeers)
             if !overrepresented.isEmpty {
-                let known = await network.ivy.router.allPeers()
-                let candidates = known.map { $0.endpoint }
-                    .filter { peer in !connectedPeers.contains(where: { $0.publicKey == peer.publicKey }) }
+                let candidates = connectedPeers
+                    .filter { !connectedKeys.contains($0.publicKey) }
                 let replacements = PeerDiversity.selectDiversePeers(
                     from: candidates,
                     existing: connectedPeers,

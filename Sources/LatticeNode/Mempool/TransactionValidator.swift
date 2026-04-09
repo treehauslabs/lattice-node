@@ -31,12 +31,14 @@ public struct TransactionValidator: Sendable {
     private let chainState: ChainState
     private let isCoinbase: Bool
     private let stateStore: StateStore?
+    private let frontierCache: FrontierCache?
 
-    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, stateStore: StateStore? = nil) {
+    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, stateStore: StateStore? = nil, frontierCache: FrontierCache? = nil) {
         self.fetcher = fetcher
         self.chainState = chainState
         self.isCoinbase = isCoinbase
         self.stateStore = stateStore
+        self.frontierCache = frontierCache
     }
 
     public func validate(_ transaction: Transaction) async -> Result<Void, TransactionValidationError> {
@@ -51,10 +53,25 @@ public struct TransactionValidator: Sendable {
         if transaction.signatures.isEmpty {
             return .failure(.invalidSignatures)
         }
-        for (publicKeyHex, signature) in transaction.signatures {
-            if !CryptoUtils.verify(message: transaction.body.rawCID, signature: signature, publicKeyHex: publicKeyHex) {
+        let sigMessage = transaction.body.rawCID
+        let sigs = Array(transaction.signatures)
+        if sigs.count == 1 {
+            if !CryptoUtils.verify(message: sigMessage, signature: sigs[0].value, publicKeyHex: sigs[0].key) {
                 return .failure(.invalidSignatures)
             }
+        } else {
+            let allValid = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+                for (publicKeyHex, signature) in sigs {
+                    group.addTask {
+                        CryptoUtils.verify(message: sigMessage, signature: signature, publicKeyHex: publicKeyHex)
+                    }
+                }
+                for await result in group {
+                    if !result { group.cancelAll(); return false }
+                }
+                return true
+            }
+            if !allValid { return .failure(.invalidSignatures) }
         }
         let signatureAddresses = Set(transaction.signatures.keys.map {
             HeaderImpl<PublicKey>(node: PublicKey(key: $0)).rawCID
@@ -120,9 +137,16 @@ public struct TransactionValidator: Sendable {
             return .failure(.noStateAvailable)
         }
 
-        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
-        guard let state = try? await frontierHeader.resolve(fetcher: fetcher).node else {
-            return .failure(.stateResolutionFailed)
+        let state: LatticeState
+        if let cached = await frontierCache?.get(frontierCID: snapshot.frontierCID) {
+            state = cached
+        } else {
+            let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+            guard let resolved = try? await frontierHeader.resolve(fetcher: fetcher).node else {
+                return .failure(.stateResolutionFailed)
+            }
+            state = resolved
+            await frontierCache?.set(frontierCID: snapshot.frontierCID, state: state)
         }
 
         let ownerKeys = body.accountActions.map { $0.owner }

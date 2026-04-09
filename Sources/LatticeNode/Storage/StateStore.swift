@@ -37,6 +37,7 @@ public actor StateStore {
         """)
 
         try db.execute("CREATE INDEX IF NOT EXISTS idx_diffs_height ON state_diffs(height)")
+        try db.execute("CREATE INDEX IF NOT EXISTS idx_diffs_height_path ON state_diffs(height DESC, path)")
 
         try db.execute("""
             CREATE TABLE IF NOT EXISTS tx_history (

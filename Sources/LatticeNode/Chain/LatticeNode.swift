@@ -33,6 +33,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public let metrics: NodeMetrics
     public var stateStores: [String: StateStore]
     var tipCaches: [String: TipCache]
+    var frontierCaches: [String: FrontierCache]
 
     // MARK: - Initialization
 
@@ -126,6 +127,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             self.stateStores = [:]
         }
         self.tipCaches = [genesisConfig.spec.directory: TipCache(tip: genesis.blockHash)]
+        self.frontierCaches = [genesisConfig.spec.directory: FrontierCache()]
     }
 
     public func stateStore(for directory: String) -> StateStore? {

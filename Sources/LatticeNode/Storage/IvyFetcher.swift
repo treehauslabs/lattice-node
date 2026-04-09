@@ -17,8 +17,11 @@ public actor IvyFetcher: VolumeAwareFetcher {
     private let ivy: Ivy
     private let localWorker: any AcornCASWorker
 
-    /// Maps rootCID → discovered pinner for targeted retrieval
+    /// Maps rootCID → discovered pinner for targeted retrieval.
+    /// Bounded by maxPinnerCacheSize with LRU eviction via accessOrder.
     private var volumePinners: [String: PeerID] = [:]
+    private var accessOrder: [String] = []
+    private let maxPinnerCacheSize = 512
 
     /// The currently active Volume root — set by provide(), used by fetch()
     /// to route requests directly to the pinner instead of DHT-walking.
@@ -27,6 +30,20 @@ public actor IvyFetcher: VolumeAwareFetcher {
     public init(ivy: Ivy, localWorker: any AcornCASWorker) {
         self.ivy = ivy
         self.localWorker = localWorker
+    }
+
+    private func touchPinnerCache(_ key: String) {
+        if let idx = accessOrder.firstIndex(of: key) {
+            accessOrder.remove(at: idx)
+        }
+        accessOrder.append(key)
+    }
+
+    private func evictPinnerCacheIfNeeded() {
+        while volumePinners.count > maxPinnerCacheSize {
+            let oldest = accessOrder.removeFirst()
+            volumePinners.removeValue(forKey: oldest)
+        }
     }
 
     // MARK: - Fetcher
@@ -40,6 +57,7 @@ public actor IvyFetcher: VolumeAwareFetcher {
 
         // 2. If we have a pinner for the active Volume, go directly to them (one hop)
         if let root = activeVolumeRoot, let pinner = volumePinners[root] {
+            touchPinnerCache(root)
             if let data = await ivy.get(cid: rawCid, target: pinner) {
                 await localWorker.store(cid: cid, data: data)
                 return data
@@ -64,7 +82,10 @@ public actor IvyFetcher: VolumeAwareFetcher {
         activeVolumeRoot = rootCID
 
         // Use cached pinner if we already know one
-        if volumePinners[rootCID] != nil { return }
+        if volumePinners[rootCID] != nil {
+            touchPinnerCache(rootCID)
+            return
+        }
 
         let selector = Self.selectorFromPaths(paths)
         let pinners = await ivy.discoverPinners(cid: rootCID)
@@ -72,8 +93,12 @@ public actor IvyFetcher: VolumeAwareFetcher {
         // Prefer pinners whose selector covers our needs (prefix match)
         if let best = Self.bestPinner(for: selector, from: pinners) {
             volumePinners[rootCID] = PeerID(publicKey: best.publicKey)
+            touchPinnerCache(rootCID)
+            evictPinnerCacheIfNeeded()
         } else if let fallback = pinners.first {
             volumePinners[rootCID] = PeerID(publicKey: fallback.publicKey)
+            touchPinnerCache(rootCID)
+            evictPinnerCacheIfNeeded()
         }
     }
 
