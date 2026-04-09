@@ -52,23 +52,42 @@ public actor TransactionReceiptStore {
 
     private func deriveFromCAS(txCID: String, index: ReceiptIndex) async -> TransactionReceipt? {
         guard let blockData = try? await fetcher.fetch(rawCid: index.blockHash),
-              let block = Block(data: blockData),
-              let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
-              let txEntries = try? txDict.allKeysAndValues() else { return nil }
+              let block = Block(data: blockData) else { return nil }
 
-        for (cid, txHeader) in txEntries {
-            guard cid == txCID, let tx = txHeader.node, let body = tx.body.node else { continue }
-            let actions = body.accountActions.map {
-                TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
-            }
-            return TransactionReceipt(
-                txCID: cid, blockHash: index.blockHash, blockHeight: index.blockHeight,
-                timestamp: block.timestamp, fee: body.fee,
-                sender: body.signers.first ?? "", status: "confirmed",
-                accountActions: actions
-            )
+        // Targeted resolve: load only the radix path to this one transaction
+        guard let txDict = try? await block.transactions.resolve(
+            paths: [[txCID]: .targeted], fetcher: fetcher
+        ).node else { return nil }
+
+        guard let txHeader: HeaderImpl<Transaction> = try? txDict.get(key: txCID) else { return nil }
+
+        // The transaction value may need resolution after targeted dict resolve
+        let tx: Transaction
+        if let n = txHeader.node {
+            tx = n
+        } else {
+            guard let resolved = try? await txHeader.resolve(fetcher: fetcher).node else { return nil }
+            tx = resolved
         }
-        return nil
+
+        let body: TransactionBody
+        if let n = tx.body.node {
+            body = n
+        } else if let resolved = try? await tx.body.resolve(fetcher: fetcher).node {
+            body = resolved
+        } else {
+            return nil
+        }
+
+        let actions = body.accountActions.map {
+            TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
+        }
+        return TransactionReceipt(
+            txCID: txCID, blockHash: index.blockHash, blockHeight: index.blockHeight,
+            timestamp: block.timestamp, fee: body.fee,
+            sender: body.signers.first ?? "", status: "confirmed",
+            accountActions: actions
+        )
     }
 }
 

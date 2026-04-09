@@ -195,7 +195,7 @@ extension LatticeNode {
                     for (address, balance) in entries {
                         await store.setAccount(
                             address: address,
-                            balance: UInt64(balance) ?? 0,
+                            balance: balance,
                             nonce: 0,
                             atHeight: result.tipBlockIndex
                         )
@@ -233,8 +233,11 @@ extension LatticeNode {
                 for block in result.persisted.blocks {
                     if let data = try? await fetcher.fetch(rawCid: block.blockHash),
                        let blk = Block(data: data) {
-                        let changeset = await extractStateChangeset(block: blk, blockHash: block.blockHash, fetcher: fetcher)
-                        if let changeset { await store.applyBlock(changeset) }
+                        if let txDict = try? await blk.transactions.resolveRecursive(fetcher: fetcher).node,
+                           let txEntries = try? txDict.allKeysAndValues() {
+                            let changeset = await extractStateChangeset(block: blk, blockHash: block.blockHash, txEntries: txEntries)
+                            await store.applyBlock(changeset)
+                        }
                     }
                 }
             }

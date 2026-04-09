@@ -89,7 +89,22 @@ extension LatticeNode {
         guard accepted else { return false }
 
         if let block = try? await header.resolve(fetcher: fetcher).node {
-            let txFees = block.collectTransactionFees()
+            // Resolve transactions once — used for fees, state changeset, and receipts
+            let txEntries: [String: HeaderImpl<Transaction>]
+            if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
+               let entries = try? txDict.allKeysAndValues() {
+                txEntries = entries
+            } else {
+                txEntries = [:]
+            }
+
+            // Record fees from resolved transactions
+            var txFees: [UInt64] = []
+            for (_, txHeader) in txEntries {
+                if let fee = txHeader.node?.body.node?.fee, fee > 0 {
+                    txFees.append(fee)
+                }
+            }
             if !txFees.isEmpty {
                 await feeEstimator.recordBlock(height: block.index, transactionFees: txFees)
             }
@@ -108,40 +123,32 @@ extension LatticeNode {
                 let changeset = await extractStateChangeset(
                     block: block,
                     blockHash: header.rawCID,
-                    fetcher: fetcher
+                    txEntries: txEntries
                 )
-                if let changeset {
-                    await store.applyBlock(changeset)
+                await store.applyBlock(changeset)
 
-                    if let network = networks[directory] {
-                        for update in changeset.accountUpdates {
-                            await network.nodeMempool.updateConfirmedNonce(sender: update.address, nonce: update.nonce)
-                        }
+                if let network = networks[directory] {
+                    for update in changeset.accountUpdates {
+                        await network.nodeMempool.updateConfirmedNonce(sender: update.address, nonce: update.nonce)
                     }
-                } else {
-                    let log = NodeLogger("blocks")
-                    log.error("Failed to extract state changeset for block \(header.rawCID) — StateStore not updated")
                 }
 
                 let receiptStore = TransactionReceiptStore(store: store, fetcher: fetcher)
-                if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
-                   let txEntries = try? txDict.allKeysAndValues() {
-                    for (cid, txHeader) in txEntries {
-                        await receiptStore.indexReceipt(txCID: cid, blockHash: header.rawCID, blockHeight: block.index)
-                        if let tx = txHeader.node, let body = tx.body.node {
-                            for action in body.accountActions {
-                                await store.indexTransaction(address: action.owner, txCID: cid, blockHash: header.rawCID, height: block.index)
-                            }
-                            let actions = body.accountActions.map {
-                                TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
-                            }
-                            await receiptStore.saveReceipt(TransactionReceipt(
-                                txCID: cid, blockHash: header.rawCID, blockHeight: block.index,
-                                timestamp: block.timestamp, fee: body.fee,
-                                sender: body.signers.first ?? "", status: "confirmed",
-                                accountActions: actions
-                            ))
+                for (cid, txHeader) in txEntries {
+                    await receiptStore.indexReceipt(txCID: cid, blockHash: header.rawCID, blockHeight: block.index)
+                    if let tx = txHeader.node, let body = tx.body.node {
+                        for action in body.accountActions {
+                            await store.indexTransaction(address: action.owner, txCID: cid, blockHash: header.rawCID, height: block.index)
                         }
+                        let actions = body.accountActions.map {
+                            TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
+                        }
+                        await receiptStore.saveReceipt(TransactionReceipt(
+                            txCID: cid, blockHash: header.rawCID, blockHeight: block.index,
+                            timestamp: block.timestamp, fee: body.fee,
+                            sender: body.signers.first ?? "", status: "confirmed",
+                            accountActions: actions
+                        ))
                     }
                 }
             }
@@ -206,53 +213,58 @@ extension LatticeNode {
             }
         }
 
-        // Step 1: Roll back StateStore via CAS diffs (newest first)
+        // Step 1: Roll back StateStore and resolve orphaned block transactions (newest first)
         // orphanedBlockHashes is already newest-to-oldest order
-        if let store = stateStores[dir] {
-            for blockHash in orphanedBlockHashes {
-                guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
-                      let block = Block(data: blockData) else {
-                    log.error("Missing CAS data for orphaned block \(blockHash) — skipping")
-                    continue
-                }
-                do {
-                    let newState = try await block.frontier.resolve(fetcher: fetcher)
-                    let oldState = try await block.homestead.resolve(fetcher: fetcher)
-                    guard let newAccounts = newState.node?.accountState,
-                          let oldAccounts = oldState.node?.accountState else { continue }
-                    let diff = try await newAccounts.diff(from: oldAccounts, fetcher: fetcher)
+        var orphanedBlockTxs: [(block: Block, txEntries: [String: HeaderImpl<Transaction>])] = []
+        for blockHash in orphanedBlockHashes {
+            guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
+                  let block = Block(data: blockData) else {
+                log.error("Missing CAS data for orphaned block \(blockHash) — skipping")
+                continue
+            }
+            let txEntries: [String: HeaderImpl<Transaction>]
+            if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
+               let entries = try? txDict.allKeysAndValues() {
+                txEntries = entries
+            } else {
+                txEntries = [:]
+            }
+            orphanedBlockTxs.append((block: block, txEntries: txEntries))
 
-                    for (address, _) in diff.inserted {
-                        await store.deleteAccount(address: address)
-                    }
-                    for (address, balanceStr) in diff.deleted {
-                        if let balance = UInt64(balanceStr) {
-                            let existingNonce = await store.getNonce(address: address) ?? 0
-                            await store.setAccount(address: address, balance: balance, nonce: existingNonce, atHeight: block.index)
+            if let store = stateStores[dir] {
+                for (_, txHeader) in txEntries {
+                    guard let body = txHeader.node?.body.node else { continue }
+                    for action in body.accountActions {
+                        if action.oldBalance == 0 {
+                            await store.deleteAccount(address: action.owner)
+                        } else if action.newBalance != action.oldBalance {
+                            let existingNonce = await store.getNonce(address: action.owner) ?? 0
+                            await store.setAccount(address: action.owner, balance: action.oldBalance, nonce: existingNonce, atHeight: block.index)
                         }
                     }
-                    for (address, entry) in diff.modified {
-                        if let oldBalance = UInt64(entry.old) {
-                            let existingNonce = await store.getNonce(address: address) ?? 0
-                            await store.setAccount(address: address, balance: oldBalance, nonce: existingNonce, atHeight: block.index)
-                        }
-                    }
-                } catch {
-                    log.error("CAS diff failed for orphaned block \(blockHash): \(error)")
                 }
             }
         }
 
         // Step 2: Collect confirmed tx CIDs from the NEW chain (to avoid re-adding them)
-        var newChainTxCIDs = Set<String>()
-        for newBlockHash in newChainHashes {
-            guard let blockData = try? await fetcher.fetch(rawCid: newBlockHash),
-                  let block = Block(data: blockData),
-                  let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
-                  let txEntries = try? txDict.allKeysAndValues() else { continue }
-            for (cid, _) in txEntries {
-                newChainTxCIDs.insert(cid)
+        // Fetch blocks in parallel — each is independent. Use .list to load only radix structure.
+        let newChainTxCIDs: Set<String> = await withTaskGroup(of: Set<String>.self) { group in
+            for newBlockHash in newChainHashes {
+                group.addTask {
+                    guard let blockData = try? await fetcher.fetch(rawCid: newBlockHash),
+                          let block = Block(data: blockData),
+                          let txDict = try? await block.transactions.resolve(
+                              paths: [[""]: .list], fetcher: fetcher
+                          ).node,
+                          let txKeys = try? txDict.allKeys() else { return [] }
+                    return Set(txKeys)
+                }
             }
+            var cids = Set<String>()
+            for await keys in group {
+                for cid in keys { cids.insert(cid) }
+            }
+            return cids
         }
 
         // Step 3: Remove new chain's confirmed txs from mempool
@@ -263,15 +275,10 @@ extension LatticeNode {
         // Step 4: Re-validate orphaned txs and return to mempool
         let validator = TransactionValidator(fetcher: fetcher, chainState: chain, stateStore: stateStores[dir])
         var recovered = 0
-        for blockHash in orphanedBlockHashes {
-            guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
-                  let block = Block(data: blockData),
-                  let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
-                  let txEntries = try? txDict.allKeysAndValues() else { continue }
-
-            for (cid, txHeader) in txEntries {
+        for entry in orphanedBlockTxs {
+            for (cid, txHeader) in entry.txEntries {
                 guard let tx = txHeader.node else { continue }
-                if tx.body.node?.fee == 0 && tx.body.node?.nonce == block.index { continue }
+                if tx.body.node?.fee == 0 && tx.body.node?.nonce == entry.block.index { continue }
                 if newChainTxCIDs.contains(cid) { continue }
                 let result = await validator.validate(tx)
                 if case .success = result, let network {
@@ -300,60 +307,63 @@ extension LatticeNode {
         for blockHash in orphanedBlockHashes {
             guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
                   let block = Block(data: blockData),
-                  let childDict = try? await block.childBlocks.resolveRecursive(fetcher: fetcher).node,
-                  let entries = try? childDict.allKeysAndValues() else { continue }
+                  let childDict = try? await block.childBlocks.resolve(
+                      paths: [[""]: .list], fetcher: fetcher
+                  ).node,
+                  let childDirs = try? childDict.allKeys() else { continue }
 
-            for (childDir, childHeader) in entries {
-                guard let childBlock = childHeader.node,
-                      let store = stateStores[childDir] else { continue }
-                do {
-                    let newState = try await childBlock.frontier.resolve(fetcher: fetcher)
-                    let oldState = try await childBlock.homestead.resolve(fetcher: fetcher)
-                    guard let newAccounts = newState.node?.accountState,
-                          let oldAccounts = oldState.node?.accountState else { continue }
-                    let diff = try await newAccounts.diff(from: oldAccounts, fetcher: fetcher)
-
-                    for (address, _) in diff.inserted {
-                        await store.deleteAccount(address: address)
-                    }
-                    for (address, balanceStr) in diff.deleted {
-                        if let balance = UInt64(balanceStr) {
-                            let nonce = await store.getNonce(address: address) ?? 0
-                            await store.setAccount(address: address, balance: balance, nonce: nonce, atHeight: childBlock.index)
-                        }
-                    }
-                    for (address, entry) in diff.modified {
-                        if let oldBalance = UInt64(entry.old) {
-                            let nonce = await store.getNonce(address: address) ?? 0
-                            await store.setAccount(address: address, balance: oldBalance, nonce: nonce, atHeight: childBlock.index)
-                        }
-                    }
-
-                    // Recover orphaned child txs to child mempool (with validation)
-                    if let childNetwork = networks[childDir],
-                       let childChain = await lattice.nexus.children[childDir]?.chain,
-                       let txDict = try? await childBlock.transactions.resolveRecursive(fetcher: fetcher).node,
-                       let txEntries = try? txDict.allKeysAndValues() {
-                        let validator = TransactionValidator(
-                            fetcher: fetcher,
-                            chainState: childChain,
-                            stateStore: stateStores[childDir]
-                        )
-                        for (cid, txHeader) in txEntries {
-                            guard let tx = txHeader.node else { continue }
-                            if tx.body.node?.fee == 0 { continue }
-                            if await childNetwork.nodeMempool.contains(txCID: cid) { continue }
-                            let result = await validator.validate(tx)
-                            if case .success = result {
-                                let _ = await childNetwork.nodeMempool.add(transaction: tx)
-                            }
-                        }
-                    }
-
-                    log.info("Child chain \(childDir): rolled back block at height \(childBlock.index)")
-                } catch {
-                    log.error("Child chain \(childDir) rollback failed: \(error)")
+            for childDir in childDirs {
+                guard let store = stateStores[childDir] else { continue }
+                guard let childBlockHeader: HeaderImpl<Block> = try? childDict.get(key: childDir) else { continue }
+                let childBlock: Block
+                if let n = childBlockHeader.node {
+                    childBlock = n
+                } else {
+                    guard let resolved = try? await childBlockHeader.resolve(fetcher: fetcher).node else { continue }
+                    childBlock = resolved
                 }
+
+                let childTxEntries: [String: HeaderImpl<Transaction>]
+                if let txDict = try? await childBlock.transactions.resolveRecursive(fetcher: fetcher).node,
+                   let txEs = try? txDict.allKeysAndValues() {
+                    childTxEntries = txEs
+                } else {
+                    childTxEntries = [:]
+                }
+
+                // Roll back account state from transaction accountActions
+                for (_, txHeader) in childTxEntries {
+                    guard let body = txHeader.node?.body.node else { continue }
+                    for action in body.accountActions {
+                        if action.oldBalance == 0 {
+                            await store.deleteAccount(address: action.owner)
+                        } else if action.newBalance != action.oldBalance {
+                            let nonce = await store.getNonce(address: action.owner) ?? 0
+                            await store.setAccount(address: action.owner, balance: action.oldBalance, nonce: nonce, atHeight: childBlock.index)
+                        }
+                    }
+                }
+
+                // Recover orphaned child txs to child mempool (with validation)
+                if let childNetwork = networks[childDir],
+                   let childChain = await lattice.nexus.children[childDir]?.chain {
+                    let validator = TransactionValidator(
+                        fetcher: fetcher,
+                        chainState: childChain,
+                        stateStore: stateStores[childDir]
+                    )
+                    for (cid, txHeader) in childTxEntries {
+                        guard let tx = txHeader.node else { continue }
+                        if tx.body.node?.fee == 0 { continue }
+                        if await childNetwork.nodeMempool.contains(txCID: cid) { continue }
+                        let result = await validator.validate(tx)
+                        if case .success = result {
+                            let _ = await childNetwork.nodeMempool.add(transaction: tx)
+                        }
+                    }
+                }
+
+                log.info("Child chain \(childDir): rolled back block at height \(childBlock.index)")
             }
         }
     }
@@ -539,60 +549,46 @@ extension LatticeNode {
     func extractStateChangeset(
         block: Block,
         blockHash: String,
-        fetcher: Fetcher
-    ) async -> StateChangeset? {
-        do {
-            let oldState = try await block.homestead.resolve(fetcher: fetcher)
-            let newState = try await block.frontier.resolve(fetcher: fetcher)
-            guard let oldAccounts = oldState.node?.accountState,
-                  let newAccounts = newState.node?.accountState else { return nil }
+        txEntries: [String: HeaderImpl<Transaction>]
+    ) async -> StateChangeset {
+        var senderTxCounts: [String: UInt64] = [:]
+        var accountChanges: [(address: String, oldBalance: UInt64, newBalance: UInt64)] = []
 
-            let accountDiff = try await newAccounts.diff(from: oldAccounts, fetcher: fetcher)
-
-            var senderTxCounts: [String: UInt64] = [:]
-            if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
-               let txEntries = try? txDict.allKeysAndValues() {
-                for (_, txHeader) in txEntries {
-                    if let body = txHeader.node?.body.node, body.fee > 0 {
-                        let sender = body.signers.first ?? ""
-                        senderTxCounts[sender, default: 0] += 1
-                    }
-                }
+        for (_, txHeader) in txEntries {
+            guard let body = txHeader.node?.body.node else { continue }
+            if body.fee > 0 {
+                let sender = body.signers.first ?? ""
+                senderTxCounts[sender, default: 0] += 1
             }
-
-            let dir = genesisConfig.spec.directory
-            let store = stateStores[dir]
-
-            var accountUpdates: [(address: String, balance: UInt64, nonce: UInt64)] = []
-
-            for (address, balanceStr) in accountDiff.inserted {
-                if let balance = UInt64(balanceStr) {
-                    let txCount = senderTxCounts[address] ?? 0
-                    accountUpdates.append((address: address, balance: balance, nonce: txCount))
-                }
+            for action in body.accountActions {
+                accountChanges.append((action.owner, action.oldBalance, action.newBalance))
             }
-
-            for (address, entry) in accountDiff.modified {
-                if let balance = UInt64(entry.new) {
-                    let currentNonce = await store?.getNonce(address: address) ?? 0
-                    let txCount = senderTxCounts[address] ?? 0
-                    accountUpdates.append((address: address, balance: balance, nonce: currentNonce + txCount))
-                }
-            }
-
-            return StateChangeset(
-                height: block.index,
-                blockHash: blockHash,
-                accountUpdates: accountUpdates,
-                timestamp: block.timestamp,
-                difficulty: block.difficulty.toHexString(),
-                stateRoot: block.frontier.rawCID
-            )
-        } catch {
-            let log = NodeLogger("blocks")
-            log.error("CAS diff failed for block \(blockHash): \(error)")
-            return nil
         }
+
+        let dir = genesisConfig.spec.directory
+        let store = stateStores[dir]
+
+        var accountUpdates: [(address: String, balance: UInt64, nonce: UInt64)] = []
+
+        for change in accountChanges {
+            if change.oldBalance == 0 {
+                let txCount = senderTxCounts[change.address] ?? 0
+                accountUpdates.append((address: change.address, balance: change.newBalance, nonce: txCount))
+            } else if change.oldBalance != change.newBalance {
+                let currentNonce = await store?.getNonce(address: change.address) ?? 0
+                let txCount = senderTxCounts[change.address] ?? 0
+                accountUpdates.append((address: change.address, balance: change.newBalance, nonce: currentNonce + txCount))
+            }
+        }
+
+        return StateChangeset(
+            height: block.index,
+            blockHash: blockHash,
+            accountUpdates: accountUpdates,
+            timestamp: block.timestamp,
+            difficulty: block.difficulty.toHexString(),
+            stateRoot: block.frontier.rawCID
+        )
     }
 
     func emitReorgEvent(directory: String, oldTip: String, newTip: String, depth: UInt64) async {
@@ -634,15 +630,3 @@ extension LatticeNode {
     }
 }
 
-extension Block {
-    func collectTransactionFees() -> [UInt64] {
-        guard let txDict = self.transactions.node else { return [] }
-        guard let entries = try? txDict.allKeysAndValues() else { return [] }
-        var fees: [UInt64] = []
-        for (_, txHeader) in entries {
-            guard let tx = txHeader.node, let fee = tx.body.node?.fee, fee > 0 else { continue }
-            fees.append(fee)
-        }
-        return fees
-    }
-}

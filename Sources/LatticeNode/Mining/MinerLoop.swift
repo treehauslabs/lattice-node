@@ -1,6 +1,7 @@
 import Lattice
 import Foundation
 import cashew
+import Crypto
 import UInt256
 
 public actor MinerLoop {
@@ -96,7 +97,7 @@ public actor MinerLoop {
                     fetcher: fetcher
                 )
 
-                let hashPrefix = difficultyHashPrefix(template)
+                let prefixBytes = difficultyHashPrefixBytes(template)
                 let targetDifficulty = previousBlock.nextDifficulty
                 let batchSize = self.batchSize
                 let workerCount = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
@@ -106,7 +107,7 @@ public actor MinerLoop {
                     if currentTip != previousBlockHash { break }
 
                     let foundNonce = await mineParallel(
-                        prefix: hashPrefix,
+                        prefixBytes: prefixBytes,
                         targetDifficulty: targetDifficulty,
                         totalBatchSize: batchSize,
                         workerCount: workerCount
@@ -139,34 +140,89 @@ public actor MinerLoop {
         }
     }
 
-    private func difficultyHashPrefix(_ block: Block) -> String {
-        var prefix = ""
+    private func difficultyHashPrefixBytes(_ block: Block) -> ContiguousArray<UInt8> {
+        var bytes = ContiguousArray<UInt8>()
+        bytes.reserveCapacity(512)
         if let previousBlockCID = block.previousBlock?.rawCID {
-            prefix += previousBlockCID
+            bytes.append(contentsOf: previousBlockCID.utf8)
         }
-        prefix += block.transactions.rawCID
-        prefix += block.difficulty.toHexString()
-        prefix += block.nextDifficulty.toHexString()
-        prefix += block.spec.rawCID
-        prefix += block.parentHomestead.rawCID
-        prefix += block.homestead.rawCID
-        prefix += block.frontier.rawCID
-        prefix += block.childBlocks.rawCID
-        prefix += String(block.index)
-        prefix += String(block.timestamp)
-        return prefix
+        bytes.append(contentsOf: block.transactions.rawCID.utf8)
+        bytes.append(contentsOf: block.difficulty.toHexString().utf8)
+        bytes.append(contentsOf: block.nextDifficulty.toHexString().utf8)
+        bytes.append(contentsOf: block.spec.rawCID.utf8)
+        bytes.append(contentsOf: block.parentHomestead.rawCID.utf8)
+        bytes.append(contentsOf: block.homestead.rawCID.utf8)
+        bytes.append(contentsOf: block.frontier.rawCID.utf8)
+        bytes.append(contentsOf: block.childBlocks.rawCID.utf8)
+        bytes.append(contentsOf: String(block.index).utf8)
+        bytes.append(contentsOf: String(block.timestamp).utf8)
+        return bytes
     }
 
     nonisolated private func mineBatch(
-        prefix: String,
+        prefixBytes: ContiguousArray<UInt8>,
         targetDifficulty: UInt256,
         startNonce: UInt64,
         count: UInt64
     ) -> UInt64? {
         let end = startNonce &+ count
         var nonce = startNonce
+        let prefixLen = prefixBytes.count
+
+        // Working buffer: prefix + max 20 digits for UInt64
+        var buffer = prefixBytes
+        buffer.reserveCapacity(prefixLen + 20)
+
+        // Scratch space for nonce→ASCII conversion (digits in reverse)
+        var digitBuf: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                       UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+            (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+
         while nonce < end {
-            let hash = UInt256.hash(prefix + String(nonce))
+            // Check cancellation every 1024 nonces (cheap bitwise check)
+            if nonce & 0x3FF == 0 && Task.isCancelled { return nil }
+
+            // Reset buffer to prefix length
+            buffer.removeSubrange(prefixLen...)
+
+            // Convert nonce to ASCII digits without String allocation
+            var n = nonce
+            var digitCount = 0
+            if n == 0 {
+                buffer.append(0x30) // '0'
+            } else {
+                withUnsafeMutablePointer(to: &digitBuf) { ptr in
+                    let digits = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
+                    while n > 0 {
+                        digits[digitCount] = UInt8(0x30 &+ (n % 10))
+                        n /= 10
+                        digitCount &+= 1
+                    }
+                    // Append digits in reverse order
+                    var i = digitCount &- 1
+                    while i >= 0 {
+                        buffer.append(digits[i])
+                        i &-= 1
+                    }
+                }
+            }
+
+            // SHA-256 → UInt256 without intermediate Data allocations
+            let hash: UInt256 = buffer.withUnsafeBufferPointer { ptr in
+                var hasher = SHA256()
+                hasher.update(bufferPointer: UnsafeRawBufferPointer(ptr))
+                let digest = hasher.finalize()
+                return digest.withUnsafeBytes { raw in
+                    let p = raw.bindMemory(to: UInt64.self)
+                    return UInt256([
+                        UInt64(bigEndian: p[0]),
+                        UInt64(bigEndian: p[1]),
+                        UInt64(bigEndian: p[2]),
+                        UInt64(bigEndian: p[3])
+                    ])
+                }
+            }
+
             if targetDifficulty >= hash {
                 return nonce
             }
@@ -176,7 +232,7 @@ public actor MinerLoop {
     }
 
     private func mineParallel(
-        prefix: String,
+        prefixBytes: ContiguousArray<UInt8>,
         targetDifficulty: UInt256,
         totalBatchSize: UInt64,
         workerCount: Int
@@ -189,7 +245,7 @@ public actor MinerLoop {
                 let startNonce = baseOffset &+ UInt64(i) &* rangePerWorker
                 group.addTask {
                     self.mineBatch(
-                        prefix: prefix,
+                        prefixBytes: prefixBytes,
                         targetDifficulty: targetDifficulty,
                         startNonce: startNonce,
                         count: rangePerWorker

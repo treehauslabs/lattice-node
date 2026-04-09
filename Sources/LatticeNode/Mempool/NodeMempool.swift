@@ -110,12 +110,14 @@ public actor NodeMempool {
         let confirmed = nonce
         if var queue = byAccount[sender] {
             let stale = queue.txsByNonce.filter { $0.key < confirmed }
+            var staleCIDs = Set<String>()
             for (n, entry) in stale {
                 byCID.removeValue(forKey: entry.cid)
-                if let idx = sortedEntries.firstIndex(where: { $0.cid == entry.cid }) {
-                    sortedEntries.remove(at: idx)
-                }
+                staleCIDs.insert(entry.cid)
                 queue.txsByNonce.removeValue(forKey: n)
+            }
+            if !staleCIDs.isEmpty {
+                sortedEntries.removeAll(where: { staleCIDs.contains($0.cid) })
             }
             byAccount[sender] = queue
         }
@@ -128,8 +130,17 @@ public actor NodeMempool {
 
     public func removeAll(txCIDs: Set<String>) {
         for cid in txCIDs {
-            remove(txCID: cid)
+            guard let entry = byCID.removeValue(forKey: cid) else { continue }
+            if var accountQueue = byAccount[entry.sender] {
+                accountQueue.txsByNonce.removeValue(forKey: entry.nonce)
+                if accountQueue.txsByNonce.isEmpty && accountQueue.confirmedNonce == 0 {
+                    byAccount.removeValue(forKey: entry.sender)
+                } else {
+                    byAccount[entry.sender] = accountQueue
+                }
+            }
         }
+        sortedEntries.removeAll(where: { txCIDs.contains($0.cid) })
     }
 
     public func contains(txCID: String) -> Bool {
