@@ -258,16 +258,12 @@ public actor MinerLoop {
         let rangePerWorker = totalBatchSize / UInt64(workerCount)
         let baseOffset = self.nonceOffset
 
+        nonisolated(unsafe) let mineFunc = self.mineBatch
         return await withTaskGroup(of: UInt64?.self) { group in
             for i in 0..<workerCount {
                 let startNonce = baseOffset &+ UInt64(i) &* rangePerWorker
                 group.addTask {
-                    self.mineBatch(
-                        midstate: midstate,
-                        targetDifficulty: targetDifficulty,
-                        startNonce: startNonce,
-                        count: rangePerWorker
-                    )
+                    mineFunc(midstate, targetDifficulty, startNonce, rangePerWorker)
                 }
             }
             for await result in group {
