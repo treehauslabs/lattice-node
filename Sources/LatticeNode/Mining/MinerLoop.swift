@@ -127,7 +127,8 @@ public actor MinerLoop {
                         midstate: midstate,
                         targetDifficulty: targetDifficulty,
                         totalBatchSize: batchSize,
-                        workerCount: workerCount
+                        workerCount: workerCount,
+                        nonceOffset: nonceOffset
                     )
 
                     if let foundNonce {
@@ -249,18 +250,18 @@ public actor MinerLoop {
         return nil
     }
 
-    private func mineParallel(
+    nonisolated private func mineParallel(
         midstate: SHA256,
         targetDifficulty: UInt256,
         totalBatchSize: UInt64,
-        workerCount: Int
+        workerCount: Int,
+        nonceOffset: UInt64
     ) async -> UInt64? {
         let rangePerWorker = totalBatchSize / UInt64(workerCount)
-        let baseOffset = self.nonceOffset
 
         return await withTaskGroup(of: UInt64?.self) { group in
             for i in 0..<workerCount {
-                let startNonce = baseOffset &+ UInt64(i) &* rangePerWorker
+                let startNonce = nonceOffset &+ UInt64(i) &* rangePerWorker
                 group.addTask {
                     mineBatchFree(midstate: midstate, targetDifficulty: targetDifficulty, startNonce: startNonce, count: rangePerWorker)
                 }
