@@ -36,8 +36,10 @@ public actor StateStore {
             )
         """)
 
-        try db.execute("CREATE INDEX IF NOT EXISTS idx_diffs_height ON state_diffs(height)")
+        // Single composite index covers both height-only and (height, path) queries
         try db.execute("CREATE INDEX IF NOT EXISTS idx_diffs_height_path ON state_diffs(height DESC, path)")
+        // Drop legacy redundant index if it exists (subsumed by composite index)
+        try db.execute("DROP INDEX IF EXISTS idx_diffs_height")
 
         try db.execute("""
             CREATE TABLE IF NOT EXISTS tx_history (
@@ -54,25 +56,11 @@ public actor StateStore {
     // MARK: - Account State (nonisolated reads via readDb)
 
     public nonisolated func getBalance(address: String) -> UInt64? {
-        let path = "account:\(address)"
-        guard let rows = try? readDb.query(
-            "SELECT value FROM state WHERE path = ?1",
-            params: [.text(path)]
-        ), let row = rows.first, let data = row["value"]?.blobValue else {
-            return nil
-        }
-        return Self.decodeAccount(data)?.balance
+        getAccount(address: address)?.balance
     }
 
     public nonisolated func getNonce(address: String) -> UInt64? {
-        let path = "account:\(address)"
-        guard let rows = try? readDb.query(
-            "SELECT value FROM state WHERE path = ?1",
-            params: [.text(path)]
-        ), let row = rows.first, let data = row["value"]?.blobValue else {
-            return nil
-        }
-        return Self.decodeAccount(data)?.nonce
+        getAccount(address: address)?.nonce
     }
 
     public nonisolated func getAccount(address: String) -> AccountState? {
@@ -399,16 +387,38 @@ public actor StateStore {
     }
 
     public func expireAccount(address: String, atHeight: UInt64) {
-        let path = "account:\(address)"
-        let expiredPath = "expired:\(address)"
-        if let value = currentValue(forPath: path) {
-            recordDiff(height: atHeight, path: path, oldValue: value)
-            recordDiff(height: atHeight, path: expiredPath, oldValue: nil)
-            try? db.execute(
-                "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
-                params: [.text(expiredPath), .blob(value), .int(Int64(atHeight))]
-            )
-            try? db.execute("DELETE FROM state WHERE path = ?1", params: [.text(path)])
+        batchExpireAccounts(addresses: [address], atHeight: atHeight)
+    }
+
+    /// Expire multiple accounts in a single SQLite transaction.
+    /// Avoids N individual transactions and actor hops when processing bulk expirations.
+    public func batchExpireAccounts(addresses: [String], atHeight: UInt64) {
+        guard !addresses.isEmpty else { return }
+        let log = NodeLogger("statestore")
+        // Pre-fetch all account values in one batch query
+        let paths = addresses.map { "account:\($0)" }
+        let existing = batchGetValues(paths: paths)
+        let accountsToExpire = addresses.compactMap { addr -> (address: String, path: String, expiredPath: String, value: Data)? in
+            let path = "account:\(addr)"
+            guard let value = existing[path] else { return nil }
+            return (address: addr, path: path, expiredPath: "expired:\(addr)", value: value)
+        }
+        guard !accountsToExpire.isEmpty else { return }
+        do {
+            try db.beginTransaction()
+            for entry in accountsToExpire {
+                recordDiff(height: atHeight, path: entry.path, oldValue: entry.value)
+                recordDiff(height: atHeight, path: entry.expiredPath, oldValue: nil)
+                try db.execute(
+                    "INSERT OR REPLACE INTO state (path, value, height) VALUES (?1, ?2, ?3)",
+                    params: [.text(entry.expiredPath), .blob(entry.value), .int(Int64(atHeight))]
+                )
+                try db.execute("DELETE FROM state WHERE path = ?1", params: [.text(entry.path)])
+            }
+            try db.commit()
+        } catch {
+            log.error("batchExpireAccounts failed: \(error)")
+            try? db.rollbackTransaction()
         }
     }
 

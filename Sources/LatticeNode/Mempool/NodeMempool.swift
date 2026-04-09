@@ -1,5 +1,50 @@
 import Lattice
 import Foundation
+import cashew
+
+/// Per-trie key sets tracking which state keys a transaction touches.
+/// Separate sets per state trie — no prefix disambiguation needed.
+public struct StateKeySet: Sendable {
+    public var accounts: Set<String> = []
+    public var swaps: Set<String> = []
+    public var settles: Set<String> = []
+    public var general: Set<String> = []
+    public var genesis: Set<String> = []
+    public var peers: Set<String> = []
+
+    public static func from(_ body: TransactionBody) -> StateKeySet {
+        var s = StateKeySet()
+        for a in body.accountActions { s.accounts.insert(a.owner) }
+        for a in body.swapActions { s.swaps.insert(SwapKey(swapAction: a).description) }
+        for a in body.swapClaimActions { s.swaps.insert(SwapKey(swapClaimAction: a).description) }
+        for a in body.settleActions {
+            s.settles.insert(SettleKey(directory: a.directoryA, swapKey: a.swapKeyA).description)
+            s.settles.insert(SettleKey(directory: a.directoryB, swapKey: a.swapKeyB).description)
+        }
+        for a in body.actions { s.general.insert(a.key) }
+        for a in body.genesisActions { s.genesis.insert(a.directory) }
+        for a in body.peerActions { s.peers.insert(a.owner) }
+        return s
+    }
+
+    public func isDisjoint(with other: StateKeySet) -> Bool {
+        accounts.isDisjoint(with: other.accounts) &&
+        swaps.isDisjoint(with: other.swaps) &&
+        settles.isDisjoint(with: other.settles) &&
+        general.isDisjoint(with: other.general) &&
+        genesis.isDisjoint(with: other.genesis) &&
+        peers.isDisjoint(with: other.peers)
+    }
+
+    public mutating func formUnion(_ other: StateKeySet) {
+        accounts.formUnion(other.accounts)
+        swaps.formUnion(other.swaps)
+        settles.formUnion(other.settles)
+        general.formUnion(other.general)
+        genesis.formUnion(other.genesis)
+        peers.formUnion(other.peers)
+    }
+}
 
 public struct MempoolEntry: Sendable {
     public let transaction: Transaction
@@ -8,6 +53,7 @@ public struct MempoolEntry: Sendable {
     public let sender: String
     public let nonce: UInt64
     public let addedAt: ContinuousClock.Instant
+    public let stateKeys: StateKeySet
 }
 
 public struct AccountTxQueue: Sendable {
@@ -53,6 +99,7 @@ public actor NodeMempool {
         let fee = body.fee
         let sender = body.signers.first ?? ""
         let nonce = body.nonce
+        let stateKeys = StateKeySet.from(body)
 
         if byCID[cid] != nil {
             return .rejected(reason: "Duplicate transaction")
@@ -60,7 +107,7 @@ public actor NodeMempool {
 
         let accountQueue = byAccount[sender] ?? AccountTxQueue()
         if let existing = accountQueue.txsByNonce[nonce] {
-            return tryReplace(existing: existing, transaction: transaction, cid: cid, fee: fee, sender: sender, nonce: nonce)
+            return tryReplace(existing: existing, transaction: transaction, cid: cid, fee: fee, sender: sender, nonce: nonce, stateKeys: stateKeys)
         }
 
         if accountQueue.txsByNonce.count >= maxPerAccount {
@@ -83,7 +130,8 @@ public actor NodeMempool {
             fee: fee,
             sender: sender,
             nonce: nonce,
-            addedAt: .now
+            addedAt: .now,
+            stateKeys: stateKeys
         )
         insertEntry(entry)
         return .added
@@ -92,13 +140,16 @@ public actor NodeMempool {
     public func selectTransactions(maxCount: Int) -> [Transaction] {
         var selected: [Transaction] = []
         var selectedNonces: [String: UInt64] = [:]
+        var claimedKeys = StateKeySet()
         for entry in sortedEntries {
             if selected.count >= maxCount { break }
             let account = byAccount[entry.sender]
             let confirmedNonce = account?.confirmedNonce ?? 0
             let nextExpected = selectedNonces[entry.sender] ?? confirmedNonce
             if entry.nonce == nextExpected {
+                guard claimedKeys.isDisjoint(with: entry.stateKeys) else { continue }
                 selected.append(entry.transaction)
+                claimedKeys.formUnion(entry.stateKeys)
                 selectedNonces[entry.sender] = nextExpected + 1
             }
         }
@@ -106,29 +157,29 @@ public actor NodeMempool {
     }
 
     /// Batch update confirmed nonces for multiple senders in one actor call.
-    /// Avoids N individual actor hops from the block processing loop.
+    /// Collects all stale CIDs across senders, then does a single O(n) pass
+    /// over sortedEntries instead of N separate full scans.
     public func batchUpdateConfirmedNonces(updates: [(sender: String, nonce: UInt64)]) {
+        var allStaleCIDs = Set<String>()
         for update in updates {
-            updateConfirmedNonce(sender: update.sender, nonce: update.nonce)
+            var queue = byAccount[update.sender] ?? AccountTxQueue()
+            queue.confirmedNonce = update.nonce
+            let staleKeys = queue.txsByNonce.keys.filter { $0 < update.nonce }
+            for n in staleKeys {
+                if let entry = queue.txsByNonce.removeValue(forKey: n) {
+                    byCID.removeValue(forKey: entry.cid)
+                    allStaleCIDs.insert(entry.cid)
+                }
+            }
+            byAccount[update.sender] = queue
+        }
+        if !allStaleCIDs.isEmpty {
+            sortedEntries.removeAll(where: { allStaleCIDs.contains($0.cid) })
         }
     }
 
     public func updateConfirmedNonce(sender: String, nonce: UInt64) {
-        byAccount[sender, default: AccountTxQueue()].confirmedNonce = nonce
-        let confirmed = nonce
-        if var queue = byAccount[sender] {
-            let stale = queue.txsByNonce.filter { $0.key < confirmed }
-            var staleCIDs = Set<String>()
-            for (n, entry) in stale {
-                byCID.removeValue(forKey: entry.cid)
-                staleCIDs.insert(entry.cid)
-                queue.txsByNonce.removeValue(forKey: n)
-            }
-            if !staleCIDs.isEmpty {
-                sortedEntries.removeAll(where: { staleCIDs.contains($0.cid) })
-            }
-            byAccount[sender] = queue
-        }
+        batchUpdateConfirmedNonces(updates: [(sender: sender, nonce: nonce)])
     }
 
     public func remove(txCID: String) {
@@ -139,12 +190,12 @@ public actor NodeMempool {
     public func removeAll(txCIDs: Set<String>) {
         for cid in txCIDs {
             guard let entry = byCID.removeValue(forKey: cid) else { continue }
-            if var accountQueue = byAccount[entry.sender] {
-                accountQueue.txsByNonce.removeValue(forKey: entry.nonce)
-                if accountQueue.txsByNonce.isEmpty && accountQueue.confirmedNonce == 0 {
+            if var queue = byAccount[entry.sender] {
+                queue.txsByNonce.removeValue(forKey: entry.nonce)
+                if queue.txsByNonce.isEmpty && queue.confirmedNonce == 0 {
                     byAccount.removeValue(forKey: entry.sender)
                 } else {
-                    byAccount[entry.sender] = accountQueue
+                    byAccount[entry.sender] = queue
                 }
             }
         }
@@ -157,6 +208,24 @@ public actor NodeMempool {
 
     public func allTransactions() -> [Transaction] {
         byCID.values.map { $0.transaction }
+    }
+
+    /// Build CID→Data cache for MempoolAwareFetcher directly, avoiding an
+    /// intermediate [Transaction] array allocation. Each transaction and its
+    /// body are serialized and keyed by their content-addressed CID.
+    public func fetcherCache() -> [String: Data] {
+        var cache: [String: Data] = [:]
+        cache.reserveCapacity(byCID.count * 2)
+        for entry in byCID.values {
+            let tx = entry.transaction
+            if let data = tx.toData() {
+                cache[VolumeImpl<Transaction>(node: tx).rawCID] = data
+            }
+            if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
+                cache[tx.body.rawCID] = bodyData
+            }
+        }
+        return cache
     }
 
     public func totalFees() -> UInt64 {
@@ -209,7 +278,8 @@ public actor NodeMempool {
         cid: String,
         fee: UInt64,
         sender: String,
-        nonce: UInt64
+        nonce: UInt64,
+        stateKeys: StateKeySet
     ) -> AddResult {
         let bump = existing.fee / 10 + 1
         let (requiredFee, overflow) = existing.fee.addingReportingOverflow(bump)
@@ -227,7 +297,8 @@ public actor NodeMempool {
             fee: fee,
             sender: sender,
             nonce: nonce,
-            addedAt: .now
+            addedAt: .now,
+            stateKeys: stateKeys
         )
         insertEntry(entry)
         return .replacedExisting(oldCID: oldCID)
@@ -245,17 +316,23 @@ public actor NodeMempool {
     private func removeEntry(_ entry: MempoolEntry) {
         byCID.removeValue(forKey: entry.cid)
 
-        if var accountQueue = byAccount[entry.sender] {
-            accountQueue.txsByNonce.removeValue(forKey: entry.nonce)
-            if accountQueue.txsByNonce.isEmpty && accountQueue.confirmedNonce == 0 {
+        if var queue = byAccount[entry.sender] {
+            queue.txsByNonce.removeValue(forKey: entry.nonce)
+            if queue.txsByNonce.isEmpty && queue.confirmedNonce == 0 {
                 byAccount.removeValue(forKey: entry.sender)
             } else {
-                byAccount[entry.sender] = accountQueue
+                byAccount[entry.sender] = queue
             }
         }
 
-        if let idx = sortedEntries.firstIndex(where: { $0.cid == entry.cid }) {
-            sortedEntries.remove(at: idx)
+        // Binary search to fee range, then linear scan within that range
+        let feeIdx = sortedEntries.binarySearchDescending { $0.fee > entry.fee }
+        for i in feeIdx..<sortedEntries.count {
+            if sortedEntries[i].fee < entry.fee { break }
+            if sortedEntries[i].cid == entry.cid {
+                sortedEntries.remove(at: i)
+                break
+            }
         }
     }
 
@@ -270,6 +347,24 @@ extension Array {
         while lo < hi {
             let mid = lo + (hi - lo) / 2
             if predicate(self[mid]) {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        return lo
+    }
+}
+
+extension Array where Element: Comparable {
+    /// Binary search on an ascending-sorted array.
+    /// Returns the insertion index for `value` (first position where element >= value).
+    func ascendingInsertionIndex(for value: Element) -> Int {
+        var lo = 0
+        var hi = count
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2
+            if self[mid] < value {
                 lo = mid + 1
             } else {
                 hi = mid

@@ -2,6 +2,8 @@ import Foundation
 
 public actor FeeEstimator {
     private var blockFeeData: [(height: UInt64, fees: [UInt64])] = []
+    /// Maintained in ascending sorted order — avoids re-sorting on every estimate() call.
+    private var sortedMinimums: [UInt64] = []
     private let windowSize: Int
 
     public init(windowSize: Int = 100) {
@@ -9,20 +11,27 @@ public actor FeeEstimator {
     }
 
     public func recordBlock(height: UInt64, transactionFees: [UInt64]) {
-        blockFeeData.append((height: height, fees: transactionFees))
-        if blockFeeData.count > windowSize {
+        // Evict oldest block and its minimum from the sorted cache
+        if blockFeeData.count >= windowSize {
+            let oldest = blockFeeData.first!
+            if let oldMin = oldest.fees.min() {
+                let idx = sortedMinimums.ascendingInsertionIndex(for: oldMin)
+                if idx < sortedMinimums.count && sortedMinimums[idx] == oldMin {
+                    sortedMinimums.remove(at: idx)
+                }
+            }
             blockFeeData.removeFirst()
+        }
+        blockFeeData.append((height: height, fees: transactionFees))
+        // Insert new minimum in sorted position: O(log n) search + O(n) shift
+        if let newMin = transactionFees.min() {
+            let insertIdx = sortedMinimums.ascendingInsertionIndex(for: newMin)
+            sortedMinimums.insert(newMin, at: insertIdx)
         }
     }
 
     public func estimate(confirmationTarget: Int) -> UInt64 {
-        let minimums = blockFeeData.compactMap { entry -> UInt64? in
-            guard !entry.fees.isEmpty else { return nil }
-            return entry.fees.min()
-        }
-        guard !minimums.isEmpty else { return 1 }
-
-        let sorted = minimums.sorted()
+        guard !sortedMinimums.isEmpty else { return 1 }
 
         let percentile: Double
         switch confirmationTarget {
@@ -36,27 +45,35 @@ public actor FeeEstimator {
             percentile = 0.10
         }
 
-        let index = min(Int(Double(sorted.count - 1) * percentile), sorted.count - 1)
-        return max(sorted[index], 1)
+        let index = min(Int(Double(sortedMinimums.count - 1) * percentile), sortedMinimums.count - 1)
+        return max(sortedMinimums[index], 1)
     }
 
     public func histogram() -> [(range: String, count: Int)] {
-        let allFees = blockFeeData.flatMap { $0.fees }
-        guard !allFees.isEmpty else { return [] }
-
-        let buckets: [(label: String, low: UInt64, high: UInt64)] = [
-            ("1-10", 1, 10),
-            ("11-100", 11, 100),
-            ("101-1000", 101, 1000),
-            ("1001-10000", 1001, 10000),
-            ("10001+", 10001, UInt64.max),
-        ]
-
-        return buckets.compactMap { bucket in
-            let count = allFees.filter { $0 >= bucket.low && $0 <= bucket.high }.count
-            guard count > 0 else { return nil }
-            return (range: bucket.label, count: count)
+        // Single pass through all fees — no intermediate array allocation, O(n) instead of O(5n)
+        var counts = (0, 0, 0, 0, 0)
+        var total = 0
+        for block in blockFeeData {
+            for fee in block.fees {
+                total += 1
+                switch fee {
+                case 1...10:     counts.0 += 1
+                case 11...100:   counts.1 += 1
+                case 101...1000: counts.2 += 1
+                case 1001...10000: counts.3 += 1
+                default: if fee > 10000 { counts.4 += 1 }
+                }
+            }
         }
+        guard total > 0 else { return [] }
+
+        var result: [(range: String, count: Int)] = []
+        if counts.0 > 0 { result.append((range: "1-10", count: counts.0)) }
+        if counts.1 > 0 { result.append((range: "11-100", count: counts.1)) }
+        if counts.2 > 0 { result.append((range: "101-1000", count: counts.2)) }
+        if counts.3 > 0 { result.append((range: "1001-10000", count: counts.3)) }
+        if counts.4 > 0 { result.append((range: "10001+", count: counts.4)) }
+        return result
     }
 
     public var blockCount: Int { blockFeeData.count }

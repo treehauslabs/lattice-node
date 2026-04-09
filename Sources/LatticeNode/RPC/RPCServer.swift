@@ -81,10 +81,16 @@ enum RPCRoutes {
 
     // MARK: - JSON Helpers
 
+    private static let jsonEncoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.sortedKeys]
+        return e
+    }()
+
+    private static let jsonDecoder = JSONDecoder()
+
     static func json<T: Encodable>(_ value: T, status: HTTPResponse.Status = .ok) -> Response {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = (try? encoder.encode(value)) ?? Data("{}".utf8)
+        let data = (try? jsonEncoder.encode(value)) ?? Data("{}".utf8)
         var headers = HTTPFields()
         headers.append(HTTPField(name: .contentType, value: "application/json"))
         return Response(status: status, headers: headers, body: .init(byteBuffer: .init(data: data)))
@@ -138,7 +144,7 @@ enum RPCRoutes {
 
     static func submitTransaction(node: LatticeNode, request: Request) async throws -> Response {
         struct Sub: Decodable { let signatures: [String: String]; let bodyCID: String; let bodyData: String? }
-        guard let sub = try? await JSONDecoder().decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
+        guard let sub = try? await jsonDecoder.decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
             return jsonError("Invalid transaction format. Expected: {signatures, bodyCID, bodyData}")
         }
         let dir = node.genesisConfig.spec.directory

@@ -6,6 +6,8 @@ import cashew
 
 extension LatticeNode {
 
+    private static let receiptEncoder = JSONEncoder()
+
     static let maxTimestampDriftMs: Int64 = 7_200_000
     static let maxTimestampAgeMs: Int64 = 86_400_000
     static let blockDeduplicationWindow: Duration = .milliseconds(100)
@@ -438,9 +440,8 @@ extension LatticeNode {
         )
         if accepted {
             tally.recordSuccess(peer: peer)
-            // Announce accepted block for earning
-            if let block = try? await header.resolve(fetcher: resolveFetcher).node,
-               let blockData = block.toData() {
+            // Fetch raw bytes from CAS (local hit) instead of resolve+toData() re-serialization
+            if let blockData = try? await resolveFetcher.fetch(rawCid: cid) {
                 await network.announceStoredBlock(cid: cid, data: blockData)
             }
             await maybePersist(directory: directory)
@@ -496,17 +497,7 @@ extension LatticeNode {
     /// Build a fetcher that pre-caches mempool transaction data for in-memory resolution.
     func buildMempoolAwareFetcher(directory: String, baseFetcher: Fetcher) async -> Fetcher {
         guard let network = networks[directory] else { return baseFetcher }
-        let mempoolTxs = await network.nodeMempool.allTransactions()
-        var txDataCache: [String: Data] = [:]
-        txDataCache.reserveCapacity(mempoolTxs.count * 2)
-        for tx in mempoolTxs {
-            if let data = tx.toData() {
-                txDataCache[VolumeImpl<Transaction>(node: tx).rawCID] = data
-            }
-            if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
-                txDataCache[tx.body.rawCID] = bodyData
-            }
-        }
+        let txDataCache = await network.nodeMempool.fetcherCache()
         return txDataCache.isEmpty ? baseFetcher : MempoolAwareFetcher(inner: baseFetcher, cache: txDataCache)
     }
 
@@ -601,11 +592,10 @@ extension LatticeNode {
         }
 
         // Batch fetch all nonces in a single SQL query instead of N individual lookups
-        let addressesNeedingNonce = Set(
-            accountChanges
-                .filter { $0.oldBalance != 0 && $0.oldBalance != $0.newBalance }
-                .map { $0.address }
-        )
+        var addressesNeedingNonce = Set<String>()
+        for change in accountChanges where change.oldBalance != 0 && change.oldBalance != change.newBalance {
+            addressesNeedingNonce.insert(change.address)
+        }
         let nonces: [String: UInt64]
         if let store, !addressesNeedingNonce.isEmpty {
             nonces = store.batchGetNonces(addresses: Array(addressesNeedingNonce))
@@ -662,16 +652,17 @@ extension LatticeNode {
                     var txHistory: [(address: String, txCID: String, blockHash: String, height: UInt64)] = []
 
                     struct ReceiptIdx: Codable { let blockHash: String; let blockHeight: UInt64 }
-                    if let idxData = try? JSONEncoder().encode(ReceiptIdx(blockHash: blockHash, blockHeight: blockHeight)) {
+                    if let idxData = try? Self.receiptEncoder.encode(ReceiptIdx(blockHash: blockHash, blockHeight: blockHeight)) {
                         generalEntries.append((key: "receipt-idx:\(cid)", value: idxData, height: blockHeight))
                     }
 
                     if let tx = txHeader.node, let body = tx.body.node {
+                        // Single iteration: build both txHistory and receipt actions
+                        var actions: [TransactionReceipt.ReceiptAction] = []
+                        actions.reserveCapacity(body.accountActions.count)
                         for action in body.accountActions {
                             txHistory.append((address: action.owner, txCID: cid, blockHash: blockHash, height: blockHeight))
-                        }
-                        let actions = body.accountActions.map {
-                            TransactionReceipt.ReceiptAction(owner: $0.owner, oldBalance: $0.oldBalance, newBalance: $0.newBalance)
+                            actions.append(TransactionReceipt.ReceiptAction(owner: action.owner, oldBalance: action.oldBalance, newBalance: action.newBalance))
                         }
                         let receipt = TransactionReceipt(
                             txCID: cid, blockHash: blockHash, blockHeight: blockHeight,
@@ -679,7 +670,7 @@ extension LatticeNode {
                             sender: body.signers.first ?? "", status: "confirmed",
                             accountActions: actions
                         )
-                        if let data = try? JSONEncoder().encode(receipt) {
+                        if let data = try? Self.receiptEncoder.encode(receipt) {
                             generalEntries.append((key: "receipt:\(cid)", value: data, height: blockHeight))
                         }
                     }
@@ -696,9 +687,11 @@ extension LatticeNode {
             return collected
         }
 
-        // Merge results
+        // Merge results — pre-allocate since each tx produces ~2 general + ~1 history entries
         var allGeneral: [(key: String, value: Data, height: UInt64)] = []
+        allGeneral.reserveCapacity(txList.count * 2)
         var allTxHistory: [(address: String, txCID: String, blockHash: String, height: UInt64)] = []
+        allTxHistory.reserveCapacity(txList.count)
         for result in results {
             allGeneral.append(contentsOf: result.generalEntries)
             allTxHistory.append(contentsOf: result.txHistory)

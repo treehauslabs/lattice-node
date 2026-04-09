@@ -27,9 +27,8 @@ public actor StateExpiry {
     }
 
     public func expireAccounts(_ accounts: [ExpiredAccount], atHeight: UInt64) async {
-        for account in accounts {
-            await store.expireAccount(address: account.address, atHeight: atHeight)
-        }
+        let addresses = accounts.map { $0.address }
+        await store.batchExpireAccounts(addresses: addresses, atHeight: atHeight)
     }
 
     public func reviveAccount(address: String, proof: Data, atHeight: UInt64) async -> Bool {

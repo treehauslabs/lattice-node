@@ -20,6 +20,9 @@ public struct TransactionReceipt: Codable, Sendable {
 }
 
 public actor TransactionReceiptStore {
+    private static let encoder = JSONEncoder()
+    private static let decoder = JSONDecoder()
+
     private let store: StateStore
     private let fetcher: Fetcher
 
@@ -29,24 +32,24 @@ public actor TransactionReceiptStore {
     }
 
     public func saveReceipt(_ receipt: TransactionReceipt) async {
-        guard let data = try? JSONEncoder().encode(receipt) else { return }
+        guard let data = try? Self.encoder.encode(receipt) else { return }
         await store.setGeneral(key: "receipt:\(receipt.txCID)", value: data, atHeight: receipt.blockHeight)
     }
 
     public func getReceipt(txCID: String) async -> TransactionReceipt? {
         if let data = store.getGeneral(key: "receipt:\(txCID)"),
-           let receipt = try? JSONDecoder().decode(TransactionReceipt.self, from: data) {
+           let receipt = try? Self.decoder.decode(TransactionReceipt.self, from: data) {
             return receipt
         }
 
         guard let indexData = store.getGeneral(key: "receipt-idx:\(txCID)"),
-              let index = try? JSONDecoder().decode(ReceiptIndex.self, from: indexData) else { return nil }
+              let index = try? Self.decoder.decode(ReceiptIndex.self, from: indexData) else { return nil }
 
         return await deriveFromCAS(txCID: txCID, index: index)
     }
 
     public func indexReceipt(txCID: String, blockHash: String, blockHeight: UInt64) async {
-        guard let data = try? JSONEncoder().encode(ReceiptIndex(blockHash: blockHash, blockHeight: blockHeight)) else { return }
+        guard let data = try? Self.encoder.encode(ReceiptIndex(blockHash: blockHash, blockHeight: blockHeight)) else { return }
         await store.setGeneral(key: "receipt-idx:\(txCID)", value: data, atHeight: blockHeight)
     }
 
