@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import Synchronization
 import Lattice
 import Ivy
 import ArrayTrie
@@ -345,7 +346,7 @@ func parsePeer(_ s: String) -> PeerEndpoint? {
 }
 
 private final class ShutdownFlag: Sendable {
-    private let _value = LockedValue(false)
+    private let _value = Mutex(false)
 
     var isSet: Bool { _value.withLock { $0 } }
 
@@ -355,19 +356,6 @@ private final class ShutdownFlag: Sendable {
         while !isSet {
             try? await Task.sleep(for: .milliseconds(100))
         }
-    }
-}
-
-private final class LockedValue<T>: @unchecked Sendable {
-    private var value: T
-    private let lock = NSLock()
-
-    init(_ value: T) { self.value = value }
-
-    func withLock<R>(_ body: (inout T) -> R) -> R {
-        lock.lock()
-        defer { lock.unlock() }
-        return body(&value)
     }
 }
 

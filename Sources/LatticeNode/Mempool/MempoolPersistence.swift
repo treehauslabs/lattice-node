@@ -27,11 +27,22 @@ public struct MempoolPersistence: Sendable {
     }
 
     public func load() -> [SerializedTransaction] {
-        guard let data = try? Data(contentsOf: storagePath) else { return [] }
-        return (try? JSONDecoder().decode([SerializedTransaction].self, from: data)) ?? []
+        let log = NodeLogger("mempool-persist")
+        guard FileManager.default.fileExists(atPath: storagePath.path) else { return [] }
+        do {
+            let data = try Data(contentsOf: storagePath)
+            return try JSONDecoder().decode([SerializedTransaction].self, from: data)
+        } catch {
+            log.error("Failed to load mempool: \(error)")
+            return []
+        }
     }
 
     public func delete() {
-        try? FileManager.default.removeItem(at: storagePath)
+        do {
+            try FileManager.default.removeItem(at: storagePath)
+        } catch {
+            NodeLogger("mempool-persist").warn("Failed to delete mempool file: \(error)")
+        }
     }
 }

@@ -1,41 +1,49 @@
 import Foundation
+import Synchronization
 
-public actor NodeMetrics {
-    private var counters: [String: Int64] = [:]
-    private var gauges: [String: Double] = [:]
-    private var histogramSums: [String: Double] = [:]
-    private var histogramCounts: [String: Int64] = [:]
+public final class NodeMetrics: Sendable {
+    private struct Storage {
+        var counters: [String: Int64] = [:]
+        var gauges: [String: Double] = [:]
+        var histogramSums: [String: Double] = [:]
+        var histogramCounts: [String: Int64] = [:]
+    }
+
+    private let storage = Mutex(Storage())
 
     public init() {}
 
     public func increment(_ name: String, by value: Int64 = 1) {
-        counters[name, default: 0] += value
+        storage.withLock { $0.counters[name, default: 0] += value }
     }
 
     public func set(_ name: String, value: Double) {
-        gauges[name] = value
+        storage.withLock { $0.gauges[name] = value }
     }
 
     public func observe(_ name: String, value: Double) {
-        histogramSums[name, default: 0] += value
-        histogramCounts[name, default: 0] += 1
+        storage.withLock { s in
+            s.histogramSums[name, default: 0] += value
+            s.histogramCounts[name, default: 0] += 1
+        }
     }
 
     public func prometheus() -> String {
+        let snap = storage.withLock { $0 }
         var lines: [String] = []
 
-        for (name, value) in counters.sorted(by: { $0.key < $1.key }) {
+        for (name, value) in snap.counters.sorted(by: { $0.key < $1.key }) {
             lines.append("# TYPE \(name) counter")
             lines.append("\(name) \(value)")
         }
 
-        for (name, value) in gauges.sorted(by: { $0.key < $1.key }) {
+        for (name, value) in snap.gauges.sorted(by: { $0.key < $1.key }) {
             lines.append("# TYPE \(name) gauge")
             lines.append("\(name) \(value)")
         }
 
-        for (name, sum) in histogramSums.sorted(by: { $0.key < $1.key }) {
-            let count = histogramCounts[name] ?? 0
+        for (name, sum) in snap.histogramSums.sorted(by: { $0.key < $1.key }) {
+            let count = snap.histogramCounts[name] ?? 0
             lines.append("# TYPE \(name) summary")
             lines.append("\(name)_sum \(sum)")
             lines.append("\(name)_count \(count)")

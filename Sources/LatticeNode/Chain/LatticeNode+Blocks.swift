@@ -452,8 +452,9 @@ extension LatticeNode {
     func isPeerBlockRateLimited(_ peer: PeerID) -> Bool {
         let now = ContinuousClock.Instant.now
 
-        if peerBlockCounts.count > Self.peerBlockCountCleanupThreshold {
-            peerBlockCounts = peerBlockCounts.filter { now - $0.value.windowStart < Self.peerBlockCountWindow }
+        // Evict oldest entries when over hard cap (LRU: oldest are at front)
+        while peerBlockCounts.count > Self.peerBlockCountCleanupThreshold {
+            peerBlockCounts.removeFirst()
         }
 
         if let entry = peerBlockCounts[peer] {
@@ -461,8 +462,11 @@ extension LatticeNode {
                 if entry.count >= Self.maxBlocksPerPeerPerWindow {
                     return true
                 }
+                // Move to end (most recently used)
+                peerBlockCounts.removeValue(forKey: peer)
                 peerBlockCounts[peer] = (count: entry.count + 1, windowStart: entry.windowStart)
             } else {
+                peerBlockCounts.removeValue(forKey: peer)
                 peerBlockCounts[peer] = (count: 1, windowStart: now)
             }
         } else {
@@ -478,10 +482,12 @@ extension LatticeNode {
     static let maxRecentPeerBlocks = 4096
 
     func recordBlockTime(key: String, time: ContinuousClock.Instant) {
+        // Move to end on update (LRU touch)
+        recentPeerBlocks.removeValue(forKey: key)
         recentPeerBlocks[key] = time
-        if recentPeerBlocks.count > Self.maxRecentPeerBlocks * 2 {
-            let cutoff = time - Self.peerBlockCountWindow
-            recentPeerBlocks = recentPeerBlocks.filter { $0.value >= cutoff }
+        // Hard cap: evict oldest entries from front
+        while recentPeerBlocks.count > Self.maxRecentPeerBlocks {
+            recentPeerBlocks.removeFirst()
         }
     }
 
@@ -570,8 +576,8 @@ extension LatticeNode {
             timestamp: blockTimestamp
         ))
 
-        await metrics.increment("lattice_blocks_accepted_total")
-        await metrics.set("lattice_chain_height", value: Double(blockHeight))
+        metrics.increment("lattice_blocks_accepted_total")
+        metrics.set("lattice_chain_height", value: Double(blockHeight))
     }
 
     func extractStateChangeset(

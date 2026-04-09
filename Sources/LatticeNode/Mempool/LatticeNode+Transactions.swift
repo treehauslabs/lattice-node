@@ -40,7 +40,7 @@ extension LatticeNode {
             if let bodyData {
                 await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
             }
-            await metrics.increment("lattice_transactions_submitted_total")
+            metrics.increment("lattice_transactions_submitted_total")
             // Gossip with full body — no fetch roundtrip for receivers
             await network.gossipTransaction(cid: transaction.body.rawCID, bodyData: bodyData)
             let fee = transaction.body.node?.fee ?? 0

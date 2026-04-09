@@ -73,102 +73,30 @@ public actor ChainSyncer {
         cancelled = true
     }
 
-    // MARK: - Full Sync
-    //
-    // Walk backwards from peer tip to genesis, fetching every block,
-    // validating proof-of-work, and storing block data locally.
-    // Then build ChainState metadata from the collected chain.
-    // This is complete but slow — O(n) sequential fetches for n blocks.
-
     private static func workForDifficulty(_ difficulty: UInt256) -> UInt256 {
         guard difficulty > UInt256.zero else { return UInt256.zero }
         return UInt256.max / difficulty
     }
 
-    public func syncFull(
-        peerTipCID: String,
-        localCumulativeWork: UInt256 = UInt256.zero,
-        progress: (@Sendable (UInt64, UInt64) async -> Void)? = nil
-    ) async throws -> SyncResult {
-        var collected: [(hash: String, index: UInt64, prevHash: String?)] = []
-        var currentCID = peerTipCID
-        var targetHeight: UInt64 = 0
-        var cumulativeWork = UInt256.zero
+    // MARK: - Shared Chain Walk
 
-        while !cancelled {
-            let data: Data
-            do {
-                data = try await fetchWithTimeout(rawCid: currentCID)
-            } catch {
-                throw SyncError.invalidBlock(UInt64(collected.count))
-            }
-
-            guard let block = Block(data: data) else {
-                throw SyncError.invalidBlock(UInt64(collected.count))
-            }
-
-            if collected.isEmpty {
-                targetHeight = block.index
-            }
-
-            let diffHash = block.getDifficultyHash()
-            guard block.validateBlockDifficulty(nexusHash: diffHash) else {
-                throw SyncError.invalidPoW(block.index)
-            }
-
-            cumulativeWork = cumulativeWork &+ Self.workForDifficulty(block.difficulty)
-
-            await storeFn(currentCID, data)
-            collected.append((
-                hash: currentCID,
-                index: block.index,
-                prevHash: block.previousBlock?.rawCID
-            ))
-
-            if collected.count % 500 == 0 {
-                await progress?(UInt64(collected.count), targetHeight + 1)
-            }
-
-            guard let prevCID = block.previousBlock?.rawCID else {
-                guard currentCID == genesisBlockHash else {
-                    throw SyncError.genesisMismatch
-                }
-                break
-            }
-            currentCID = prevCID
-        }
-
-        if cancelled { throw SyncError.cancelled }
-        guard !collected.isEmpty else { throw SyncError.emptyChain }
-
-        if cumulativeWork < localCumulativeWork {
-            throw SyncError.insufficientWork
-        }
-
-        collected.reverse()
-        await progress?(targetHeight + 1, targetHeight + 1)
-
-        return buildResult(from: collected, cumulativeWork: cumulativeWork)
+    private struct WalkResult {
+        var collected: [(hash: String, index: UInt64, prevHash: String?)]
+        var cumulativeWork: UInt256
+        var tipBlock: Block?
     }
 
-    // MARK: - Snapshot Sync
-    //
-    // Walk backwards from peer tip for `depth` blocks only.
-    // Validates PoW on downloaded blocks and verifies the tip
-    // block's frontier state root by re-deriving it from the
-    // homestead + transactions. Much faster than full sync — the
-    // node can start operating quickly, fetching historical state
-    // lazily from peers as needed.
-
-    public func syncSnapshot(
-        peerTipCID: String,
-        depth: UInt64? = nil,
-        localCumulativeWork: UInt256 = UInt256.zero,
-        progress: (@Sendable (UInt64, UInt64) async -> Void)? = nil
-    ) async throws -> SyncResult {
-        let effectiveDepth = depth ?? retentionDepth
+    /// Walk backwards from a CID, fetching and validating blocks.
+    /// - `maxBlocks`: stop after this many blocks (nil = walk to genesis)
+    /// - `progressInterval`: report progress every N blocks
+    private func walkChain(
+        from startCID: String,
+        maxBlocks: UInt64?,
+        progressInterval: Int,
+        progress: (@Sendable (UInt64, UInt64) async -> Void)?
+    ) async throws -> WalkResult {
         var collected: [(hash: String, index: UInt64, prevHash: String?)] = []
-        var currentCID = peerTipCID
+        var currentCID = startCID
         var targetHeight: UInt64 = 0
         var tipBlock: Block?
         var cumulativeWork = UInt256.zero
@@ -198,47 +126,84 @@ public actor ChainSyncer {
             cumulativeWork = cumulativeWork &+ Self.workForDifficulty(block.difficulty)
 
             await storeFn(currentCID, data)
-            collected.append((
-                hash: currentCID,
-                index: block.index,
-                prevHash: block.previousBlock?.rawCID
-            ))
+            collected.append((hash: currentCID, index: block.index, prevHash: block.previousBlock?.rawCID))
 
-            if collected.count % 100 == 0 {
-                let target = min(effectiveDepth, targetHeight + 1)
+            if collected.count % progressInterval == 0 {
+                let target = maxBlocks.map { min($0, targetHeight + 1) } ?? (targetHeight + 1)
                 await progress?(UInt64(collected.count), target)
             }
 
-            if UInt64(collected.count) >= effectiveDepth {
+            if let max = maxBlocks, UInt64(collected.count) >= max {
                 break
             }
 
             guard let prevCID = block.previousBlock?.rawCID else {
+                if maxBlocks == nil {
+                    guard currentCID == genesisBlockHash else {
+                        throw SyncError.genesisMismatch
+                    }
+                }
                 break
             }
             currentCID = prevCID
         }
 
+        return WalkResult(collected: collected, cumulativeWork: cumulativeWork, tipBlock: tipBlock)
+    }
+
+    // MARK: - Full Sync
+
+    public func syncFull(
+        peerTipCID: String,
+        localCumulativeWork: UInt256 = UInt256.zero,
+        progress: (@Sendable (UInt64, UInt64) async -> Void)? = nil
+    ) async throws -> SyncResult {
+        let walk = try await walkChain(
+            from: peerTipCID, maxBlocks: nil,
+            progressInterval: 500, progress: progress
+        )
+
         if cancelled { throw SyncError.cancelled }
-        guard !collected.isEmpty else { throw SyncError.emptyChain }
+        guard !walk.collected.isEmpty else { throw SyncError.emptyChain }
+        if walk.cumulativeWork < localCumulativeWork { throw SyncError.insufficientWork }
 
-        if cumulativeWork < localCumulativeWork {
-            throw SyncError.insufficientWork
-        }
+        var collected = walk.collected
+        collected.reverse()
+        let targetHeight = collected.last?.index ?? 0
+        await progress?(targetHeight + 1, targetHeight + 1)
 
-        if let tip = tipBlock {
+        return buildResult(from: collected, cumulativeWork: walk.cumulativeWork)
+    }
+
+    // MARK: - Snapshot Sync
+
+    public func syncSnapshot(
+        peerTipCID: String,
+        depth: UInt64? = nil,
+        localCumulativeWork: UInt256 = UInt256.zero,
+        progress: (@Sendable (UInt64, UInt64) async -> Void)? = nil
+    ) async throws -> SyncResult {
+        let effectiveDepth = depth ?? retentionDepth
+        let walk = try await walkChain(
+            from: peerTipCID, maxBlocks: effectiveDepth,
+            progressInterval: 100, progress: progress
+        )
+
+        if cancelled { throw SyncError.cancelled }
+        guard !walk.collected.isEmpty else { throw SyncError.emptyChain }
+        if walk.cumulativeWork < localCumulativeWork { throw SyncError.insufficientWork }
+
+        if let tip = walk.tipBlock {
             let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher)) ?? false
             if !valid {
                 let fullValid = try await verifyTipFrontier(tip)
-                if !fullValid {
-                    throw SyncError.invalidStateRoot(tip.index)
-                }
+                if !fullValid { throw SyncError.invalidStateRoot(tip.index) }
             }
         }
 
+        var collected = walk.collected
         collected.reverse()
-
-        return buildResult(from: collected, cumulativeWork: cumulativeWork)
+        return buildResult(from: collected, cumulativeWork: walk.cumulativeWork)
     }
 
     private func verifyTipFrontier(_ block: Block) async throws -> Bool {

@@ -340,11 +340,11 @@ enum RPCRoutes {
         let statuses = await node.chainStatus()
         let metrics = node.metrics
         for s in statuses {
-            await metrics.set("lattice_chain_height{chain=\"\(s.directory)\"}", value: Double(s.height))
-            await metrics.set("lattice_mempool_size{chain=\"\(s.directory)\"}", value: Double(s.mempoolCount))
-            await metrics.set("lattice_mining_active{chain=\"\(s.directory)\"}", value: s.mining ? 1 : 0)
+            metrics.set("lattice_chain_height{chain=\"\(s.directory)\"}", value: Double(s.height))
+            metrics.set("lattice_mempool_size{chain=\"\(s.directory)\"}", value: Double(s.mempoolCount))
+            metrics.set("lattice_mining_active{chain=\"\(s.directory)\"}", value: s.mining ? 1 : 0)
         }
-        let text = await metrics.prometheus()
+        let text = metrics.prometheus()
         var headers = HTTPFields()
         headers.append(HTTPField(name: .contentType, value: "text/plain; version=0.0.4; charset=utf-8"))
         return Response(status: .ok, headers: headers, body: .init(byteBuffer: .init(string: text)))

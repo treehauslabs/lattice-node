@@ -262,11 +262,14 @@ public actor StateStore {
     // MARK: - Batch Apply (Atomic)
 
     public func applyBlock(_ changes: StateChangeset) {
-        let log = NodeLogger("statestore")
+        let (encodedAccounts, oldValues) = prepareBlockChanges(changes)
+        executeBlockTransaction(changes, encodedAccounts: encodedAccounts, oldValues: oldValues)
+    }
 
-        // Pre-fetch all old values in a single batch query on readDb.
-        // This replaces N individual reads inside the write transaction
-        // with one SELECT ... IN (...) on the read connection.
+    private func prepareBlockChanges(_ changes: StateChangeset) -> (
+        encodedAccounts: [(path: String, data: Data)],
+        oldValues: [String: Data]
+    ) {
         var allPaths: [String] = []
         allPaths.reserveCapacity(changes.accountUpdates.count + changes.generalUpdates.count)
         for update in changes.accountUpdates {
@@ -277,13 +280,21 @@ public actor StateStore {
         }
         let oldValues = batchGetValues(paths: allPaths)
 
-        // Pre-encode all account data outside the transaction
         let encodedAccounts: [(path: String, data: Data)] = changes.accountUpdates.map { update in
             let path = "account:\(update.address)"
             let account = AccountState(balance: update.balance, nonce: update.nonce)
             return (path: path, data: Self.encodeAccount(account))
         }
 
+        return (encodedAccounts, oldValues)
+    }
+
+    private func executeBlockTransaction(
+        _ changes: StateChangeset,
+        encodedAccounts: [(path: String, data: Data)],
+        oldValues: [String: Data]
+    ) {
+        let log = NodeLogger("statestore")
         do {
             try db.beginTransaction()
 

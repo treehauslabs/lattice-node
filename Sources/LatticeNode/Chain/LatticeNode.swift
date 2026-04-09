@@ -8,6 +8,7 @@ import cashew
 import UInt256
 import ArrayTrie
 import Crypto
+import OrderedCollections
 
 public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public let config: LatticeNodeConfig
@@ -18,8 +19,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var miners: [String: MinerLoop]
     var persisters: [String: ChainStatePersister]
     var blocksSinceLastPersist: [String: UInt64]
-    var recentPeerBlocks: [String: ContinuousClock.Instant]
-    var peerBlockCounts: [PeerID: (count: Int, windowStart: ContinuousClock.Instant)]
+    var recentPeerBlocks: OrderedDictionary<String, ContinuousClock.Instant>
+    var peerBlockCounts: OrderedDictionary<PeerID, (count: Int, windowStart: ContinuousClock.Instant)>
     static let maxBlocksPerPeerPerWindow = 20
     static let peerRateWindow: Duration = .seconds(10)
     var syncTask: Task<Void, Never>?

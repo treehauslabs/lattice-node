@@ -9,9 +9,14 @@ public actor PeerStore {
     }
 
     public func save(_ peers: [PeerEndpoint]) {
+        let log = NodeLogger("peerstore")
         let entries = peers.map { PeerEntry(publicKey: $0.publicKey, host: $0.host, port: $0.port) }
-        guard let data = try? JSONEncoder().encode(entries) else { return }
-        try? data.write(to: path)
+        do {
+            let data = try JSONEncoder().encode(entries)
+            try data.write(to: path, options: .atomic)
+        } catch {
+            log.error("Failed to save \(peers.count) peers: \(error)")
+        }
     }
 
     public func load() -> [PeerEndpoint] {
