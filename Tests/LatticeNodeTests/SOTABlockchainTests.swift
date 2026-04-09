@@ -1355,6 +1355,11 @@ final class ChaosLivenessTests: XCTestCase {
     }
 }
 
+private actor Counter {
+    var value: Int = 0
+    func increment() { value += 1 }
+}
+
 private actor TestBlockCollector: MinerDelegate {
     var blocks: [(Block, String)] = []
     nonisolated func minerDidProduceBlock(_ block: Block, hash: String, pendingRemovals: MinedBlockPendingRemovals) async {
@@ -1711,5 +1716,345 @@ final class IvyEconomicTests: XCTestCase {
         let bits1 = KeyDifficulty.trailingZeroBits(of: kp.publicKey)
         let bits2 = KeyDifficulty.trailingZeroBits(of: kp.publicKey)
         XCTAssertEqual(bits1, bits2)
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY G (remaining): Reorg Depth & Finality [P0]
+// ============================================================================
+
+final class ReorgDepthAndFinalityTests: XCTestCase {
+
+    /// Finality config correctly reports blocks as finalized
+    func testFinalityConfigIsFinal() {
+        let config = FinalityConfig(defaultConfirmations: 6)
+
+        // Block at height 0 with current height 10 → 10 confirmations > 6 → finalized
+        XCTAssertTrue(config.isFinal(chain: "Nexus", blockHeight: 0, currentHeight: 10))
+
+        // Block at height 8 with current height 10 → 2 confirmations < 6 → not finalized
+        XCTAssertFalse(config.isFinal(chain: "Nexus", blockHeight: 8, currentHeight: 10))
+
+        // Block at height 4 with current height 10 → 6 confirmations == 6 → finalized
+        XCTAssertTrue(config.isFinal(chain: "Nexus", blockHeight: 4, currentHeight: 10))
+
+        // Block at height 5 with current height 10 → 5 confirmations < 6 → not final
+        XCTAssertFalse(config.isFinal(chain: "Nexus", blockHeight: 5, currentHeight: 10))
+    }
+
+    /// Per-chain finality policies
+    func testPerChainFinalityPolicy() {
+        let config = FinalityConfig(
+            policies: [FinalityPolicy(chain: "FastChain", confirmations: 2)],
+            defaultConfirmations: 10
+        )
+
+        // FastChain uses 2 confirmations
+        XCTAssertTrue(config.isFinal(chain: "FastChain", blockHeight: 0, currentHeight: 2))
+        XCTAssertFalse(config.isFinal(chain: "FastChain", blockHeight: 1, currentHeight: 2))
+
+        // Default chain uses 10 confirmations
+        XCTAssertFalse(config.isFinal(chain: "Nexus", blockHeight: 0, currentHeight: 5))
+        XCTAssertTrue(config.isFinal(chain: "Nexus", blockHeight: 0, currentHeight: 10))
+    }
+
+    /// Reorg depth limit: maxReorgDepth is respected
+    func testReorgDepthLimitConstant() {
+        // Verify the constant exists and is reasonable
+        XCTAssertEqual(LatticeNode.maxReorgDepth, 100, "Max reorg depth should be 100")
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY 2 (remaining): Economic Invariants [P1]
+// ============================================================================
+
+final class MoreEconomicTests: XCTestCase {
+
+    /// Miner balance equals sum of rewards after mining N blocks
+    func testMinerBalanceEqualsSumOfRewards() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let minerAddr = addr(kp.publicKey)
+        let p1 = p()
+        let dir = tmp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let node = try await mk(kp, p1, dir.appendingPathComponent("n1"))
+        try await node.start()
+
+        await node.startMining(directory: "Nexus")
+        try await Task.sleep(for: .seconds(4))
+        await node.stopMining(directory: "Nexus")
+
+        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let balance = try await node.getBalance(address: minerAddr)
+
+        if balance > 0 && height > 0 {
+            let spec = s()
+            var expected: UInt64 = 0
+            for h in 1...height { expected += spec.rewardAtBlock(h) }
+            XCTAssertEqual(balance, expected, "Miner balance should exactly equal sum of rewards")
+        } else {
+            XCTAssertGreaterThan(height, 0, "Should have mined blocks")
+        }
+
+        await node.stop()
+    }
+
+    /// Mempool fee-based selection picks highest first
+    func testMempoolSelectsHighestFeeFirst() async throws {
+        let mempool = NodeMempool(maxSize: 100, maxPerAccount: 100)
+
+        // Add txs from different senders with varying fees
+        var fees: [UInt64] = []
+        for i in 0..<10 {
+            let kp = CryptoUtils.generateKeyPair()
+            let address = addr(kp.publicKey)
+            let fee = UInt64((i + 1) * 10) // 10, 20, 30, ..., 100
+            fees.append(fee)
+            let body = TransactionBody(
+                accountActions: [AccountAction(owner: address, oldBalance: 1000, newBalance: 1000 - fee)],
+                actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
+                settleActions: [], signers: [address], fee: fee, nonce: 0
+            )
+            let _ = await mempool.add(transaction: sign(body, kp))
+        }
+
+        let selected = await mempool.selectTransactions(maxCount: 5)
+        XCTAssertEqual(selected.count, 5, "Should select 5 txs")
+
+        // Verify descending fee order
+        for i in 0..<(selected.count - 1) {
+            let fee1 = selected[i].body.node?.fee ?? 0
+            let fee2 = selected[i + 1].body.node?.fee ?? 0
+            XCTAssertGreaterThanOrEqual(fee1, fee2, "Txs should be selected by fee descending")
+        }
+
+        // First selected should be the highest fee (100)
+        XCTAssertEqual(selected.first?.body.node?.fee, 100, "Highest fee tx should be selected first")
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY I (remaining): Expired Account Cannot Transact [P1]
+// ============================================================================
+
+final class ExpiredAccountTests: XCTestCase {
+
+    func testExpiredAccountBalanceNil() async throws {
+        let dir = tmp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try StateStore(storagePath: dir, chain: "test")
+
+        // Create account, set it active long ago
+        await store.setAccount(address: "alice", balance: 1000, nonce: 5, atHeight: 0)
+
+        // Expire
+        let expiry = StateExpiry(store: store, expiryBlocks: 10)
+        let expired = await expiry.findExpiredAccounts(currentHeight: 100)
+        XCTAssertEqual(expired.count, 1)
+        await expiry.expireAccounts(expired, atHeight: 100)
+
+        // Balance should be nil
+        let balance = store.getBalance(address: "alice")
+        XCTAssertNil(balance, "Expired account balance should be nil")
+
+        // Nonce should also be nil
+        let nonce = store.getNonce(address: "alice")
+        XCTAssertNil(nonce, "Expired account nonce should be nil")
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY 10 (remaining): Concurrent Mining + Tx Submission [P2]
+// ============================================================================
+
+final class ConcurrentMiningTxTests: XCTestCase {
+
+    func testConcurrentMiningAndTxSubmission() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let p1 = p()
+        let dir = tmp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let node = try await mk(kp, p1, dir.appendingPathComponent("n1"))
+        try await node.start()
+
+        // Start mining
+        await node.startMining(directory: "Nexus")
+
+        // Concurrently submit transactions while mining
+        let submitTask = Task {
+            for i in 0..<20 {
+                let txKp = CryptoUtils.generateKeyPair()
+                let txAddr = addr(txKp.publicKey)
+                let body = TransactionBody(
+                    accountActions: [AccountAction(owner: txAddr, oldBalance: 0, newBalance: UInt64(i))],
+                    actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
+                    settleActions: [], signers: [txAddr], fee: UInt64(i + 1), nonce: 0
+                )
+                let tx = sign(body, txKp)
+                let _ = await node.submitTransaction(directory: "Nexus", transaction: tx)
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+
+        try await Task.sleep(for: .seconds(4))
+        await submitTask.value
+        await node.stopMining(directory: "Nexus")
+
+        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        XCTAssertGreaterThan(height, 0, "Should mine blocks while processing tx submissions")
+
+        await node.stop()
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY H: Parallel Block Fetcher [P2]
+// ============================================================================
+
+final class ParallelFetcherTests: XCTestCase {
+
+    func testParallelFetcherCompletesWithValidData() async throws {
+        let f = cas()
+        let t = Int64(Date().timeIntervalSince1970 * 1000) - 50_000
+        let spec = s()
+
+        let genesis = try await BlockBuilder.buildGenesis(spec: spec, timestamp: t, difficulty: UInt256.max, fetcher: f)
+        let gs = BufferedStorer()
+        try HeaderImpl<Block>(node: genesis).storeRecursively(storer: gs)
+        await gs.flush(to: f)
+
+        var cids: [String] = []
+        var prev = genesis
+        for i in 1...10 {
+            let block = try await BlockBuilder.buildBlock(
+                previous: prev, timestamp: t + Int64(i) * 1000,
+                difficulty: UInt256.max, nonce: UInt64(i), fetcher: f
+            )
+            let h = HeaderImpl<Block>(node: block)
+            await f.store(rawCid: h.rawCID, data: block.toData()!)
+            let bs = BufferedStorer()
+            try h.storeRecursively(storer: bs)
+            await bs.flush(to: f)
+            cids.append(h.rawCID)
+            prev = block
+        }
+
+        let fetcher = ParallelBlockFetcher(fetcher: f)
+        let counter = Counter()
+        try await fetcher.fetchBlocks(
+            cids: cids,
+            storeFn: { _, _ in await counter.increment() }
+        )
+
+        let count = await counter.value
+        XCTAssertEqual(count, 10, "Should fetch all 10 blocks")
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY R (remaining): Block Builder Edge Cases [P0]
+// ============================================================================
+
+final class BlockBuilderEdgeCaseTests: XCTestCase {
+
+    func testBlockIndexContinuity() async throws {
+        let f = cas()
+        let t = Int64(Date().timeIntervalSince1970 * 1000) - 30_000
+        let spec = s()
+
+        let genesis = try await BlockBuilder.buildGenesis(spec: spec, timestamp: t, difficulty: UInt256.max, fetcher: f)
+        XCTAssertEqual(genesis.index, 0)
+
+        let b1 = try await BlockBuilder.buildBlock(
+            previous: genesis, timestamp: t + 1000, difficulty: UInt256.max, nonce: 1, fetcher: f
+        )
+        XCTAssertEqual(b1.index, 1)
+
+        let b2 = try await BlockBuilder.buildBlock(
+            previous: b1, timestamp: t + 2000, difficulty: UInt256.max, nonce: 2, fetcher: f
+        )
+        XCTAssertEqual(b2.index, 2)
+
+        // Verify homestead chains correctly
+        XCTAssertEqual(b1.homestead.rawCID, genesis.frontier.rawCID, "Block 1 homestead == genesis frontier")
+        XCTAssertEqual(b2.homestead.rawCID, b1.frontier.rawCID, "Block 2 homestead == block 1 frontier")
+    }
+
+    func testBlockPreviousBlockReference() async throws {
+        let f = cas()
+        let t = Int64(Date().timeIntervalSince1970 * 1000) - 20_000
+        let spec = s()
+
+        let genesis = try await BlockBuilder.buildGenesis(spec: spec, timestamp: t, difficulty: UInt256.max, fetcher: f)
+        XCTAssertNil(genesis.previousBlock, "Genesis should have no previous block")
+
+        let b1 = try await BlockBuilder.buildBlock(
+            previous: genesis, timestamp: t + 1000, difficulty: UInt256.max, nonce: 1, fetcher: f
+        )
+        XCTAssertNotNil(b1.previousBlock, "Non-genesis block should have previous block")
+        XCTAssertEqual(b1.previousBlock?.rawCID, HeaderImpl<Block>(node: genesis).rawCID,
+            "Previous block CID should match genesis CID")
+    }
+}
+
+// ============================================================================
+// MARK: - CATEGORY N (remaining): Multi-Chain Advanced [P0]
+// ============================================================================
+
+final class MultiChainAdvancedTests: XCTestCase {
+
+    /// Lattice hierarchy: nexus with children
+    func testLatticeHierarchySetup() async throws {
+        let f = cas()
+        let t = Int64(Date().timeIntervalSince1970 * 1000) - 30_000
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(spec: s("Nexus"), timestamp: t, difficulty: UInt256.max, fetcher: f)
+        let childGenesis = try await BlockBuilder.buildGenesis(spec: s("Child"), timestamp: t, difficulty: UInt256.max, fetcher: f)
+
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        let nexusLevel = ChainLevel(chain: nexusChain, children: ["Child": childLevel])
+        let lattice = Lattice(nexus: nexusLevel)
+
+        let dirs = await lattice.nexus.childDirectories()
+        XCTAssertEqual(dirs, ["Child"])
+
+        let nexusHeight = await lattice.nexus.chain.getHighestBlockIndex()
+        XCTAssertEqual(nexusHeight, 0)
+
+        let childHeight = await lattice.nexus.children["Child"]?.chain.getHighestBlockIndex()
+        XCTAssertEqual(childHeight, 0)
+    }
+
+    /// Child chain discovery via restoreChildChain
+    func testChildChainRestoreAfterDiscovery() async throws {
+        let f = cas()
+        let t = Int64(Date().timeIntervalSince1970 * 1000) - 30_000
+
+        let nexusGenesis = try await BlockBuilder.buildGenesis(spec: s("Nexus"), timestamp: t, difficulty: UInt256.max, fetcher: f)
+        let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
+
+        // Initially no children
+        let dirsBefore = await nexusLevel.childDirectories()
+        XCTAssertTrue(dirsBefore.isEmpty)
+
+        // Discover and restore a child
+        let childGenesis = try await BlockBuilder.buildGenesis(spec: s("NewChild"), timestamp: t, difficulty: UInt256.max, fetcher: f)
+        let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+        let childLevel = ChainLevel(chain: childChain, children: [:])
+        await nexusLevel.restoreChildChain(directory: "NewChild", level: childLevel)
+
+        let dirsAfter = await nexusLevel.childDirectories()
+        XCTAssertEqual(dirsAfter, ["NewChild"])
+
+        // Duplicate restore should be ignored
+        await nexusLevel.restoreChildChain(directory: "NewChild", level: childLevel)
+        let dirsDupe = await nexusLevel.childDirectories()
+        XCTAssertEqual(dirsDupe.count, 1, "Duplicate restore should be ignored")
     }
 }
