@@ -7,37 +7,7 @@ import UInt256
 import cashew
 import Acorn
 
-// Shared test helpers
-private actor TestWorker: AcornCASWorker {
-    var near: (any AcornCASWorker)?
-    var far: (any AcornCASWorker)?
-    var timeout: Duration? { nil }
-    private var store: [ContentIdentifier: Data] = [:]
-    func has(cid: ContentIdentifier) -> Bool { store[cid] != nil }
-    func getLocal(cid: ContentIdentifier) async -> Data? { store[cid] }
-    func storeLocal(cid: ContentIdentifier, data: Data) async { store[cid] = data }
-    var count: Int { store.count }
-}
-
-private func cas() -> AcornFetcher { AcornFetcher(worker: TestWorker()) }
-
-private func makeSpec(_ dir: String = "Nexus", premine: UInt64 = 0) -> ChainSpec {
-    ChainSpec(directory: dir, maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-              maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
-}
-
-private func sign(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {
-    let h = HeaderImpl<TransactionBody>(node: body)
-    let sig = CryptoUtils.sign(message: h.rawCID, privateKeyHex: kp.privateKey)!
-    return Transaction(signatures: [kp.publicKey: sig], body: h)
-}
-
-private func addr(_ pubKey: String) -> String {
-    HeaderImpl<PublicKey>(node: PublicKey(key: pubKey)).rawCID
-}
-
-private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+// Helpers in TestHelpers.swift: cas(), testSpec(), sign(), addr(), now()
 
 // ============================================================================
 // MARK: - 1. State Root Verification
@@ -51,7 +21,7 @@ final class StateRootVerificationTests: XCTestCase {
     func testFrontierMatchesHomesteadPlusTransactions() async throws {
         let f = cas()
         let t = now() - 20_000
-        let s = makeSpec()
+        let s = testSpec()
         let kp = CryptoUtils.generateKeyPair()
         let minerAddr = addr(kp.publicKey)
 
@@ -110,7 +80,7 @@ final class StateRootVerificationTests: XCTestCase {
     func testMultiTransactionBlockStateConservation() async throws {
         let f = cas()
         let t = now() - 30_000
-        let s = makeSpec("Nexus", premine: 1_000_000)
+        let s = testSpec("Nexus", premine: 1_000_000)
         let sender = CryptoUtils.generateKeyPair()
         let senderAddr = addr(sender.publicKey)
         let receiver = CryptoUtils.generateKeyPair()
@@ -364,7 +334,7 @@ final class LongChainSyncTests: XCTestCase {
     func testSnapshotSyncWith50Blocks() async throws {
         let f = cas()
         let t = now() - 2_000_000
-        let s = makeSpec()
+        let s = testSpec()
 
         let genesis = try await BlockBuilder.buildGenesis(
             spec: s, timestamp: t, difficulty: UInt256.max, fetcher: f
@@ -421,7 +391,7 @@ final class LongChainSyncTests: XCTestCase {
     func testFullSyncWith100Blocks() async throws {
         let f = cas()
         let t = now() - 200_000
-        let s = makeSpec()
+        let s = testSpec()
 
         let genesis = try await BlockBuilder.buildGenesis(
             spec: s, timestamp: t, difficulty: UInt256.max, fetcher: f
@@ -488,7 +458,7 @@ final class RestartResilienceTests: XCTestCase {
     func testPersistRestoreContinueMining() async throws {
         let f = cas()
         let t = now() - 50_000
-        let s = makeSpec()
+        let s = testSpec()
 
         let genesis = try await BlockBuilder.buildGenesis(
             spec: s, timestamp: t, difficulty: UInt256.max, fetcher: f

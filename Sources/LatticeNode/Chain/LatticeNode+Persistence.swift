@@ -5,15 +5,8 @@ import cashew
 extension LatticeNode {
 
     func persistChainState(directory: String) async {
-        guard let persister = persisters[directory] else { return }
-        let chainState: ChainState
-        if directory == genesisConfig.spec.directory {
-            chainState = await lattice.nexus.chain
-        } else if let childLevel = await lattice.nexus.children[directory] {
-            chainState = await childLevel.chain
-        } else {
-            return
-        }
+        guard let persister = persisters[directory],
+              let chainState = await chain(for: directory) else { return }
         let persisted = await chainState.persist()
         do {
             try await persister.save(persisted)
@@ -34,15 +27,8 @@ extension LatticeNode {
     }
 
     private func runStateExpiry(directory: String) async {
-        guard let store = stateStores[directory] else { return }
-        let chain: ChainState
-        if directory == genesisConfig.spec.directory {
-            chain = await lattice.nexus.chain
-        } else if let childLevel = await lattice.nexus.children[directory] {
-            chain = await childLevel.chain
-        } else {
-            return
-        }
+        guard let store = stateStores[directory],
+              let chain = await chain(for: directory) else { return }
         let currentHeight = await chain.getHighestBlockIndex()
         let expiry = StateExpiry(store: store)
         let expired = await expiry.findExpiredAccounts(currentHeight: currentHeight)

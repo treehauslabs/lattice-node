@@ -1,25 +1,21 @@
 import Foundation
+import Synchronization
 
-/// Lock-free (NSLock) cache for the chain tip hash.
+/// Lock-free cache for the chain tip hash.
 /// Allows MinerLoop to check for tip changes without an actor hop into ChainState.
 /// Updated by LatticeNode whenever a block is accepted or mined.
-public final class TipCache: @unchecked Sendable {
-    private var _tip: String
-    private let lock = NSLock()
+public final class TipCache: Sendable {
+    private let _tip: Mutex<String>
 
     public init(tip: String) {
-        self._tip = tip
+        self._tip = Mutex(tip)
     }
 
     public var tip: String {
-        lock.lock()
-        defer { lock.unlock() }
-        return _tip
+        _tip.withLock { $0 }
     }
 
     public func update(_ newTip: String) {
-        lock.lock()
-        _tip = newTip
-        lock.unlock()
+        _tip.withLock { $0 = newTip }
     }
 }

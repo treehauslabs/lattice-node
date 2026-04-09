@@ -49,7 +49,7 @@ public enum NexusGenesis {
     // new 100-year halving economics. Set to nil to auto-compute on first run,
     // then hardcode the result for deterministic verification.
 
-    nonisolated(unsafe) public static var expectedBlockHash: String? = "baguqeeradl3hl72pqtxrpr2nqc5yk6k3cy35j3jwsprvyq2uhg7jzdp2jsua"
+    public static let expectedBlockHash: String? = "baguqeeradl3hl72pqtxrpr2nqc5yk6k3cy35j3jwsprvyq2uhg7jzdp2jsua"
 
     // MARK: - Genesis Configuration
 
@@ -65,7 +65,6 @@ public enum NexusGenesis {
         if let expected = expectedBlockHash {
             return result.blockHash == expected
         }
-        expectedBlockHash = result.blockHash
         return true
     }
 

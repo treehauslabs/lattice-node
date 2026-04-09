@@ -14,21 +14,11 @@ import FoundationNetworking
 /// SOTA blockchain tests: 90+ tests across 30 categories.
 /// Inspired by Bitcoin Core, CometBFT, GossipSub, Jepsen, Ethereum Hive.
 
-// MARK: - Shared Helpers
+// MARK: - Shared Helpers (see TestHelpers.swift for: cas(), testSpec(), sign(), addr(), now(), nextTestPort())
 
-private nonisolated(unsafe) var _sp: UInt16 = UInt16(ProcessInfo.processInfo.processIdentifier % 3000) + 50000
-private func p() -> UInt16 { _sp += 1; return _sp }
-
-private func s(_ dir: String = "Nexus", premine: UInt64 = 0) -> ChainSpec {
-    ChainSpec(directory: dir, maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-              maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
-}
-
-private func g() -> GenesisConfig {
-    GenesisConfig(spec: s(), timestamp: Int64(Date().timeIntervalSince1970 * 1000) - 10_000, difficulty: UInt256.max)
-}
-
+private func s(_ dir: String = "Nexus", premine: UInt64 = 0) -> ChainSpec { testSpec(dir, premine: premine) }
+private func g() -> GenesisConfig { testGenesis() }
+private func p() -> UInt16 { nextTestPort() }
 private func tmp() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
 
 private func mk(_ kp: (publicKey: String, privateKey: String), _ port: UInt16, _ dir: URL,
@@ -38,28 +28,6 @@ private func mk(_ kp: (publicKey: String, privateKey: String), _ port: UInt16, _
         listenPort: port, bootstrapPeers: bootstrap,
         storagePath: dir, enableLocalDiscovery: false, persistInterval: 1
     ), genesisConfig: genesis ?? g())
-}
-
-private actor TestWorker: AcornCASWorker {
-    var near: (any AcornCASWorker)?
-    var far: (any AcornCASWorker)?
-    var timeout: Duration? { nil }
-    private var store: [ContentIdentifier: Data] = [:]
-    func has(cid: ContentIdentifier) -> Bool { store[cid] != nil }
-    func getLocal(cid: ContentIdentifier) async -> Data? { store[cid] }
-    func storeLocal(cid: ContentIdentifier, data: Data) async { store[cid] = data }
-}
-
-private func cas() -> AcornFetcher { AcornFetcher(worker: TestWorker()) }
-
-private func sign(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {
-    let h = HeaderImpl<TransactionBody>(node: body)
-    let sig = CryptoUtils.sign(message: h.rawCID, privateKeyHex: kp.privateKey)!
-    return Transaction(signatures: [kp.publicKey: sig], body: h)
-}
-
-private func addr(_ pubKey: String) -> String {
-    HeaderImpl<PublicKey>(node: PublicKey(key: pubKey)).rawCID
 }
 
 // ============================================================================
@@ -605,8 +573,8 @@ final class CASIntegrityTests: XCTestCase {
     }
 
     func testWorkerChainTraversal() async throws {
-        let memory = TestWorker()
-        let disk = TestWorker()
+        let memory = TestCASWorker()
+        let disk = TestCASWorker()
         let composite = await CompositeCASWorker(workers: ["mem": memory, "disk": disk], order: ["mem", "disk"])
 
         let cid = ContentIdentifier(for: Data("test".utf8))

@@ -7,12 +7,16 @@ import cashew
 extension LatticeNode {
 
     static let maxTimestampDriftMs: Int64 = 7_200_000
+    static let maxTimestampAgeMs: Int64 = 86_400_000
+    static let blockDeduplicationWindow: Duration = .milliseconds(100)
+    static let peerBlockCountCleanupThreshold = 5000
+    static let peerBlockCountWindow: Duration = .seconds(30)
     static let maxReorgDepth: Int = 100
 
     nonisolated func isBlockTimestampValid(_ block: Block) -> Bool {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         if block.timestamp > nowMs + Self.maxTimestampDriftMs { return false }
-        if block.timestamp < nowMs - 86_400_000 { return false }
+        if block.timestamp < nowMs - Self.maxTimestampAgeMs { return false }
         return true
     }
 
@@ -76,14 +80,7 @@ extension LatticeNode {
         fetcher: Fetcher,
         resolvedBlock: Block? = nil
     ) async -> Bool {
-        let chain: ChainState
-        if directory == genesisConfig.spec.directory {
-            chain = await lattice.nexus.chain
-        } else if let childLevel = await lattice.nexus.children[directory] {
-            chain = await childLevel.chain
-        } else {
-            return false
-        }
+        guard let chain = await chain(for: directory) else { return false }
         let tipBefore = await chain.getMainChainTip()
 
         let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
@@ -96,100 +93,12 @@ extension LatticeNode {
             block = try? await header.resolve(fetcher: fetcher).node
         }
         if let block {
-            // Build mempool-aware fetcher: pre-compute Volume CIDs from mempool
-            // transactions so resolveRecursive hits in-memory cache instead of network.
-            // Each transaction in the block is a VolumeImpl<Transaction> boundary —
-            // the cache short-circuits both fetch() and provide() (pinner discovery).
-            let txFetcher: Fetcher
-            if let network = networks[directory] {
-                let mempoolTxs = await network.nodeMempool.allTransactions()
-                var txDataCache: [String: Data] = [:]
-                txDataCache.reserveCapacity(mempoolTxs.count * 2)
-                for tx in mempoolTxs {
-                    if let data = tx.toData() {
-                        let volumeCID = VolumeImpl<Transaction>(node: tx).rawCID
-                        txDataCache[volumeCID] = data
-                    }
-                    // Also cache body data so body resolution is in-memory too
-                    if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
-                        txDataCache[tx.body.rawCID] = bodyData
-                    }
-                }
-                txFetcher = txDataCache.isEmpty ? fetcher : MempoolAwareFetcher(inner: fetcher, cache: txDataCache)
-            } else {
-                txFetcher = fetcher
-            }
-
-            // Resolve transactions once — used for fees, state changeset, and receipts
-            let txEntries: [String: HeaderImpl<Transaction>]
-            if let txDict = try? await block.transactions.resolveRecursive(fetcher: txFetcher).node,
-               let entries = try? txDict.allKeysAndValues() {
-                txEntries = entries
-            } else {
-                txEntries = [:]
-            }
-
-            let store = stateStores[directory]
-            let network = networks[directory]
-
-            // Parallel Phase: extract changeset + build receipts concurrently.
-            // extractStateChangeset uses batch SQL (1 query for all nonces).
-            // Receipt building runs concurrently using a task group for JSON encoding.
-            let blockHash = header.rawCID
-            let blockHeight = block.index
-            let blockTimestamp = block.timestamp
-
-            async let receiptTask = buildReceiptsParallel(
-                txEntries: txEntries, blockHash: blockHash,
-                blockHeight: blockHeight, blockTimestamp: blockTimestamp
+            let txFetcher = await buildMempoolAwareFetcher(directory: directory, baseFetcher: fetcher)
+            let txEntries = await resolveBlockTransactions(block: block, fetcher: txFetcher)
+            await applyAcceptedBlock(
+                block: block, blockHash: header.rawCID,
+                txEntries: txEntries, directory: directory
             )
-
-            let changeset = extractStateChangeset(
-                block: block, blockHash: blockHash,
-                txEntries: txEntries, store: store
-            )
-
-            // Extract fees inline (lightweight — just reads from already-resolved tx bodies)
-            var txFees: [UInt64] = []
-            for (_, txHeader) in txEntries {
-                if let fee = txHeader.node?.body.node?.fee, fee > 0 {
-                    txFees.append(fee)
-                }
-            }
-
-            // Wait for receipts
-            let (generalEntries, txHistoryEntries) = await receiptTask
-
-            // Sequential Phase: apply state, emit events, index receipts
-            if let store {
-                await store.applyBlock(changeset)
-            }
-
-            // Batch mempool nonce update — one actor hop instead of N
-            if let network {
-                let nonceUpdates = changeset.accountUpdates.map {
-                    (sender: $0.address, nonce: $0.nonce)
-                }
-                await network.nodeMempool.batchUpdateConfirmedNonces(updates: nonceUpdates)
-            }
-
-            if let store {
-                await store.batchIndexReceipts(generalEntries: generalEntries, txHistory: txHistoryEntries)
-            }
-
-            if !txFees.isEmpty {
-                await feeEstimator.recordBlock(height: blockHeight, transactionFees: txFees)
-            }
-
-            await subscriptions.emit(.newBlock(
-                hash: blockHash,
-                height: blockHeight,
-                directory: directory,
-                timestamp: blockTimestamp
-            ))
-
-            await metrics.increment("lattice_blocks_accepted_total")
-            await metrics.set("lattice_chain_height", value: Double(blockHeight))
         }
 
         let tipAfter = await chain.getMainChainTip()
@@ -254,24 +163,7 @@ extension LatticeNode {
 
         // Step 1: Roll back StateStore and resolve orphaned block transactions (newest first)
         // orphanedBlockHashes is already newest-to-oldest order
-        // Build mempool-aware fetcher once for all orphaned blocks
-        let reorgFetcher: Fetcher
-        if let network {
-            let mempoolTxs = await network.nodeMempool.allTransactions()
-            var txDataCache: [String: Data] = [:]
-            txDataCache.reserveCapacity(mempoolTxs.count * 2)
-            for tx in mempoolTxs {
-                if let data = tx.toData() {
-                    txDataCache[VolumeImpl<Transaction>(node: tx).rawCID] = data
-                }
-                if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
-                    txDataCache[tx.body.rawCID] = bodyData
-                }
-            }
-            reorgFetcher = txDataCache.isEmpty ? fetcher : MempoolAwareFetcher(inner: fetcher, cache: txDataCache)
-        } else {
-            reorgFetcher = fetcher
-        }
+        let reorgFetcher = await buildMempoolAwareFetcher(directory: dir, baseFetcher: fetcher)
 
         var orphanedBlockTxs: [(block: Block, txEntries: [String: HeaderImpl<Transaction>])] = []
         for blockHash in orphanedBlockHashes {
@@ -280,13 +172,7 @@ extension LatticeNode {
                 log.error("Missing CAS data for orphaned block \(blockHash) — skipping")
                 continue
             }
-            let txEntries: [String: HeaderImpl<Transaction>]
-            if let txDict = try? await block.transactions.resolveRecursive(fetcher: reorgFetcher).node,
-               let entries = try? txDict.allKeysAndValues() {
-                txEntries = entries
-            } else {
-                txEntries = [:]
-            }
+            let txEntries = await resolveBlockTransactions(block: block, fetcher: reorgFetcher)
             orphanedBlockTxs.append((block: block, txEntries: txEntries))
 
             if let store = stateStores[dir] {
@@ -381,13 +267,7 @@ extension LatticeNode {
                     childBlock = resolved
                 }
 
-                let childTxEntries: [String: HeaderImpl<Transaction>]
-                if let txDict = try? await childBlock.transactions.resolveRecursive(fetcher: fetcher).node,
-                   let txEs = try? txDict.allKeysAndValues() {
-                    childTxEntries = txEs
-                } else {
-                    childTxEntries = [:]
-                }
+                let childTxEntries = await resolveBlockTransactions(block: childBlock, fetcher: fetcher)
 
                 // Roll back account state from transaction accountActions
                 for (_, txHeader) in childTxEntries {
@@ -463,7 +343,7 @@ extension LatticeNode {
         let key = cid
         if let lastSeen = await recentBlockTime(for: key) {
             let elapsed = now - lastSeen
-            if elapsed < .milliseconds(100) {
+            if elapsed < Self.blockDeduplicationWindow {
                 return
             }
         }
@@ -527,7 +407,7 @@ extension LatticeNode {
 
         let now = ContinuousClock.Instant.now
         if let lastSeen = await recentBlockTime(for: cid) {
-            if now - lastSeen < .milliseconds(100) { return }
+            if now - lastSeen < Self.blockDeduplicationWindow { return }
         }
         await recordBlockTime(key: cid, time: now)
 
@@ -572,8 +452,8 @@ extension LatticeNode {
     func isPeerBlockRateLimited(_ peer: PeerID) -> Bool {
         let now = ContinuousClock.Instant.now
 
-        if peerBlockCounts.count > 5000 {
-            peerBlockCounts = peerBlockCounts.filter { now - $0.value.windowStart < .seconds(30) }
+        if peerBlockCounts.count > Self.peerBlockCountCleanupThreshold {
+            peerBlockCounts = peerBlockCounts.filter { now - $0.value.windowStart < Self.peerBlockCountWindow }
         }
 
         if let entry = peerBlockCounts[peer] {
@@ -600,9 +480,98 @@ extension LatticeNode {
     func recordBlockTime(key: String, time: ContinuousClock.Instant) {
         recentPeerBlocks[key] = time
         if recentPeerBlocks.count > Self.maxRecentPeerBlocks * 2 {
-            let cutoff = time - .seconds(30)
+            let cutoff = time - Self.peerBlockCountWindow
             recentPeerBlocks = recentPeerBlocks.filter { $0.value >= cutoff }
         }
+    }
+
+    // MARK: - Shared Helpers
+
+    /// Build a fetcher that pre-caches mempool transaction data for in-memory resolution.
+    func buildMempoolAwareFetcher(directory: String, baseFetcher: Fetcher) async -> Fetcher {
+        guard let network = networks[directory] else { return baseFetcher }
+        let mempoolTxs = await network.nodeMempool.allTransactions()
+        var txDataCache: [String: Data] = [:]
+        txDataCache.reserveCapacity(mempoolTxs.count * 2)
+        for tx in mempoolTxs {
+            if let data = tx.toData() {
+                txDataCache[VolumeImpl<Transaction>(node: tx).rawCID] = data
+            }
+            if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
+                txDataCache[tx.body.rawCID] = bodyData
+            }
+        }
+        return txDataCache.isEmpty ? baseFetcher : MempoolAwareFetcher(inner: baseFetcher, cache: txDataCache)
+    }
+
+    /// Resolve a block's transaction dictionary into keyed entries.
+    func resolveBlockTransactions(block: Block, fetcher: Fetcher) async -> [String: HeaderImpl<Transaction>] {
+        if let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
+           let entries = try? txDict.allKeysAndValues() {
+            return entries
+        }
+        return [:]
+    }
+
+    /// Apply an accepted block's state changes, receipts, fees, events, and metrics.
+    private func applyAcceptedBlock(
+        block: Block,
+        blockHash: String,
+        txEntries: [String: HeaderImpl<Transaction>],
+        directory: String
+    ) async {
+        let store = stateStores[directory]
+        let network = networks[directory]
+        let blockHeight = block.index
+        let blockTimestamp = block.timestamp
+
+        async let receiptTask = buildReceiptsParallel(
+            txEntries: txEntries, blockHash: blockHash,
+            blockHeight: blockHeight, blockTimestamp: blockTimestamp
+        )
+
+        let changeset = extractStateChangeset(
+            block: block, blockHash: blockHash,
+            txEntries: txEntries, store: store
+        )
+
+        var txFees: [UInt64] = []
+        for (_, txHeader) in txEntries {
+            if let fee = txHeader.node?.body.node?.fee, fee > 0 {
+                txFees.append(fee)
+            }
+        }
+
+        let (generalEntries, txHistoryEntries) = await receiptTask
+
+        if let store {
+            await store.applyBlock(changeset)
+        }
+
+        if let network {
+            let nonceUpdates = changeset.accountUpdates.map {
+                (sender: $0.address, nonce: $0.nonce)
+            }
+            await network.nodeMempool.batchUpdateConfirmedNonces(updates: nonceUpdates)
+        }
+
+        if let store {
+            await store.batchIndexReceipts(generalEntries: generalEntries, txHistory: txHistoryEntries)
+        }
+
+        if !txFees.isEmpty {
+            await feeEstimator.recordBlock(height: blockHeight, transactionFees: txFees)
+        }
+
+        await subscriptions.emit(.newBlock(
+            hash: blockHash,
+            height: blockHeight,
+            directory: directory,
+            timestamp: blockTimestamp
+        ))
+
+        await metrics.increment("lattice_blocks_accepted_total")
+        await metrics.set("lattice_chain_height", value: Double(blockHeight))
     }
 
     func extractStateChangeset(

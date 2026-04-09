@@ -155,7 +155,7 @@ public actor MinerLoop {
                     await Task.yield()
                 }
             } catch {
-                print("  [miner] error: \(error)")
+                NodeLogger("miner").error("\(error)")
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }

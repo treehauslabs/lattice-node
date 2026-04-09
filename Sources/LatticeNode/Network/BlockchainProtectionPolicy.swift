@@ -1,9 +1,9 @@
 import Foundation
 import Ivy
+import OrderedCollections
 
 public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
-    private var pinnedCIDs: Set<String> = []
-    private var pinnedOrder: [String] = []
+    private var pinnedCIDs: OrderedSet<String> = []
     private var chainTipCIDs: Set<String> = []
     private var chainTipsByCID: [String: String] = [:]
     private let maxPinnedCount: Int
@@ -15,10 +15,8 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
     // MARK: - Pinning (miner's own content)
 
     public func pin(_ cid: String) {
-        if pinnedCIDs.insert(cid).inserted {
-            pinnedOrder.append(cid)
-            evictPinnedIfNeeded()
-        }
+        pinnedCIDs.append(cid)
+        evictPinnedIfNeeded()
     }
 
     public func pinAll(_ cids: [String]) {
@@ -26,9 +24,8 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
     }
 
     private func evictPinnedIfNeeded() {
-        while pinnedOrder.count > maxPinnedCount {
-            let oldest = pinnedOrder.removeFirst()
-            pinnedCIDs.remove(oldest)
+        while pinnedCIDs.count > maxPinnedCount {
+            pinnedCIDs.removeFirst()
         }
     }
 

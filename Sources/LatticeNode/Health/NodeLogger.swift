@@ -1,26 +1,14 @@
-import Foundation
-
-public enum LogLevel: String, Sendable {
-    case debug = "DEBUG"
-    case info = "INFO"
-    case warn = "WARN"
-    case error = "ERROR"
-}
+import Logging
 
 public struct NodeLogger: Sendable {
-    public let subsystem: String
+    private let logger: Logger
 
     public init(_ subsystem: String) {
-        self.subsystem = subsystem
+        self.logger = Logger(label: "lattice.\(subsystem)")
     }
 
-    public func log(_ level: LogLevel, _ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        print("[\(timestamp)] [\(level.rawValue)] [\(subsystem)] \(message)")
-    }
-
-    public func debug(_ msg: String) { log(.debug, msg) }
-    public func info(_ msg: String) { log(.info, msg) }
-    public func warn(_ msg: String) { log(.warn, msg) }
-    public func error(_ msg: String) { log(.error, msg) }
+    public func debug(_ msg: String) { logger.debug("\(msg)") }
+    public func info(_ msg: String) { logger.info("\(msg)") }
+    public func warn(_ msg: String) { logger.warning("\(msg)") }
+    public func error(_ msg: String) { logger.error("\(msg)") }
 }

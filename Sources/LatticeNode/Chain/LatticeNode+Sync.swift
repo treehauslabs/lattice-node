@@ -6,7 +6,6 @@ import UInt256
 extension LatticeNode {
 
     public var isSyncing: Bool { syncTask != nil }
-    var childSyncTasks: [String: Task<Void, Never>] { [:] }
 
     func checkSyncNeeded(
         peerBlock: Block,
@@ -68,7 +67,8 @@ extension LatticeNode {
     }
 
     func performHeadersFirstSync(peerTipCID: String, network: ChainNetwork) async {
-        print("  [sync] Starting headers-first sync from \(String(peerTipCID.prefix(16)))...")
+        let log = NodeLogger("sync")
+        log.info("Starting headers-first sync from \(String(peerTipCID.prefix(16)))...")
 
         let fetcher: any Fetcher = await network.ivyFetcher
         let headerChain = HeaderChain()
@@ -81,12 +81,12 @@ extension LatticeNode {
                 localWork: UInt256.zero,
                 progress: { current, total in
                     if current % 100 == 0 {
-                        print("  [sync] Headers: \(current)/\(total)")
+                        log.info("Headers: \(current)/\(total)")
                     }
                 }
             )
 
-            print("  [sync] Downloaded \(headers.count) headers, fetching full blocks...")
+            log.info("Downloaded \(headers.count) headers, fetching full blocks...")
 
             let blockFetcher = ParallelBlockFetcher(fetcher: fetcher)
             let cids = headers.map { $0.cid }
@@ -98,7 +98,7 @@ extension LatticeNode {
                 },
                 progress: { current, total in
                     if current % 50 == 0 {
-                        print("  [sync] Blocks: \(current)/\(total)")
+                        log.info("Blocks: \(current)/\(total)")
                     }
                 }
             )
@@ -108,11 +108,11 @@ extension LatticeNode {
                 if let tipBlock = Block(data: tipData) {
                     let stateValid = await verifyTipStateRoot(tipBlock, fetcher: fetcher)
                     if !stateValid {
-                        print("  [sync] Tip block state root verification failed, falling back to standard sync")
+                        log.warn("Tip block state root verification failed, falling back to standard sync")
                         await performSync(peerTipCID: peerTipCID, network: network)
                         return
                     }
-                    print("  [sync] State root verified for tip block at height \(tipHeader.index)")
+                    log.info("State root verified for tip block at height \(tipHeader.index)")
                 }
             }
 
@@ -127,15 +127,15 @@ extension LatticeNode {
                 peerTipCID: peerTipCID
             )
 
-            print("  [sync] Sync complete: height \(result.tipBlockIndex), applying to chain...")
+            log.info("Sync complete: height \(result.tipBlockIndex), applying to chain...")
 
             await finalizeSyncResult(result, network: network, fetcher: fetcher)
 
             syncTask = nil
-            print("  [sync] Headers-first sync complete")
+            log.info("Headers-first sync complete")
 
         } catch {
-            print("  [sync] Headers-first sync failed: \(error), falling back to standard sync")
+            log.error("Headers-first sync failed: \(error), falling back to standard sync")
             await performSync(peerTipCID: peerTipCID, network: network)
         }
     }

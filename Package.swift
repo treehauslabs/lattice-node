@@ -15,6 +15,8 @@ let package = Package(
         .package(url: "https://github.com/treehauslabs/Ivy.git", from: "3.0.4"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+        .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
     ],
     targets: [
         .target(
@@ -33,6 +35,8 @@ let package = Package(
                 .product(name: "Ivy", package: "Ivy"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Collections", package: "swift-collections"),
             ]),
         .testTarget(
             name: "LatticeNodeTests",

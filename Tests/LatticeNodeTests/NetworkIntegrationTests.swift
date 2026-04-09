@@ -13,22 +13,7 @@ import FoundationNetworking
 /// Real-network integration tests: two LatticeNode instances with real Ivy TCP connections.
 /// These test the actual deployment flow: node boot, peer discovery, block propagation, and sync.
 
-private nonisolated(unsafe) var _nextTestPort: UInt16 = UInt16(ProcessInfo.processInfo.processIdentifier % 5000) + 40000
-
-private func nextTestPort() -> UInt16 {
-    _nextTestPort += 1
-    return _nextTestPort
-}
-
-private func testSpec() -> ChainSpec {
-    ChainSpec(directory: "Nexus", maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-              maxBlockSize: 1_000_000, premine: 0, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
-}
-
-private func testGenesis() -> GenesisConfig {
-    GenesisConfig(spec: testSpec(), timestamp: Int64(Date().timeIntervalSince1970 * 1000) - 10_000, difficulty: UInt256.max)
-}
+// Helpers in TestHelpers.swift: nextTestPort(), testSpec(), testGenesis()
 
 final class NetworkIntegrationTests: XCTestCase {
 

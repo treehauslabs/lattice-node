@@ -6,35 +6,8 @@ import cashew
 import Acorn
 import ArrayTrie
 
-private actor E2EWorker: AcornCASWorker {
-    var near: (any AcornCASWorker)?
-    var far: (any AcornCASWorker)?
-    var timeout: Duration? { nil }
-    private var store: [ContentIdentifier: Data] = [:]
-    func has(cid: ContentIdentifier) -> Bool { store[cid] != nil }
-    func getLocal(cid: ContentIdentifier) async -> Data? { store[cid] }
-    func storeLocal(cid: ContentIdentifier, data: Data) async { store[cid] = data }
-}
-
-private func fetcher() -> AcornFetcher { AcornFetcher(worker: E2EWorker()) }
-
-private func testSpec(_ dir: String = "Nexus", premine: UInt64 = 0) -> ChainSpec {
-    ChainSpec(directory: dir, maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-              maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, difficultyAdjustmentWindow: 5)
-}
-
-private func sign(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {
-    let h = HeaderImpl<TransactionBody>(node: body)
-    let sig = CryptoUtils.sign(message: h.rawCID, privateKeyHex: kp.privateKey)!
-    return Transaction(signatures: [kp.publicKey: sig], body: h)
-}
-
-private func addr(_ pubKey: String) -> String {
-    HeaderImpl<PublicKey>(node: PublicKey(key: pubKey)).rawCID
-}
-
-private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+// Helpers in TestHelpers.swift: cas(), testSpec(), sign(), addr(), now()
+private func fetcher() -> AcornFetcher { cas() }
 
 private func deepCopyCID(_ cid: String, from source: AcornFetcher, to dest: AcornFetcher, visited: inout Set<String>) async {
     guard !cid.isEmpty, !visited.contains(cid) else { return }

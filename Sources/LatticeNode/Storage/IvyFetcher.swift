@@ -4,6 +4,7 @@ import ArrayTrie
 import Ivy
 import Acorn
 import Tally
+import OrderedCollections
 
 /// A VolumeAwareFetcher that bridges Cashew's resolution system to Ivy's
 /// fee-based retrieval protocol.
@@ -18,9 +19,8 @@ public actor IvyFetcher: VolumeAwareFetcher {
     private let localWorker: any AcornCASWorker
 
     /// Maps rootCID → discovered pinner for targeted retrieval.
-    /// Bounded by maxPinnerCacheSize with LRU eviction via accessOrder.
-    private var volumePinners: [String: PeerID] = [:]
-    private var accessOrder: [String] = []
+    /// OrderedDictionary maintains insertion order for LRU eviction.
+    private var volumePinners: OrderedDictionary<String, PeerID> = [:]
     private let maxPinnerCacheSize = 512
 
     /// The currently active Volume root — set by provide(), used by fetch()
@@ -33,16 +33,15 @@ public actor IvyFetcher: VolumeAwareFetcher {
     }
 
     private func touchPinnerCache(_ key: String) {
-        if let idx = accessOrder.firstIndex(of: key) {
-            accessOrder.remove(at: idx)
+        // Move to end (most recently used)
+        if let value = volumePinners.removeValue(forKey: key) {
+            volumePinners[key] = value
         }
-        accessOrder.append(key)
     }
 
     private func evictPinnerCacheIfNeeded() {
         while volumePinners.count > maxPinnerCacheSize {
-            let oldest = accessOrder.removeFirst()
-            volumePinners.removeValue(forKey: oldest)
+            volumePinners.removeFirst()
         }
     }
 

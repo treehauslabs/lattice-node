@@ -218,6 +218,17 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         try await network.start()
     }
 
+    // MARK: - Chain Lookup
+
+    func chain(for directory: String) async -> ChainState? {
+        if directory == genesisConfig.spec.directory {
+            return await lattice.nexus.chain
+        } else if let childLevel = await lattice.nexus.children[directory] {
+            return await childLevel.chain
+        }
+        return nil
+    }
+
     // MARK: - Mempool Maintenance
 
     public func pruneExpiredTransactions(olderThan age: Duration = .seconds(600)) async {
@@ -231,15 +242,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     /// Re-announce the current chain tip block and its Volume boundaries.
     /// Called periodically to keep pin announcements alive in the DHT.
     public func reannounceChainTip(directory: String) async {
-        guard let network = networks[directory] else { return }
-        let chain: ChainState
-        if directory == genesisConfig.spec.directory {
-            chain = await lattice.nexus.chain
-        } else if let childLevel = await lattice.nexus.children[directory] {
-            chain = await childLevel.chain
-        } else {
-            return
-        }
+        guard let network = networks[directory],
+              let chain = await chain(for: directory) else { return }
         let tipCID = await chain.getMainChainTip()
         guard let data = try? await network.ivyFetcher.fetch(rawCid: tipCID) else { return }
         await network.announceStoredBlock(cid: tipCID, data: data)
