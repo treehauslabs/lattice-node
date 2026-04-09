@@ -35,6 +35,10 @@ extension LatticeNode {
         }
         let added = await network.submitTransaction(transaction)
         if added {
+            // Store body to CAS so peers can fetch it after gossip
+            if let bodyData = transaction.body.node?.toData() {
+                await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
+            }
             await metrics.increment("lattice_transactions_submitted_total")
             await network.gossipTransaction(cid: transaction.body.rawCID)
             let fee = transaction.body.node?.fee ?? 0
@@ -88,6 +92,6 @@ extension LatticeNode {
         guard let network = networks[directory] else { return }
         guard let bodyData = transaction.body.node?.toData() else { return }
         await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
-        await network.announceBlock(cid: transaction.body.rawCID)
+        await network.gossipTransaction(cid: transaction.body.rawCID)
     }
 }
