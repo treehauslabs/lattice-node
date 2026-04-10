@@ -30,6 +30,14 @@ The node is built on Swift's structured concurrency model. `LatticeNode`, `Chain
 
 Peers are not treated equally. The Ivy P2P layer tracks trust lines, and Tally scores peer behavior over time. Misbehaving peers — those sending invalid blocks, flooding announcements, or failing to serve data — are rate-limited and eventually disconnected. This makes the network protocol itself resistant to eclipse attacks and resource exhaustion without requiring proof-of-stake or bonding.
 
+### Cross-chain replay protection
+
+Every transaction includes a `chainPath` — a list of directory names from the nexus root to the target chain (e.g., `["Nexus"]` or `["Nexus", "Payments"]`). Since the chain path is part of the content-addressed transaction body, it is implicitly covered by the signature. The node rejects any transaction whose `chainPath` does not match the validating chain's position in the hierarchy. This prevents a transaction valid on one chain from being replayed on another.
+
+### Sequential nonce enforcement
+
+Transactions carry a `nonce` field. Transactions from the same signer group must use sequential nonces starting from 0, with no gaps. The consensus layer tracks the latest confirmed nonce per signer group in the transaction state merkle tree. The mempool applies a softer check, allowing a bounded window of future nonces to support concurrent submission.
+
 ### Resource-aware by default
 
 The node autosizes to its host. On startup, it inspects available RAM and disk, then allocates 25% of memory and 50% of free disk across all subscribed chains. Operators on constrained hardware don't need to calculate buffer sizes — the node adapts. Explicit resource presets (`light`, `default`, `heavy`) and per-resource flags are available when fine-grained control is needed.
@@ -52,7 +60,7 @@ LatticeNode boots from a hardcoded Nexus genesis block and connects to the netwo
 
 1. **Mining.** `MinerLoop` assembles a candidate block from mempool transactions (up to 5,000 per block), embeds pending child-chain blocks, and searches for a nonce satisfying the difficulty target. When a valid proof is found, the block is published to the network. If the proof doesn't meet Nexus difficulty but satisfies a child chain's lower target, it is submitted to that child chain instead.
 
-2. **Block validation.** Incoming blocks are checked for valid proof-of-work, timestamp bounds (within 2 hours), size limits (10 MB), and signature authenticity. Peer reputation gates how many blocks are accepted per time window.
+2. **Block validation.** Incoming blocks are checked for valid proof-of-work (with 0x00 field-separated hash inputs), timestamp bounds (within 2 hours of median-time-past), size limits (10 MB), secp256k1 ECDSA signature authenticity, sequential nonce ordering per signer group, and chain path correctness. Peer reputation gates how many blocks are accepted per time window.
 
 3. **Chain reorganization.** When a longer valid chain is observed, orphaned blocks are detected and their fee-paying transactions are recovered to the mempool. Coinbase transactions are discarded since they're only valid in their original block context.
 
@@ -94,8 +102,7 @@ The node exposes a JSON API over HTTP (default port 8080) for programmatic acces
 | `/api/proof/{address}` | GET | Sparse Merkle proof for light clients |
 | `/api/transaction` | POST | Submit a signed transaction |
 | `/api/mempool` | GET | Pending transaction pool |
-| `/api/orders` | GET | DEX order book state |
-| `/api/orders` | POST | Submit a DEX order |
+| `/api/swaps` | GET | Active swap state |
 | `/api/peers` | GET | Connected peer count |
 
 ## CLI reference
@@ -213,7 +220,7 @@ All from [treehauslabs](https://github.com/treehauslabs):
 
 | Library | Role |
 |---------|------|
-| **Lattice** | Core blockchain protocol — chain state, block validation, consensus rules |
+| **Lattice** | Core blockchain protocol — chain state, block validation, consensus rules, secp256k1 ECDSA |
 | **Ivy** | Trust-line DHT for peer discovery, gossip, and authenticated routing |
 | **Acorn** | Content-addressed storage interface |
 | **AcornDiskWorker** | Persistent on-disk CAS backend |
