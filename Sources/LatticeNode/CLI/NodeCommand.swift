@@ -69,6 +69,12 @@ struct NodeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Disable DNS seed resolution")
     var noDnsSeeds: Bool = false
 
+    @Flag(name: .long, help: "Discovery-only mode: relay peers without syncing or mining")
+    var discoveryOnly: Bool = false
+
+    @Option(name: .long, help: "Maximum peer connections (default 128, discovery-only 512)")
+    var maxPeers: Int?
+
     @Option(name: .long, help: "Default finality confirmations for all chains")
     var finalityConfirmations: UInt64 = 6
 
@@ -92,6 +98,10 @@ struct NodeCommand: AsyncParsableCommand {
 
         let mineChains = Set(mine)
 
+        let effectiveMaxPeers = maxPeers ?? (discoveryOnly
+            ? BootstrapPeers.maxPeerConnectionsDiscovery
+            : BootstrapPeers.maxPeerConnections)
+
         let nodeArgs = NodeArgs(
             port: port,
             dataDir: dataDirURL,
@@ -108,25 +118,33 @@ struct NodeCommand: AsyncParsableCommand {
             rpcPort: rpcPort,
             rpcBindAddress: rpcBind,
             enableDiscovery: !noDiscovery,
-            rpcAllowedOrigin: rpcAllowedOrigin
+            rpcAllowedOrigin: rpcAllowedOrigin,
+            discoveryOnly: discoveryOnly,
+            maxPeerConnections: maxPeers
         )
 
         let state = NodeState(subscriptions: subscribedChains, nodeArgs: nodeArgs)
         let identity = try loadOrCreateIdentity(dataDir: dataDirURL)
 
         print()
-        print("  Lattice Node v\(LatticeNodeVersion) (protocol \(ProtocolVersion))")
-        print("  ============")
+        if discoveryOnly {
+            print("  Lattice Discovery Node v\(LatticeNodeVersion) (protocol \(ProtocolVersion))")
+            print("  ========================")
+        } else {
+            print("  Lattice Node v\(LatticeNodeVersion) (protocol \(ProtocolVersion))")
+            print("  ============")
+        }
         print("  Public key:  \(String(identity.publicKey.prefix(32)))...")
         print("  Data dir:    \(dataDirURL.path)")
         print("  Listen port: \(port)")
+        print("  Max peers:   \(effectiveMaxPeers)")
         print("  Discovery:   \(!noDiscovery ? "enabled" : "disabled")")
         if !bootstrapPeers.isEmpty {
             print("  Peers:       \(bootstrapPeers.count) bootstrap peer(s)")
         }
         print()
 
-        let resources = configureResources(nodeArgs)
+        let resources = discoveryOnly ? NodeResourceConfig.light : configureResources(nodeArgs)
         var updatedArgs = nodeArgs
         updatedArgs.memoryGB = resources.memoryBudgetGB
         updatedArgs.diskGB = resources.diskBudgetGB
@@ -134,10 +152,12 @@ struct NodeCommand: AsyncParsableCommand {
         updatedArgs.miningBatch = resources.miningBatchSize
         await state.updateArgs(updatedArgs)
 
-        print("  Memory:      \(String(format: "%.2f", resources.memoryBudgetGB)) GB")
-        print("  Disk:        \(String(format: "%.2f", resources.diskBudgetGB)) GB")
-        print("  Mempool:     \(String(format: "%.0f", resources.mempoolBudgetMB)) MB")
-        print("  Mine batch:  \(resources.miningBatchSize)")
+        if !discoveryOnly {
+            print("  Memory:      \(String(format: "%.2f", resources.memoryBudgetGB)) GB")
+            print("  Disk:        \(String(format: "%.2f", resources.diskBudgetGB)) GB")
+            print("  Mempool:     \(String(format: "%.0f", resources.mempoolBudgetMB)) MB")
+            print("  Mine batch:  \(resources.miningBatchSize)")
+        }
 
         var allPeers = await loadPeers(dataDirURL: dataDirURL, bootstrapPeers: bootstrapPeers)
         if !noDnsSeeds {
@@ -172,7 +192,9 @@ struct NodeCommand: AsyncParsableCommand {
             persistInterval: 100,
             subscribedChains: currentSubscriptions,
             resources: resources,
-            finality: parsedFinality
+            finality: parsedFinality,
+            maxPeerConnections: effectiveMaxPeers,
+            discoveryOnly: discoveryOnly
         )
 
         let node = try await LatticeNode(
@@ -190,35 +212,39 @@ struct NodeCommand: AsyncParsableCommand {
         }
         print("  Genesis:     verified (\(String(node.genesisResult.blockHash.prefix(20)))...)")
 
-        try? await node.restoreChildChains()
+        if !discoveryOnly {
+            try? await node.restoreChildChains()
+        }
         try await node.start()
 
-        let mempoolLoader = MempoolPersistence(dataDir: dataDirURL)
-        let savedTxs = mempoolLoader.load()
-        if !savedTxs.isEmpty {
-            let nexusDir = NexusGenesis.config.spec.directory
-            if let network = await node.network(for: nexusDir) {
-                var restored = 0
-                for serialized in savedTxs {
-                    let bodyHeader = HeaderImpl<TransactionBody>(rawCID: serialized.bodyCID)
-                    guard let _ = try? await bodyHeader.resolve(fetcher: network.fetcher).node else { continue }
-                    let tx = Transaction(signatures: serialized.signatures, body: bodyHeader)
-                    if await network.submitTransaction(tx) { restored += 1 }
+        if !discoveryOnly {
+            let mempoolLoader = MempoolPersistence(dataDir: dataDirURL)
+            let savedTxs = mempoolLoader.load()
+            if !savedTxs.isEmpty {
+                let nexusDir = NexusGenesis.config.spec.directory
+                if let network = await node.network(for: nexusDir) {
+                    var restored = 0
+                    for serialized in savedTxs {
+                        let bodyHeader = HeaderImpl<TransactionBody>(rawCID: serialized.bodyCID)
+                        guard let _ = try? await bodyHeader.resolve(fetcher: network.fetcher).node else { continue }
+                        let tx = Transaction(signatures: serialized.signatures, body: bodyHeader)
+                        if await network.submitTransaction(tx) { restored += 1 }
+                    }
+                    if restored > 0 { print("  Mempool:     \(restored)/\(savedTxs.count) transaction(s) restored from CAS") }
                 }
-                if restored > 0 { print("  Mempool:     \(restored)/\(savedTxs.count) transaction(s) restored from CAS") }
+                mempoolLoader.delete()
             }
-            mempoolLoader.delete()
-        }
 
-        let genesisHeight = await node.lattice.nexus.chain.getHighestBlockIndex()
-        print("  Chain height: \(genesisHeight)")
+            let genesisHeight = await node.lattice.nexus.chain.getHighestBlockIndex()
+            print("  Chain height: \(genesisHeight)")
+        }
         print()
 
         let health = HealthCheck(dataDir: dataDirURL)
         await health.start()
 
         var rpcTask: Task<Void, any Error>? = nil
-        if let rpcPort = rpcPort {
+        if !discoveryOnly, let rpcPort = rpcPort {
             var cookieAuth: CookieAuth? = nil
             if rpcAuth {
                 let cookiePath = dataDirURL.appendingPathComponent(".cookie")
@@ -230,28 +256,35 @@ struct NodeCommand: AsyncParsableCommand {
             print("  RPC server:  http://localhost:\(rpcPort)/api/chain/info")
         }
 
-        for chain in mineChains {
-            await node.startMining(directory: chain)
-            print("  Mining started on \(chain)")
-        }
-
         var backgroundTasks: [Task<Void, Never>] = []
-        backgroundTasks.append(startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: port))
-        backgroundTasks.append(startMempoolLoop(node: node))
-        backgroundTasks.append(startGarbageCollectionLoop(node: node, retentionDepth: nodeConfig.retentionDepth))
+        if !discoveryOnly {
+            for chain in mineChains {
+                await node.startMining(directory: chain)
+                print("  Mining started on \(chain)")
+            }
+            backgroundTasks.append(startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: port))
+            backgroundTasks.append(startMempoolLoop(node: node))
+            backgroundTasks.append(startGarbageCollectionLoop(node: node, retentionDepth: nodeConfig.retentionDepth))
+        }
 
         let peerRefreshTask = Task { await node.startPeerRefresh() }
 
         let healthTask = Task {
             while !Task.isCancelled {
-                let height = await node.lattice.nexus.chain.getHighestBlockIndex()
                 let peerCount = await node.network(for: "Nexus")?.ivy.connectedPeers.count ?? 0
-                await health.update(chainHeight: height, peerCount: peerCount)
+                if discoveryOnly {
+                    await health.update(chainHeight: 0, peerCount: peerCount)
+                } else {
+                    let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+                    await health.update(chainHeight: height, peerCount: peerCount)
+                }
                 try? await Task.sleep(for: .seconds(10))
             }
         }
 
-        if !mineChains.isEmpty {
+        if discoveryOnly {
+            print("  Discovery node running (\(effectiveMaxPeers) max peers). Type 'quit' to stop.")
+        } else if !mineChains.isEmpty {
             print("  Node running. Type 'status' for chain info, 'quit' to stop.")
         } else {
             print("  Node running. Type 'mine start' to begin mining, 'status' for info.")
@@ -286,20 +319,22 @@ struct NodeCommand: AsyncParsableCommand {
         for task in backgroundTasks { task.cancel() }
         await health.stop()
 
-        let mempoolPersistence = MempoolPersistence(dataDir: dataDirURL)
-        let nexusDir = NexusGenesis.config.spec.directory
-        if let network = await node.network(for: nexusDir) {
-            let txs = await network.nodeMempool.allTransactions()
-            if !txs.isEmpty {
-                try? mempoolPersistence.save(transactions: txs)
-                print("  Mempool:     \(txs.count) transaction(s) saved")
+        if !discoveryOnly {
+            let mempoolPersistence = MempoolPersistence(dataDir: dataDirURL)
+            let nexusDir = NexusGenesis.config.spec.directory
+            if let network = await node.network(for: nexusDir) {
+                let txs = await network.nodeMempool.allTransactions()
+                if !txs.isEmpty {
+                    try? mempoolPersistence.save(transactions: txs)
+                    print("  Mempool:     \(txs.count) transaction(s) saved")
+                }
             }
         }
 
         let peers = await node.connectedPeerEndpoints()
         await peerStore.save(peers)
         await node.stop()
-        print("  State persisted. \(peers.count) peer(s) saved. Goodbye.")
+        print("  \(peers.count) peer(s) saved. Goodbye.")
     }
 }
 

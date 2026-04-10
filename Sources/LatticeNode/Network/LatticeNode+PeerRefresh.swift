@@ -8,13 +8,20 @@ extension LatticeNode {
         let nexusDir = genesisConfig.spec.directory
         guard let network = networks[nexusDir] else { return }
 
+        // Discovery-only nodes maintain more outbound connections to
+        // maximize the routing table they can share with joining peers.
+        let targetOutbound = config.discoveryOnly
+            ? max(config.maxPeerConnections / 4, PeerDiversity.targetOutbound)
+            : PeerDiversity.targetOutbound
+        let refreshInterval = config.discoveryOnly ? 30 : 60
+
         let savedAnchors = await anchorPeers.load()
         for anchor in savedAnchors {
             try? await network.ivy.connect(to: anchor)
         }
 
         while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(60))
+            try? await Task.sleep(for: .seconds(refreshInterval))
             guard !Task.isCancelled else { break }
 
             // Discover new peers via DHT random walk
@@ -28,7 +35,7 @@ extension LatticeNode {
                 .map { $0.endpoint }
             let connected = connectedEndpoints.count
 
-            if connected < PeerDiversity.targetOutbound {
+            if connected < targetOutbound {
                 // Use discovered peers + known-but-not-connected peers as candidates
                 let unconnectedKnown = allKnown
                     .filter { !connectedIDs.contains($0.id.publicKey) }
@@ -37,20 +44,20 @@ extension LatticeNode {
                 let diverse = PeerDiversity.selectDiversePeers(
                     from: candidates,
                     existing: connectedEndpoints,
-                    maxNew: PeerDiversity.targetOutbound - connected
+                    maxNew: targetOutbound - connected
                 )
                 for peer in diverse {
                     try? await network.ivy.connect(to: peer)
                 }
 
                 // If still short, try DNS seeds as fallback
-                if connected + diverse.count < PeerDiversity.targetOutbound {
+                if connected + diverse.count < targetOutbound {
                     let dnsSeeds = await DNSSeeds.resolve()
                     let dnsCandidates = dnsSeeds.filter { !connectedIDs.contains($0.publicKey) }
                     let dnsSelection = PeerDiversity.selectDiversePeers(
                         from: dnsCandidates,
                         existing: connectedEndpoints,
-                        maxNew: PeerDiversity.targetOutbound - connected - diverse.count
+                        maxNew: targetOutbound - connected - diverse.count
                     )
                     for peer in dnsSelection {
                         try? await network.ivy.connect(to: peer)

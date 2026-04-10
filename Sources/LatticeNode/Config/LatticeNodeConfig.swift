@@ -18,6 +18,8 @@ public struct LatticeNodeConfig: Sendable {
     public let retentionDepth: UInt64
     public let resources: NodeResourceConfig
     public let finality: FinalityConfig
+    public let maxPeerConnections: Int
+    public let discoveryOnly: Bool
 
     public init(
         publicKey: String,
@@ -35,7 +37,9 @@ public struct LatticeNodeConfig: Sendable {
         syncStrategy: SyncStrategy = .snapshot,
         retentionDepth: UInt64 = DEFAULT_RETENTION_DEPTH,
         resources: NodeResourceConfig = .default,
-        finality: FinalityConfig = FinalityConfig()
+        finality: FinalityConfig = FinalityConfig(),
+        maxPeerConnections: Int = BootstrapPeers.maxPeerConnections,
+        discoveryOnly: Bool = false
     ) {
         self.publicKey = publicKey
         self.privateKey = privateKey
@@ -51,6 +55,8 @@ public struct LatticeNodeConfig: Sendable {
         self.retentionDepth = retentionDepth
         self.resources = resources
         self.finality = finality
+        self.maxPeerConnections = maxPeerConnections
+        self.discoveryOnly = discoveryOnly
     }
 
     public func isSubscribed(chainPath: [String]) -> Bool {

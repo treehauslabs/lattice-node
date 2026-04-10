@@ -60,7 +60,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             ),
             storagePath: config.storagePath,
             resources: resourcesWithIdentity,
-            chainCount: chainCount
+            chainCount: chainCount,
+            maxPeerConnections: config.maxPeerConnections
         )
 
         let persister = ChainStatePersister(
@@ -142,11 +143,15 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         for (dir, network) in networks {
             await network.setDelegate(self)
             try await network.start()
-            await restoreMempool(directory: dir, network: network, fetcher: network.ivyFetcher)
+            if !config.discoveryOnly {
+                await restoreMempool(directory: dir, network: network, fetcher: network.ivyFetcher)
+            }
         }
-        mempoolPruneTask = startMempoolLoop(node: self)
-        gcTask = startGarbageCollectionLoop(node: self, retentionDepth: config.retentionDepth)
-        pinReannounceTask = startPinReannounceLoop(node: self)
+        if !config.discoveryOnly {
+            mempoolPruneTask = startMempoolLoop(node: self)
+            gcTask = startGarbageCollectionLoop(node: self, retentionDepth: config.retentionDepth)
+            pinReannounceTask = startPinReannounceLoop(node: self)
+        }
     }
 
     public func stop() async {

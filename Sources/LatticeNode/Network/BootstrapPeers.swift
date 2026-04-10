@@ -9,4 +9,5 @@ public enum BootstrapPeers {
     ]
 
     public static let maxPeerConnections: Int = 128
+    public static let maxPeerConnectionsDiscovery: Int = 512
 }

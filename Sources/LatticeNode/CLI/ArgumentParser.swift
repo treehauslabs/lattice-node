@@ -23,4 +23,6 @@ struct NodeArgs {
     var rpcBindAddress: String = "127.0.0.1"
     var enableDiscovery: Bool = true
     var rpcAllowedOrigin: String = "http://127.0.0.1"
+    var discoveryOnly: Bool = false
+    var maxPeerConnections: Int? = nil
 }
