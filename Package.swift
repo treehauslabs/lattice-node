@@ -7,7 +7,7 @@ let package = Package(
         .macOS(.v15)
     ],
     dependencies: [
-        .package(path: "../lattice"),
+        .package(url: "https://github.com/treehauslabs/Lattice.git", branch: "master"),
         .package(url: "https://github.com/treehauslabs/Acorn.git", from: "2.0.0"),
         .package(url: "https://github.com/treehauslabs/AcornDiskWorker.git", from: "2.0.0"),
         .package(url: "https://github.com/treehauslabs/AcornMemoryWorker.git", from: "2.0.0"),

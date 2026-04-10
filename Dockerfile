@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM swift:6.0-jammy AS builder
+FROM swift:6.1-jammy AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libjavascriptcoregtk-4.1-dev \
