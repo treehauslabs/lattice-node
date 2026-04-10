@@ -76,7 +76,7 @@ cmd_deploy() {
         fi
 
         # Deploy
-        fly deploy --config "$SEED_CONFIG" -a "$app" --region "$region" --wait-timeout 120
+        fly deploy --config "$SEED_CONFIG" -a "$app" --regions "$region" --wait-timeout 120
         echo "  Deployed"
 
         # Allocate IPv4 if needed
