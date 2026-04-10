@@ -56,6 +56,7 @@ enum RPCRoutes {
         api.get("block/latest") { _, _ in try await latestBlock(node: node) }
         api.get("block/{id}") { _, ctx in try await getBlock(node: node, id: ctx.parameters.require("id")) }
         api.post("transaction") { req, _ in try await submitTransaction(node: node, request: req) }
+        api.post("transaction/prepare") { req, _ in try await prepareTransaction(node: node, request: req) }
         api.get("mempool") { _, _ in try await mempool(node: node) }
         api.get("proof/{address}") { _, ctx in try await balanceProof(node: node, address: ctx.parameters.require("address")) }
         api.get("peers") { _, _ in try await getPeers(node: node) }
@@ -71,6 +72,14 @@ enum RPCRoutes {
         let light = api.group("light")
         light.get("headers") { req, _ in try await lightHeaders(node: node, request: req) }
         light.get("proof/{address}") { _, ctx in try await lightProof(node: node, address: ctx.parameters.require("address")) }
+
+        api.post("mining/start") { req, _ in try await startMining(node: node, request: req) }
+        api.post("mining/stop") { req, _ in try await stopMining(node: node, request: req) }
+
+        // Serve static files for the web UI (if dist/ exists next to the binary)
+        router.get("") { _, _ in
+            return Response(status: .temporaryRedirect, headers: HTTPFields([HTTPField(name: .location, value: "/app/")]))
+        }
 
         router.get("metrics") { _, _ in try await metricsEndpoint(node: node) }
 
@@ -169,6 +178,84 @@ enum RPCRoutes {
         case .success: return json(R(accepted: true, txCID: sub.bodyCID, error: nil))
         case .failure(let r): return json(R(accepted: false, txCID: sub.bodyCID, error: r), status: .badRequest)
         }
+    }
+
+    // MARK: - Transaction Preparation
+
+    static func prepareTransaction(node: LatticeNode, request: Request) async throws -> Response {
+        struct AccountActionInput: Decodable { let owner: String; let delta: Int64 }
+        struct SwapInput: Decodable { let nonce: String; let sender: String; let recipient: String; let amount: UInt64; let timelock: UInt64 }
+        struct SwapClaimInput: Decodable { let nonce: String; let sender: String; let recipient: String; let amount: UInt64; let timelock: UInt64; let isRefund: Bool }
+        struct SettleInput: Decodable { let nonce: String; let senderA: String; let senderB: String; let swapKeyA: String; let directoryA: String; let swapKeyB: String; let directoryB: String }
+        struct Body: Decodable {
+            let chainPath: [String]
+            let nonce: UInt64
+            let signers: [String]
+            let fee: UInt64
+            let accountActions: [AccountActionInput]
+            let swapActions: [SwapInput]?
+            let swapClaimActions: [SwapClaimInput]?
+            let settleActions: [SettleInput]?
+        }
+
+        guard let body = try? await jsonDecoder.decode(Body.self, from: request.body.collect(upTo: 1_048_576)) else {
+            return jsonError("Invalid request body")
+        }
+
+        let accountActions = body.accountActions.map { AccountAction(owner: $0.owner, delta: $0.delta) }
+        let swapActions = (body.swapActions ?? []).map {
+            SwapAction(nonce: UInt128($0.nonce, radix: 16) ?? 0, sender: $0.sender, recipient: $0.recipient, amount: $0.amount, timelock: $0.timelock)
+        }
+        let swapClaimActions = (body.swapClaimActions ?? []).map {
+            SwapClaimAction(nonce: UInt128($0.nonce, radix: 16) ?? 0, sender: $0.sender, recipient: $0.recipient, amount: $0.amount, timelock: $0.timelock, isRefund: $0.isRefund)
+        }
+        let settleActions = (body.settleActions ?? []).map {
+            SettleAction(nonce: UInt128($0.nonce, radix: 16) ?? 0, senderA: $0.senderA, senderB: $0.senderB, swapKeyA: $0.swapKeyA, directoryA: $0.directoryA, swapKeyB: $0.swapKeyB, directoryB: $0.directoryB)
+        }
+
+        let txBody = TransactionBody(
+            accountActions: accountActions,
+            actions: [],
+            swapActions: swapActions,
+            swapClaimActions: swapClaimActions,
+            genesisActions: [],
+            peerActions: [],
+            settleActions: settleActions,
+            signers: body.signers,
+            fee: body.fee,
+            nonce: body.nonce,
+            chainPath: body.chainPath
+        )
+
+        let header = HeaderImpl<TransactionBody>(node: txBody)
+        guard let data = txBody.toData() else {
+            return jsonError("Failed to serialize transaction body", status: .internalServerError)
+        }
+
+        struct R: Encodable { let bodyCID: String; let bodyData: String }
+        return json(R(bodyCID: header.rawCID, bodyData: data.map { String(format: "%02x", $0) }.joined()))
+    }
+
+    // MARK: - Mining Control
+
+    static func startMining(node: LatticeNode, request: Request) async throws -> Response {
+        struct Body: Decodable { let chain: String }
+        guard let body = try? await jsonDecoder.decode(Body.self, from: request.body.collect(upTo: 65536)) else {
+            return jsonError("Expected: {chain: \"Nexus\"}")
+        }
+        await node.startMining(directory: body.chain)
+        struct R: Encodable { let started: Bool; let chain: String }
+        return json(R(started: true, chain: body.chain))
+    }
+
+    static func stopMining(node: LatticeNode, request: Request) async throws -> Response {
+        struct Body: Decodable { let chain: String }
+        guard let body = try? await jsonDecoder.decode(Body.self, from: request.body.collect(upTo: 65536)) else {
+            return jsonError("Expected: {chain: \"Nexus\"}")
+        }
+        await node.stopMining(directory: body.chain)
+        struct R: Encodable { let stopped: Bool; let chain: String }
+        return json(R(stopped: true, chain: body.chain))
     }
 
     // MARK: - Mempool, Proof, Peers
