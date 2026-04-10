@@ -300,7 +300,7 @@ public actor MinerLoop {
         }
         let (payout, payoutOverflow) = reward.addingReportingOverflow(totalFees)
         if payoutOverflow { return nil }
-        guard payout > 0 else { return nil }
+        guard payout > 0 && payout <= UInt64(Int64.max) else { return nil }
 
         let accountAction = AccountAction(
             owner: identity.address,

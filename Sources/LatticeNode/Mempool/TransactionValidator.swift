@@ -219,6 +219,9 @@ public struct TransactionValidator: Sendable {
         var totalDebits: UInt64 = 0
         var totalCredits: UInt64 = 0
         for action in body.accountActions {
+            if action.delta == Int64.min {
+                return .balanceNotConserved(totalDebits: totalDebits, totalCredits: totalCredits, fee: body.fee)
+            }
             if action.delta < 0 {
                 let (newDebits, dOverflow) = totalDebits.addingReportingOverflow(UInt64(-action.delta))
                 if dOverflow { return .balanceNotConserved(totalDebits: totalDebits, totalCredits: totalCredits, fee: body.fee) }

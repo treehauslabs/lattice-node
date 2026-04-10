@@ -181,12 +181,15 @@ extension LatticeNode {
                 for (_, txHeader) in txEntries {
                     guard let body = txHeader.node?.body.node else { continue }
                     for action in body.accountActions {
+                        guard action.delta != Int64.min else { continue }
                         let currentBalance = store.getBalance(address: action.owner) ?? 0
                         let previousBalance: UInt64
                         if action.delta > 0 {
-                            previousBalance = currentBalance - UInt64(action.delta)
+                            let credit = UInt64(action.delta)
+                            previousBalance = currentBalance >= credit ? currentBalance - credit : 0
                         } else {
-                            previousBalance = currentBalance + UInt64(-action.delta)
+                            let (result, overflow) = currentBalance.addingReportingOverflow(UInt64(-action.delta))
+                            previousBalance = overflow ? currentBalance : result
                         }
                         if previousBalance == 0 {
                             await store.deleteAccount(address: action.owner)
@@ -282,12 +285,15 @@ extension LatticeNode {
                 for (_, txHeader) in childTxEntries {
                     guard let body = txHeader.node?.body.node else { continue }
                     for action in body.accountActions {
+                        guard action.delta != Int64.min else { continue }
                         let currentBalance = store.getBalance(address: action.owner) ?? 0
                         let previousBalance: UInt64
                         if action.delta > 0 {
-                            previousBalance = currentBalance - UInt64(action.delta)
+                            let credit = UInt64(action.delta)
+                            previousBalance = currentBalance >= credit ? currentBalance - credit : 0
                         } else {
-                            previousBalance = currentBalance + UInt64(-action.delta)
+                            let (result, overflow) = currentBalance.addingReportingOverflow(UInt64(-action.delta))
+                            previousBalance = overflow ? currentBalance : result
                         }
                         if previousBalance == 0 {
                             await store.deleteAccount(address: action.owner)
@@ -606,7 +612,8 @@ extension LatticeNode {
                 if netDeltas[action.owner] == nil {
                     addressOrder.append(action.owner)
                 }
-                netDeltas[action.owner, default: 0] += action.delta
+                let (sum, _) = netDeltas[action.owner, default: 0].addingReportingOverflow(action.delta)
+                netDeltas[action.owner] = sum
             }
         }
 
@@ -631,9 +638,13 @@ extension LatticeNode {
             let current = currentBalances[address] ?? 0
             let newBalance: UInt64
             if delta > 0 {
-                newBalance = current + UInt64(delta)
+                let (result, overflow) = current.addingReportingOverflow(UInt64(delta))
+                newBalance = overflow ? current : result
+            } else if delta != Int64.min {
+                let debit = UInt64(-delta)
+                newBalance = current >= debit ? current - debit : 0
             } else {
-                newBalance = current - UInt64(-delta)
+                newBalance = current
             }
             let currentNonce = nonces[address] ?? 0
             let txCount = senderTxCounts[address] ?? 0
