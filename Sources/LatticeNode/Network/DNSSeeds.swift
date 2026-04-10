@@ -52,7 +52,7 @@ public enum DNSSeeds: Sendable {
     static func resolveA(hostname: String) -> [PeerEndpoint] {
         var hints = addrinfo()
         hints.ai_family = AF_INET
-        hints.ai_socktype = SOCK_STREAM
+        hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
 
         var result: UnsafeMutablePointer<addrinfo>?
         let status = getaddrinfo(hostname, nil, &hints, &result)
