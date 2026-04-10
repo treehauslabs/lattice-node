@@ -10,7 +10,7 @@
 # Then use `fly-bootstrap.sh` to wire them together.
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "../../Dockerfile"
 
 [mounts]
   source = "lattice_data"
