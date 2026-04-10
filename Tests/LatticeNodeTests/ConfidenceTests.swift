@@ -38,7 +38,7 @@ final class StateRootVerificationTests: XCTestCase {
         let coinbaseBody = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward))],
             actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-            settleActions: [], signers: [minerAddr], fee: 0, nonce: 1
+            settleActions: [], signers: [minerAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
         )
         let coinbaseTx = sign(coinbaseBody, kp)
 

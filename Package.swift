@@ -7,7 +7,7 @@ let package = Package(
         .macOS(.v15)
     ],
     dependencies: [
-        .package(url: "https://github.com/treehauslabs/Lattice.git", from: "4.0.0"),
+        .package(path: "../lattice"),
         .package(url: "https://github.com/treehauslabs/Acorn.git", from: "2.0.0"),
         .package(url: "https://github.com/treehauslabs/AcornDiskWorker.git", from: "2.0.0"),
         .package(url: "https://github.com/treehauslabs/AcornMemoryWorker.git", from: "2.0.0"),
@@ -17,6 +17,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
+        .package(url: "https://github.com/21-DOT-DEV/swift-secp256k1.git", exact: "0.23.0"),
     ],
     targets: [
         .target(
@@ -37,6 +38,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Collections", package: "swift-collections"),
+                .product(name: "P256K", package: "swift-secp256k1"),
             ]),
         .testTarget(
             name: "LatticeNodeTests",

@@ -5,7 +5,7 @@ import UInt256
 
 public let MINIMUM_TRANSACTION_FEE: UInt64 = 1
 public let MAX_TRANSACTION_FEE: UInt64 = 1_000_000_000_000
-public let MAX_NONCE_DRIFT: UInt64 = 600
+public let MAX_NONCE_DRIFT: UInt64 = 64
 public let MAX_TRANSACTION_SIZE: Int = 102_400
 
 public enum TransactionValidationError: Error, Sendable {

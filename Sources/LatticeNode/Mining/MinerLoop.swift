@@ -320,7 +320,8 @@ public actor MinerLoop {
             settleActions: [],
             signers: [identity.address],
             fee: 0,
-            nonce: previousBlock.index + 1
+            nonce: previousBlock.index,
+            chainPath: [spec.directory]
         )
         let bodyHeader = HeaderImpl<TransactionBody>(node: body)
 

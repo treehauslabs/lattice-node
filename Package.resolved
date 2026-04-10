@@ -1,5 +1,5 @@
 {
-  "originHash" : "593555c068aeb7ae3e8210a032c304b04cd1c0a920ea1605116e407e25199849",
+  "originHash" : "587d5a1fc01009eab6589a967a44bac657fbdcf341eb6bfa65cf4369a8eb7efd",
   "pins" : [
     {
       "identity" : "acorn",
@@ -98,15 +98,6 @@
       "state" : {
         "revision" : "a4c1872d36036fe4ade4b1cadb268603e89e25f0",
         "version" : "3.6.0"
-      }
-    },
-    {
-      "identity" : "lattice",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/treehauslabs/Lattice.git",
-      "state" : {
-        "revision" : "b0d84897aa2f7f4f496fb742dfa348d80efd5c7a",
-        "version" : "4.1.0"
       }
     },
     {
@@ -332,6 +323,15 @@
       "state" : {
         "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
         "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-secp256k1",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/21-DOT-DEV/swift-secp256k1.git",
+      "state" : {
+        "revision" : "21d46dd1d11737b77d15bd23468f989b24bc7f40",
+        "version" : "0.23.0"
       }
     },
     {

@@ -112,7 +112,8 @@ extension LatticeNode {
                 chainState: childChainState,
                 mempool: network.nodeMempool,
                 fetcher: network.ivyFetcher,
-                spec: childSpec
+                spec: childSpec,
+                chainPath: [nexusDir, dir]
             ))
         }
         return contexts

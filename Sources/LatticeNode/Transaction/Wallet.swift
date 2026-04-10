@@ -1,6 +1,6 @@
 import Lattice
 import Foundation
-import Crypto
+import P256K
 import cashew
 
 public struct Wallet: Sendable {
@@ -21,10 +21,10 @@ public struct Wallet: Sendable {
 
     public static func fromPrivateKey(_ hex: String) -> Wallet? {
         guard let data = Data(hex: hex),
-              let key = try? P256.Signing.PrivateKey(rawRepresentation: data) else {
+              let key = try? P256K.Signing.PrivateKey(dataRepresentation: data) else {
             return nil
         }
-        let pubHex = key.publicKey.rawRepresentation.map { String(format: "%02x", $0) }.joined()
+        let pubHex = key.publicKey.dataRepresentation.map { String(format: "%02x", $0) }.joined()
         return Wallet(privateKeyHex: hex, publicKeyHex: pubHex)
     }
 
@@ -36,7 +36,8 @@ public struct Wallet: Sendable {
         to recipient: String,
         amount: UInt64,
         fee: UInt64 = 0,
-        nonce: UInt64 = 0
+        nonce: UInt64 = 0,
+        chainPath: [String] = []
     ) -> Transaction? {
         let senderAction = AccountAction(
             owner: address,
@@ -57,7 +58,8 @@ public struct Wallet: Sendable {
             settleActions: [],
             signers: [address],
             fee: fee,
-            nonce: nonce
+            nonce: nonce,
+            chainPath: chainPath
         )
 
         let bodyHeader = HeaderImpl<TransactionBody>(node: body)
@@ -72,7 +74,8 @@ public struct Wallet: Sendable {
     public func buildActionTransaction(
         actions: [Action],
         fee: UInt64 = 0,
-        nonce: UInt64 = 0
+        nonce: UInt64 = 0,
+        chainPath: [String] = []
     ) -> Transaction? {
         var accountActions: [AccountAction] = []
         if fee > 0 {
@@ -92,7 +95,8 @@ public struct Wallet: Sendable {
             settleActions: [],
             signers: [address],
             fee: fee,
-            nonce: nonce
+            nonce: nonce,
+            chainPath: chainPath
         )
 
         let bodyHeader = HeaderImpl<TransactionBody>(node: body)
