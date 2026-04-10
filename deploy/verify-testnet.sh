@@ -4,7 +4,7 @@ set -euo pipefail
 # Verify testnet is running correctly
 # Usage: ./verify-testnet.sh
 
-APPS=("lattice-bootstrap-1" "lattice-bootstrap-2" "lattice-bootstrap-3")
+APPS=("lattice-seed-1" "lattice-seed-2" "lattice-seed-3")
 
 echo "=== Lattice Testnet Health Check ==="
 echo ""
