@@ -22,20 +22,6 @@ extension LatticeNode {
         blocksSinceLastPersist[directory] = count
         if count >= config.persistInterval {
             await persistChainState(directory: directory)
-            await runStateExpiry(directory: directory)
-        }
-    }
-
-    private func runStateExpiry(directory: String) async {
-        guard let store = stateStores[directory],
-              let chain = await chain(for: directory) else { return }
-        let currentHeight = await chain.getHighestBlockIndex()
-        let expiry = StateExpiry(store: store)
-        let expired = await expiry.findExpiredAccounts(currentHeight: currentHeight)
-        if !expired.isEmpty {
-            await expiry.expireAccounts(expired, atHeight: currentHeight)
-            let log = NodeLogger("expiry")
-            log.info("\(directory): expired \(expired.count) inactive account(s)")
         }
     }
 

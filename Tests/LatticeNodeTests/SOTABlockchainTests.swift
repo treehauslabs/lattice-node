@@ -527,38 +527,6 @@ final class MempoolManipulationTests: XCTestCase {
 }
 
 // ============================================================================
-// MARK: - CATEGORY I: State Expiry [P1]
-// ============================================================================
-
-final class StateExpiryTests: XCTestCase {
-
-    func testExpireAndReviveAccount() async throws {
-        let dir = tmp()
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try StateStore(storagePath: dir, chain: "test")
-
-        await store.setAccount(address: "alice", balance: 1000, nonce: 5, atHeight: 0)
-        let expiry = StateExpiry(store: store, expiryBlocks: 10)
-
-        // At height 20, alice (last active at 0) is expired
-        let expired = await expiry.findExpiredAccounts(currentHeight: 20)
-        XCTAssertEqual(expired.count, 1)
-        XCTAssertEqual(expired.first?.address, "alice")
-
-        await expiry.expireAccounts(expired, atHeight: 20)
-
-        // Balance should be gone from normal query
-        let balance = await store.getBalance(address: "alice")
-        XCTAssertNil(balance, "Expired account should not be queryable")
-
-        // Revive with correct proof
-        // Empty proof should fail to revive
-        let revived = await store.reviveAccount(address: "alice", proof: Data(), atHeight: 21)
-        XCTAssertFalse(revived, "Empty proof should not revive")
-    }
-}
-
-// ============================================================================
 // MARK: - CATEGORY P: CAS Integrity [P1]
 // ============================================================================
 
@@ -1805,36 +1773,6 @@ final class MoreEconomicTests: XCTestCase {
 
         // First selected should be the highest fee (100)
         XCTAssertEqual(selected.first?.body.node?.fee, 100, "Highest fee tx should be selected first")
-    }
-}
-
-// ============================================================================
-// MARK: - CATEGORY I (remaining): Expired Account Cannot Transact [P1]
-// ============================================================================
-
-final class ExpiredAccountTests: XCTestCase {
-
-    func testExpiredAccountBalanceNil() async throws {
-        let dir = tmp()
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try StateStore(storagePath: dir, chain: "test")
-
-        // Create account, set it active long ago
-        await store.setAccount(address: "alice", balance: 1000, nonce: 5, atHeight: 0)
-
-        // Expire
-        let expiry = StateExpiry(store: store, expiryBlocks: 10)
-        let expired = await expiry.findExpiredAccounts(currentHeight: 100)
-        XCTAssertEqual(expired.count, 1)
-        await expiry.expireAccounts(expired, atHeight: 100)
-
-        // Balance should be nil
-        let balance = store.getBalance(address: "alice")
-        XCTAssertNil(balance, "Expired account balance should be nil")
-
-        // Nonce should also be nil
-        let nonce = store.getNonce(address: "alice")
-        XCTAssertNil(nonce, "Expired account nonce should be nil")
     }
 }
 

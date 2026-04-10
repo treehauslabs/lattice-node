@@ -166,46 +166,6 @@ final class StateStoreScenarioTests: XCTestCase {
         XCTAssertEqual(bobHistory.count, 1)
     }
 
-    func testStateExpiry() async throws {
-        let store = try makeStore()
-        await store.setAccount(address: "old", balance: 999, nonce: 0, atHeight: 1)
-        await store.setAccount(address: "new", balance: 111, nonce: 0, atHeight: 100)
-
-        let expired = try await store.queryAccountsBelowHeight(50)
-        XCTAssertEqual(expired.count, 1)
-        XCTAssertEqual(expired.first?.address, "old")
-
-        let accountData = await store.getAccount(address: "old")
-        XCTAssertNotNil(accountData)
-
-        await store.expireAccount(address: "old", atHeight: 100)
-        let expiredBalance = await store.getBalance(address: "old")
-        XCTAssertNil(expiredBalance)
-
-        let proof = try JSONEncoder().encode(accountData!)
-        let revived = await store.reviveAccount(address: "old", proof: proof, atHeight: 101)
-        XCTAssertTrue(revived)
-        let revivedBalance = await store.getBalance(address: "old")
-        XCTAssertEqual(revivedBalance, 999)
-    }
-
-    func testReviveWithWrongProofFails() async throws {
-        let store = try makeStore()
-        await store.setAccount(address: "victim", balance: 999, nonce: 0, atHeight: 1)
-        await store.expireAccount(address: "victim", atHeight: 100)
-
-        let result = await store.reviveAccount(address: "victim", proof: Data("wrong".utf8), atHeight: 101)
-        XCTAssertFalse(result)
-    }
-
-    func testReviveWithEmptyProofFails() async throws {
-        let store = try makeStore()
-        await store.setAccount(address: "victim", balance: 999, nonce: 0, atHeight: 1)
-        await store.expireAccount(address: "victim", atHeight: 100)
-
-        let result = await store.reviveAccount(address: "victim", proof: Data(), atHeight: 101)
-        XCTAssertFalse(result)
-    }
 }
 
 // MARK: - NodeMempool Adversarial Tests

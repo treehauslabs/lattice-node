@@ -59,12 +59,10 @@ func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
 }
 
 @discardableResult
-func startGarbageCollectionLoop(node: LatticeNode, retentionDepth: UInt64, expiryBlocks: UInt64 = 1_000_000) -> Task<Void, Never> {
+func startGarbageCollectionLoop(node: LatticeNode, retentionDepth: UInt64) -> Task<Void, Never> {
     Task {
-        var gcCycle: UInt64 = 0
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(300))
-            gcCycle += 1
 
             for directory in await node.allDirectories() {
                 guard let store = await node.stateStore(for: directory) else { continue }
@@ -72,16 +70,6 @@ func startGarbageCollectionLoop(node: LatticeNode, retentionDepth: UInt64, expir
 
                 if height > retentionDepth {
                     await store.pruneDiffs(belowHeight: height - retentionDepth)
-                }
-
-                if gcCycle % 12 == 0 {
-                    let expiry = StateExpiry(store: store, expiryBlocks: expiryBlocks)
-                    let expired = await expiry.findExpiredAccounts(currentHeight: height)
-                    if !expired.isEmpty {
-                        await expiry.expireAccounts(expired, atHeight: height)
-                        let log = NodeLogger("gc")
-                        log.info("Expired \(expired.count) inactive accounts in \(directory)")
-                    }
                 }
             }
         }
