@@ -41,8 +41,9 @@ extension LatticeNode {
                 await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
             }
             metrics.increment("lattice_transactions_submitted_total")
-            // Gossip with full body — no fetch roundtrip for receivers
-            await network.gossipTransaction(cid: transaction.body.rawCID, bodyData: bodyData)
+            // Gossip with full signed transaction — receivers can validate and add to mempool
+            let txData = transaction.toData()
+            await network.gossipTransaction(cid: transaction.body.rawCID, transactionData: txData)
             let fee = transaction.body.node?.fee ?? 0
             let sender = transaction.body.node?.signers.first ?? ""
             await subscriptions.emit(.newTransaction(

@@ -321,17 +321,17 @@ public actor ChainNetwork: IvyDelegate {
         }
     }
 
-    /// Gossip a transaction to all direct peers with full body data.
-    /// Includes body so receivers don't need a fetch roundtrip.
-    public func gossipTransaction(cid: String, bodyData: Data? = nil) async {
-        if let body = bodyData {
-            // Send CID + body together: [2-byte cid length][cid bytes][body bytes]
+    /// Gossip a transaction to all direct peers with full transaction data.
+    /// Includes the complete signed transaction so receivers can add it to their mempool.
+    public func gossipTransaction(cid: String, transactionData: Data? = nil) async {
+        if let txData = transactionData {
+            // Send body CID + full transaction: [2-byte cid length][cid bytes][tx bytes]
             var payload = Data()
             let cidBytes = Data(cid.utf8)
             var cidLen = UInt16(cidBytes.count)
             payload.append(Data(bytes: &cidLen, count: 2))
             payload.append(cidBytes)
-            payload.append(body)
+            payload.append(txData)
             await ivy.broadcastMessage(topic: "mempool-full", payload: payload)
         } else {
             // Fallback: CID-only gossip (receiver must fetch)
@@ -372,22 +372,20 @@ public actor ChainNetwork: IvyDelegate {
                 await delegate?.chainNetwork(self, didReceiveBlockAnnouncement: cid, from: peer)
             }
         case "mempool-full":
-            // Full body gossip: [2-byte cid length][cid bytes][body bytes]
+            // Full transaction gossip: [2-byte cid length][cid bytes][transaction bytes]
             guard payload.count > 2 else { break }
             let cidLen = Int(payload.withUnsafeBytes { $0.load(as: UInt16.self) })
             guard payload.count >= 2 + cidLen else { break }
             let cidStr = String(data: payload[2..<2+cidLen], encoding: .utf8) ?? ""
-            let bodyData = payload[(2+cidLen)...]
-            if let body = TransactionBody(data: Data(bodyData)) {
-                let bodyHeader = HeaderImpl<TransactionBody>(node: body)
-                // Verify CID matches
-                if bodyHeader.rawCID == cidStr {
-                    // Store to CAS so we can serve it to others
-                    await storeLocally(cid: cidStr, data: Data(bodyData))
-                    // Reconstruct transaction (no signatures in gossip — body only for mempool)
-                    if let tx = Transaction(data: Data(bodyData)) {
-                        _ = await nodeMempool.add(transaction: tx)
+            let txData = Data(payload[(2+cidLen)...])
+            if let tx = Transaction(data: txData) {
+                // Verify body CID matches the advertised CID
+                if tx.body.rawCID == cidStr {
+                    // Store body to CAS so we can serve it during block resolution
+                    if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
+                        await storeLocally(cid: cidStr, data: bodyData)
                     }
+                    _ = await nodeMempool.add(transaction: tx)
                 }
             }
         case "mempool":

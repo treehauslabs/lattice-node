@@ -17,33 +17,56 @@ extension LatticeNode {
             try? await Task.sleep(for: .seconds(60))
             guard !Task.isCancelled else { break }
 
-            let randomTarget = UUID().uuidString
-            let _ = await network.ivy.findNode(target: randomTarget)
+            // Discover new peers via DHT random walk
+            let discovered = await network.ivy.findNode(target: UUID().uuidString)
 
+            // Separate actually-connected peers from all known peers in the routing table
+            let connectedIDs = Set(await network.ivy.connectedPeers.map { $0.publicKey })
             let allKnown = await network.ivy.router.allPeers()
-            let connectedPeers = allKnown.map { $0.endpoint }
-            let connected = connectedPeers.count
-            let connectedKeys = Set(connectedPeers.map { $0.publicKey })
+            let connectedEndpoints = allKnown
+                .filter { connectedIDs.contains($0.id.publicKey) }
+                .map { $0.endpoint }
+            let connected = connectedEndpoints.count
 
             if connected < PeerDiversity.targetOutbound {
-                let candidates = connectedPeers
+                // Use discovered peers + known-but-not-connected peers as candidates
+                let unconnectedKnown = allKnown
+                    .filter { !connectedIDs.contains($0.id.publicKey) }
+                    .map { $0.endpoint }
+                let candidates = discovered + unconnectedKnown
                 let diverse = PeerDiversity.selectDiversePeers(
                     from: candidates,
-                    existing: connectedPeers,
+                    existing: connectedEndpoints,
                     maxNew: PeerDiversity.targetOutbound - connected
                 )
                 for peer in diverse {
                     try? await network.ivy.connect(to: peer)
                 }
+
+                // If still short, try DNS seeds as fallback
+                if connected + diverse.count < PeerDiversity.targetOutbound {
+                    let dnsSeeds = await DNSSeeds.resolve()
+                    let dnsCandidates = dnsSeeds.filter { !connectedIDs.contains($0.publicKey) }
+                    let dnsSelection = PeerDiversity.selectDiversePeers(
+                        from: dnsCandidates,
+                        existing: connectedEndpoints,
+                        maxNew: PeerDiversity.targetOutbound - connected - diverse.count
+                    )
+                    for peer in dnsSelection {
+                        try? await network.ivy.connect(to: peer)
+                    }
+                }
             }
 
-            let overrepresented = PeerDiversity.findOverrepresentedPeers(peers: connectedPeers)
+            // Prune overrepresented subnets and replace with diverse peers
+            let overrepresented = PeerDiversity.findOverrepresentedPeers(peers: connectedEndpoints)
             if !overrepresented.isEmpty {
-                let candidates = connectedPeers
-                    .filter { !connectedKeys.contains($0.publicKey) }
+                let unconnectedKnown = allKnown
+                    .filter { !connectedIDs.contains($0.id.publicKey) }
+                    .map { $0.endpoint }
                 let replacements = PeerDiversity.selectDiversePeers(
-                    from: candidates,
-                    existing: connectedPeers,
+                    from: discovered + unconnectedKnown,
+                    existing: connectedEndpoints,
                     maxNew: min(overrepresented.count, 2)
                 )
                 for peer in replacements {
@@ -52,7 +75,7 @@ extension LatticeNode {
             }
 
             if connected >= 2 {
-                let bestPeers = Array(connectedPeers.prefix(2))
+                let bestPeers = Array(connectedEndpoints.prefix(2))
                 await anchorPeers.update(peers: bestPeers)
             }
         }

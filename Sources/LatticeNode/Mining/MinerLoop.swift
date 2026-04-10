@@ -165,21 +165,33 @@ public actor MinerLoop {
     }
 
     private func difficultyHashPrefixBytes(_ block: Block) -> ContiguousArray<UInt8> {
+        let sep: UInt8 = 0x00
         var bytes = ContiguousArray<UInt8>()
         bytes.reserveCapacity(512)
         if let previousBlockCID = block.previousBlock?.rawCID {
             bytes.append(contentsOf: previousBlockCID.utf8)
         }
+        bytes.append(sep)
         bytes.append(contentsOf: block.transactions.rawCID.utf8)
+        bytes.append(sep)
         bytes.append(contentsOf: block.difficulty.toHexString().utf8)
+        bytes.append(sep)
         bytes.append(contentsOf: block.nextDifficulty.toHexString().utf8)
+        bytes.append(sep)
         bytes.append(contentsOf: block.spec.rawCID.utf8)
+        bytes.append(sep)
         bytes.append(contentsOf: block.parentHomestead.rawCID.utf8)
+        bytes.append(sep)
         bytes.append(contentsOf: block.homestead.rawCID.utf8)
+        bytes.append(sep)
         bytes.append(contentsOf: block.frontier.rawCID.utf8)
+        bytes.append(sep)
         bytes.append(contentsOf: block.childBlocks.rawCID.utf8)
+        bytes.append(sep)
         bytes.append(contentsOf: String(block.index).utf8)
+        bytes.append(sep)
         bytes.append(contentsOf: String(block.timestamp).utf8)
+        bytes.append(sep)
         return bytes
     }
 
@@ -189,71 +201,7 @@ public actor MinerLoop {
         startNonce: UInt64,
         count: UInt64
     ) -> UInt64? {
-        let end = startNonce &+ count
-        var nonce = startNonce
-
-        // Stack buffer for nonce→ASCII digits (max 20 for UInt64.max)
-        var nonceBuf: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
-                       UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
-            (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
-
-        while nonce < end {
-            if nonce & 0x3FF == 0 && Task.isCancelled { return nil }
-
-            // Convert nonce to forward-order ASCII digits on stack
-            var nonceLen = 0
-            if nonce == 0 {
-                nonceBuf.0 = 0x30 // '0'
-                nonceLen = 1
-            } else {
-                var n = nonce
-                var digitCount = 0
-                withUnsafeMutablePointer(to: &nonceBuf) { ptr in
-                    let buf = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
-                    while n > 0 {
-                        buf[digitCount] = UInt8(0x30 &+ (n % 10))
-                        n /= 10
-                        digitCount &+= 1
-                    }
-                    // Reverse in place
-                    var lo = 0
-                    var hi = digitCount &- 1
-                    while lo < hi {
-                        let tmp = buf[lo]
-                        buf[lo] = buf[hi]
-                        buf[hi] = tmp
-                        lo &+= 1
-                        hi &-= 1
-                    }
-                }
-                nonceLen = digitCount
-            }
-
-            // Clone midstate (copies ~112 bytes of SHA256 internal state),
-            // hash only the nonce suffix, finalize
-            var hasher = midstate
-            withUnsafePointer(to: &nonceBuf) { ptr in
-                hasher.update(bufferPointer: UnsafeRawBufferPointer(
-                    start: UnsafeRawPointer(ptr), count: nonceLen
-                ))
-            }
-            let digest = hasher.finalize()
-            let hash: UInt256 = digest.withUnsafeBytes { raw in
-                let p = raw.bindMemory(to: UInt64.self)
-                return UInt256([
-                    UInt64(bigEndian: p[0]),
-                    UInt64(bigEndian: p[1]),
-                    UInt64(bigEndian: p[2]),
-                    UInt64(bigEndian: p[3])
-                ])
-            }
-
-            if targetDifficulty >= hash {
-                return nonce
-            }
-            nonce &+= 1
-        }
-        return nil
+        mineBatchFree(midstate: midstate, targetDifficulty: targetDifficulty, startNonce: startNonce, count: count)
     }
 
     nonisolated private func mineParallel(

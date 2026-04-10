@@ -90,21 +90,34 @@ struct MiningChallengeSolver: Sendable {
 }
 
 private func difficultyHashPrefix(_ block: Block) -> Data {
-    var prefix = ""
+    let sep: [UInt8] = [0x00]
+    var data = Data()
+    data.reserveCapacity(512)
     if let previousBlockCID = block.previousBlock?.rawCID {
-        prefix += previousBlockCID
+        data.append(contentsOf: previousBlockCID.utf8)
     }
-    prefix += block.transactions.rawCID
-    prefix += block.difficulty.toHexString()
-    prefix += block.nextDifficulty.toHexString()
-    prefix += block.spec.rawCID
-    prefix += block.parentHomestead.rawCID
-    prefix += block.homestead.rawCID
-    prefix += block.frontier.rawCID
-    prefix += block.childBlocks.rawCID
-    prefix += String(block.index)
-    prefix += String(block.timestamp)
-    return Data(prefix.utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: block.transactions.rawCID.utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: block.difficulty.toHexString().utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: block.nextDifficulty.toHexString().utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: block.spec.rawCID.utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: block.parentHomestead.rawCID.utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: block.homestead.rawCID.utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: block.frontier.rawCID.utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: block.childBlocks.rawCID.utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: String(block.index).utf8)
+    data.append(contentsOf: sep)
+    data.append(contentsOf: String(block.timestamp).utf8)
+    data.append(contentsOf: sep)
+    return data
 }
 
 private struct TestFetcher: Fetcher {
