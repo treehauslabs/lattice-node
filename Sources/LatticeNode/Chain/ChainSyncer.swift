@@ -100,6 +100,7 @@ public actor ChainSyncer {
         var targetHeight: UInt64 = 0
         var tipBlock: Block?
         var cumulativeWork = UInt256.zero
+        var lastHomesteadCID: String? = nil
 
         while !cancelled {
             let data: Data
@@ -122,6 +123,14 @@ public actor ChainSyncer {
             guard block.validateBlockDifficulty(nexusHash: diffHash) else {
                 throw SyncError.invalidPoW(block.index)
             }
+
+            // State chain continuity: the next block's homestead must match this block's frontier
+            if let expectedFrontier = lastHomesteadCID {
+                guard block.frontier.rawCID == expectedFrontier else {
+                    throw SyncError.invalidStateRoot(block.index)
+                }
+            }
+            lastHomesteadCID = block.homestead.rawCID
 
             cumulativeWork = cumulativeWork &+ Self.workForDifficulty(block.difficulty)
 
@@ -166,6 +175,14 @@ public actor ChainSyncer {
         if cancelled { throw SyncError.cancelled }
         guard !walk.collected.isEmpty else { throw SyncError.emptyChain }
         if walk.cumulativeWork < localCumulativeWork { throw SyncError.insufficientWork }
+
+        if let tip = walk.tipBlock {
+            let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher)) ?? false
+            if !valid {
+                let fullValid = try await verifyTipFrontier(tip)
+                if !fullValid { throw SyncError.invalidStateRoot(tip.index) }
+            }
+        }
 
         var collected = walk.collected
         collected.reverse()

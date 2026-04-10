@@ -87,10 +87,13 @@ public actor MinerLoop {
                 }
                 let childResult = await childResultAsync
                 let blockDifficulty = previousBlock.nextDifficulty
-                let computedNextDifficulty = spec.calculateMinimumDifficulty(
+                let ancestorTimestamps = await Self.collectAncestorTimestamps(
+                    from: previousBlock, count: spec.difficultyAdjustmentWindow, fetcher: fetcher
+                )
+                let windowTimestamps = [blockTimestamp] + ancestorTimestamps
+                let computedNextDifficulty = spec.calculateWindowedDifficulty(
                     previousDifficulty: blockDifficulty,
-                    blockTimestamp: blockTimestamp,
-                    previousTimestamp: previousBlock.timestamp
+                    ancestorTimestamps: windowTimestamps
                 )
                 let template = try await BlockBuilder.buildBlock(
                     previous: previousBlock,
@@ -358,10 +361,13 @@ public actor MinerLoop {
                         )
 
                         let childDifficulty = childTip.nextDifficulty
-                        let childNextDifficulty = ctx.spec.calculateMinimumDifficulty(
+                        let childAncestorTs = await Self.collectAncestorTimestamps(
+                            from: childTip, count: ctx.spec.difficultyAdjustmentWindow, fetcher: ctx.fetcher
+                        )
+                        let childWindowTs = [timestamp] + childAncestorTs
+                        let childNextDifficulty = ctx.spec.calculateWindowedDifficulty(
                             previousDifficulty: childDifficulty,
-                            blockTimestamp: timestamp,
-                            previousTimestamp: childTip.timestamp
+                            ancestorTimestamps: childWindowTs
                         )
 
                         let childBlock = try await BlockBuilder.buildBlock(
@@ -396,6 +402,17 @@ public actor MinerLoop {
     }
 
     // MARK: - Helpers
+
+    private static func collectAncestorTimestamps(from block: Block, count: UInt64, fetcher: Fetcher) async -> [Int64] {
+        var timestamps: [Int64] = [block.timestamp]
+        var current = block
+        for _ in 1..<count {
+            guard let prev = try? await current.previousBlock?.resolve(fetcher: fetcher).node else { break }
+            timestamps.append(prev.timestamp)
+            current = prev
+        }
+        return timestamps
+    }
 
     private func resolveCurrentTip() async throws -> Block? {
         let tipHash = await chainState.getMainChainTip()
