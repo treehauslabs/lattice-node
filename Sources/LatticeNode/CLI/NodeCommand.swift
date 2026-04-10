@@ -257,7 +257,14 @@ struct NodeCommand: AsyncParsableCommand {
         }
 
         var backgroundTasks: [Task<Void, Never>] = []
-        if !discoveryOnly {
+        if discoveryOnly {
+            // Seed crawler: scores peers and writes seeds.txt for DNS infrastructure
+            if let network = await node.network(for: NexusGenesis.config.spec.directory) {
+                let crawler = SeedCrawler(ivy: network.ivy, dataDir: dataDirURL)
+                backgroundTasks.append(Task { await crawler.start() })
+                print("  Seed crawler: writing \(dataDirURL.path)/seeds.txt")
+            }
+        } else {
             for chain in mineChains {
                 await node.startMining(directory: chain)
                 print("  Mining started on \(chain)")
