@@ -28,7 +28,8 @@ public struct StateKeySet: Sendable {
     }
 
     public func isDisjoint(with other: StateKeySet) -> Bool {
-        accounts.isDisjoint(with: other.accounts) &&
+        // accounts excluded: delta model aggregates per owner, so
+        // multiple transactions touching the same account are safe
         swaps.isDisjoint(with: other.swaps) &&
         settles.isDisjoint(with: other.settles) &&
         general.isDisjoint(with: other.general) &&
