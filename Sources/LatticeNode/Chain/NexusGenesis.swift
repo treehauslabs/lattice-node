@@ -11,9 +11,6 @@ public enum NexusGenesis {
         "c01c054a190f8dbd88474fbeb2b08b3b86ecb930f458a8fd7e0ecbedca245b15" +
         "32ae64647f29f0279bde50cb7e5c709f46536f746fc8c3a5f40a5b5315fa4efd"
 
-    static let ownerPrivateKeyHex =
-        "fee40cad9ce94780c9fa0173ef1be5da7a244137ace06a9bd6a39c010c61ea3f"
-
     public static let ownerAddress = CryptoUtils.createAddress(from: ownerPublicKeyHex)
 
     // MARK: - Chain Specification
