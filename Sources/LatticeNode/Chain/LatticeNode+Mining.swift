@@ -23,6 +23,7 @@ extension LatticeNode {
             fetcher: network.ivyFetcher,
             spec: genesisConfig.spec,
             identity: identity,
+            broker: broker,
             childContextProvider: { [weak self] in
                 await self?.buildChildMiningContexts() ?? []
             },

@@ -1,5 +1,5 @@
 {
-  "originHash" : "841f2c5fcea6d6f9058a1cf685d07bd2091025b99565731df937210e67530492",
+  "originHash" : "2ccbc663a9824cf126f275f63c71252db49461dc89178bf3be93b58d17bf6e2a",
   "pins" : [
     {
       "identity" : "acorn",
@@ -105,8 +105,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
-        "revision" : "6a70ca3a6bd0c233998377829d3933a4a627f330",
-        "version" : "5.1.0"
+        "revision" : "faa754cb15efcf14959d2235b1b6048b8c98a71a",
+        "version" : "6.0.0"
       }
     },
     {

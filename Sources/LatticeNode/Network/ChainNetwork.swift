@@ -11,6 +11,8 @@ import UInt256
 public protocol ChainNetworkDelegate: AnyObject, Sendable {
     func chainNetwork(_ network: ChainNetwork, didReceiveBlock cid: String, data: Data, from peer: PeerID) async
     func chainNetwork(_ network: ChainNetwork, didReceiveBlockAnnouncement cid: String, from peer: PeerID) async
+    func chainNetwork(_ network: ChainNetwork, didReceiveOrder order: SignedOrder, from peer: PeerID) async
+    func chainNetwork(_ network: ChainNetwork, didReceiveCancellation cancellation: OrderCancellation, from peer: PeerID) async
 }
 
 public actor ChainNetwork: IvyDelegate {
@@ -321,6 +323,16 @@ public actor ChainNetwork: IvyDelegate {
         }
     }
 
+    /// Gossip a signed order to all direct peers.
+    public func gossipOrder(orderData: Data) async {
+        await ivy.broadcastMessage(topic: "order", payload: orderData)
+    }
+
+    /// Gossip an order cancellation to all direct peers.
+    public func gossipOrderCancellation(cancelData: Data) async {
+        await ivy.broadcastMessage(topic: "orderCancel", payload: cancelData)
+    }
+
     /// Gossip a transaction to all direct peers with full transaction data.
     /// Includes the complete signed transaction so receivers can add it to their mempool.
     public func gossipTransaction(cid: String, transactionData: Data? = nil) async {
@@ -396,6 +408,14 @@ public actor ChainNetwork: IvyDelegate {
                         _ = await nodeMempool.add(transaction: tx)
                     }
                 }
+            }
+        case "order":
+            if let order = try? JSONDecoder().decode(SignedOrder.self, from: payload) {
+                await delegate?.chainNetwork(self, didReceiveOrder: order, from: peer)
+            }
+        case "orderCancel":
+            if let cancellation = try? JSONDecoder().decode(OrderCancellation.self, from: payload) {
+                await delegate?.chainNetwork(self, didReceiveCancellation: cancellation, from: peer)
             }
         case "pinRequest":
             if let cid = String(data: payload, encoding: .utf8) {

@@ -76,6 +76,10 @@ enum RPCRoutes {
         api.post("mining/start") { req, _ in try await startMining(node: node, request: req) }
         api.post("mining/stop") { req, _ in try await stopMining(node: node, request: req) }
 
+        api.post("orders") { req, _ in try await submitOrder(node: node, request: req) }
+        api.post("orders/cancel") { req, _ in try await cancelOrder(node: node, request: req) }
+        api.get("orders") { req, _ in try await getOrders(node: node, request: req) }
+
         // Serve static files for the web UI (if dist/ exists next to the binary)
         router.get("") { _, _ in
             return Response(status: .temporaryRedirect, headers: HTTPFields([HTTPField(name: .location, value: "/app/")]))
@@ -425,6 +429,61 @@ enum RPCRoutes {
         }
         struct R: Encodable { let chains: [ChainFinality]; let defaultConfirmations: UInt64 }
         return json(R(chains: configs, defaultConfirmations: finality.defaultConfirmations))
+    }
+
+    // MARK: - Orders (DEX)
+
+    static func submitOrder(node: LatticeNode, request: Request) async throws -> Response {
+        guard let order = try? await jsonDecoder.decode(SignedOrder.self, from: request.body.collect(upTo: 1_048_576)) else {
+            return jsonError("Invalid order format. Expected a SignedOrder JSON object.")
+        }
+        let accepted = await node.broker.receiveOrder(order)
+        if accepted {
+            // Gossip the order to peers
+            if let orderData = try? JSONEncoder().encode(order) {
+                let dir = node.genesisConfig.spec.directory
+                if let network = await node.network(for: dir) {
+                    await network.gossipOrder(orderData: orderData)
+                }
+            }
+        }
+        struct R: Encodable { let accepted: Bool; let nonce: String }
+        return json(R(accepted: accepted, nonce: String(order.order.nonce)))
+    }
+
+    static func cancelOrder(node: LatticeNode, request: Request) async throws -> Response {
+        let cancelData = try await request.body.collect(upTo: 1_048_576)
+        guard let cancellation = try? jsonDecoder.decode(OrderCancellation.self, from: cancelData) else {
+            return jsonError("Invalid cancellation format. Expected an OrderCancellation JSON object.")
+        }
+        let accepted = await node.broker.receiveCancellation(cancellation)
+        if accepted {
+            if let cancelData = try? JSONEncoder().encode(cancellation) {
+                let dir = node.genesisConfig.spec.directory
+                if let network = await node.network(for: dir) {
+                    await network.gossipOrderCancellation(cancelData: cancelData)
+                }
+            }
+        }
+        struct R: Encodable { let accepted: Bool; let nonce: String }
+        return json(R(accepted: accepted, nonce: String(cancellation.orderNonce)))
+    }
+
+    static func getOrders(node: LatticeNode, request: Request) async throws -> Response {
+        let sourceChain = request.uri.queryParameters["source"].map(String.init) ?? ""
+        let destChain = request.uri.queryParameters["dest"].map(String.init) ?? ""
+        let count = await node.broker.orderBook.pendingCount()
+        if !sourceChain.isEmpty && !destChain.isEmpty {
+            let orders = await node.broker.orderBook.pendingOrders(sourceChain: sourceChain, destChain: destChain)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = (try? encoder.encode(orders)) ?? Data("[]".utf8)
+            var headers = HTTPFields()
+            headers.append(HTTPField(name: .contentType, value: "application/json"))
+            return Response(status: .ok, headers: headers, body: .init(byteBuffer: .init(data: data)))
+        }
+        struct R: Encodable { let pendingCount: Int; let pendingClaims: Int }
+        return json(R(pendingCount: count, pendingClaims: await node.broker.pendingClaimCount()))
     }
 
     // MARK: - Prometheus Metrics
