@@ -105,8 +105,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
-        "revision" : "73ea49db8a6943a6a83031cb61ba58574738a737",
-        "version" : "5.0.0"
+        "revision" : "6a70ca3a6bd0c233998377829d3933a4a627f330",
+        "version" : "5.1.0"
       }
     },
     {
