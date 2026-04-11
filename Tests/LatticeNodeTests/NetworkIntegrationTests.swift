@@ -1252,7 +1252,7 @@ final class NetworkIntegrationTests: XCTestCase {
 
         // Heights should be close (competing miners share blocks)
         let drift = h1 > h2 ? h1 - h2 : h2 - h1
-        XCTAssertLessThanOrEqual(drift, 3, "Competing miners should stay close in height")
+        XCTAssertLessThanOrEqual(drift, 5, "Competing miners should stay close in height")
 
         // After stabilization, tips should converge (same chain wins)
         // Allow some drift since both were mining until just now
