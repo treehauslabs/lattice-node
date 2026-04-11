@@ -108,14 +108,20 @@ public actor MinerLoop {
                 }
                 let childResult = await childResultAsync
                 let blockDifficulty = previousBlock.nextDifficulty
-                let ancestorTimestamps = await Self.collectAncestorTimestamps(
-                    from: previousBlock, count: spec.difficultyAdjustmentWindow, fetcher: fetcher
-                )
-                let windowTimestamps = [blockTimestamp] + ancestorTimestamps
-                let computedNextDifficulty = spec.calculateWindowedDifficulty(
-                    previousDifficulty: blockDifficulty,
-                    ancestorTimestamps: windowTimestamps
-                )
+                let nextBlockIndex = previousBlock.index + 1
+                let computedNextDifficulty: UInt256
+                if spec.isEpochBoundary(blockIndex: nextBlockIndex) {
+                    let ancestorTimestamps = await Self.collectAncestorTimestamps(
+                        from: previousBlock, count: spec.difficultyAdjustmentWindow, fetcher: fetcher
+                    )
+                    let windowTimestamps = [blockTimestamp] + ancestorTimestamps
+                    computedNextDifficulty = spec.calculateWindowedDifficulty(
+                        previousDifficulty: blockDifficulty,
+                        ancestorTimestamps: windowTimestamps
+                    )
+                } else {
+                    computedNextDifficulty = blockDifficulty
+                }
                 let template = try await BlockBuilder.buildBlock(
                     previous: previousBlock,
                     transactions: transactions,
