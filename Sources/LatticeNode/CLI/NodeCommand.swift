@@ -81,53 +81,118 @@ struct NodeCommand: AsyncParsableCommand {
     @Option(name: .long, parsing: .singleValue, help: "Per-chain finality (chain:confirmations, repeatable)")
     var finalityPolicy: [String] = []
 
+    @Option(name: .long, help: "Path to JSON config file (overrides CLI defaults)")
+    var config: String?
+
+    @Option(name: .long, help: "Password for encrypting/decrypting the node private key")
+    var keyPassword: String?
+
     func run() async throws {
         #if canImport(Darwin)
         setbuf(Darwin.stdout, nil)
         #endif
 
-        let dataDirURL = URL(fileURLWithPath: dataDir)
-        let bootstrapPeers = peer.compactMap { parsePeer($0) }
+        // Load config file if provided — values override CLI defaults
+        var effectivePort = port
+        var effectiveDataDir = dataDir
+        var effectivePeer = peer
+        var effectiveMine = mine
+        var effectiveSubscribe = subscribe
+        var effectiveMemory = memory
+        var effectiveDisk = disk
+        var effectiveMempool = mempool
+        var effectiveMiningBatch = miningBatch
+        var effectiveAutosize = autosize
+        var effectiveMaxMemory = maxMemory
+        var effectiveMaxDisk = maxDisk
+        var effectiveRpcPort = rpcPort
+        var effectiveRpcBind = rpcBind
+        var effectiveRpcAllowedOrigin = rpcAllowedOrigin
+        var effectiveNoDiscovery = noDiscovery
+        var effectiveRpcAuth = rpcAuth
+        var effectiveNoDnsSeeds = noDnsSeeds
+        var effectiveDiscoveryOnly = discoveryOnly
+        var effectiveMaxPeersOpt = maxPeers
+        var effectiveFinalityConfirmations = finalityConfirmations
+        var effectiveFinalityPolicy = finalityPolicy
+        var effectiveKeyPassword = keyPassword
+
+        if let configPath = config {
+            let configURL = URL(fileURLWithPath: configPath)
+            if let configData = try? Data(contentsOf: configURL),
+               let json = try? JSONSerialization.jsonObject(with: configData) as? [String: Any] {
+                if let v = json["port"] as? Int { effectivePort = UInt16(v) }
+                if let v = json["dataDir"] as? String { effectiveDataDir = v }
+                if let v = json["memory"] as? Double { effectiveMemory = v }
+                if let v = json["disk"] as? Double { effectiveDisk = v }
+                if let v = json["mempool"] as? Double { effectiveMempool = v }
+                if let v = json["miningBatch"] as? Int { effectiveMiningBatch = UInt64(v) }
+                if let v = json["rpcPort"] as? Int { effectiveRpcPort = UInt16(v) }
+                if let v = json["rpcBind"] as? String { effectiveRpcBind = v }
+                if let v = json["rpcAllowedOrigin"] as? String { effectiveRpcAllowedOrigin = v }
+                if let v = json["rpcAuth"] as? Bool { effectiveRpcAuth = v }
+                if let v = json["noDiscovery"] as? Bool { effectiveNoDiscovery = v }
+                if let v = json["noDnsSeeds"] as? Bool { effectiveNoDnsSeeds = v }
+                if let v = json["discoveryOnly"] as? Bool { effectiveDiscoveryOnly = v }
+                if let v = json["maxPeers"] as? Int { effectiveMaxPeersOpt = v }
+                if let v = json["autosize"] as? Bool { effectiveAutosize = v }
+                if let v = json["finalityConfirmations"] as? Int { effectiveFinalityConfirmations = UInt64(v) }
+                if let v = json["keyPassword"] as? String { effectiveKeyPassword = v }
+                if let peers = json["peers"] as? [String] { effectivePeer = peers }
+                if let chains = json["mine"] as? [String] { effectiveMine = chains }
+                if let subs = json["subscribe"] as? [String] { effectiveSubscribe = subs }
+                if let policies = json["finalityPolicy"] as? [String] { effectiveFinalityPolicy = policies }
+            } else {
+                print("  WARNING: Could not load config file: \(configPath)")
+            }
+        }
+
+        let dataDirURL = URL(fileURLWithPath: effectiveDataDir)
+        let bootstrapPeers = effectivePeer.compactMap { parsePeer($0) }
 
         var subscribedChains = ArrayTrie<Bool>()
         subscribedChains.set(["Nexus"], value: true)
-        for sub in subscribe {
+        for sub in effectiveSubscribe {
             let path = sub.split(separator: "/").map(String.init)
             subscribedChains.set(path, value: true)
         }
 
-        let mineChains = Set(mine)
+        let mineChains = Set(effectiveMine)
 
-        let effectiveMaxPeers = maxPeers ?? (discoveryOnly
+        let effectiveMaxPeers = effectiveMaxPeersOpt ?? (effectiveDiscoveryOnly
             ? BootstrapPeers.maxPeerConnectionsDiscovery
             : BootstrapPeers.maxPeerConnections)
 
         let nodeArgs = NodeArgs(
-            port: port,
+            port: effectivePort,
             dataDir: dataDirURL,
             bootstrapPeers: bootstrapPeers,
             mineChains: mineChains,
             subscribedChains: subscribedChains,
-            memoryGB: memory,
-            diskGB: disk,
-            mempoolMB: mempool,
-            miningBatch: miningBatch,
-            autosize: autosize,
-            maxMemoryGB: maxMemory,
-            maxDiskGB: maxDisk,
-            rpcPort: rpcPort,
-            rpcBindAddress: rpcBind,
-            enableDiscovery: !noDiscovery,
-            rpcAllowedOrigin: rpcAllowedOrigin,
-            discoveryOnly: discoveryOnly,
-            maxPeerConnections: maxPeers
+            memoryGB: effectiveMemory,
+            diskGB: effectiveDisk,
+            mempoolMB: effectiveMempool,
+            miningBatch: effectiveMiningBatch,
+            autosize: effectiveAutosize,
+            maxMemoryGB: effectiveMaxMemory,
+            maxDiskGB: effectiveMaxDisk,
+            rpcPort: effectiveRpcPort,
+            rpcBindAddress: effectiveRpcBind,
+            enableDiscovery: !effectiveNoDiscovery,
+            rpcAllowedOrigin: effectiveRpcAllowedOrigin,
+            discoveryOnly: effectiveDiscoveryOnly,
+            maxPeerConnections: effectiveMaxPeersOpt
         )
 
         let state = NodeState(subscriptions: subscribedChains, nodeArgs: nodeArgs)
-        let identity = try loadOrCreateIdentity(dataDir: dataDirURL)
+        let identity = try loadOrCreateIdentity(dataDir: dataDirURL, password: effectiveKeyPassword)
+        guard let privateKey = identity.privateKey else {
+            print("  FATAL: Could not decrypt private key. Provide --key-password.")
+            throw ExitCode.failure
+        }
 
         print()
-        if discoveryOnly {
+        if effectiveDiscoveryOnly {
             print("  Lattice Discovery Node v\(LatticeNodeVersion) (protocol \(ProtocolVersion))")
             print("  ========================")
         } else {
@@ -136,15 +201,15 @@ struct NodeCommand: AsyncParsableCommand {
         }
         print("  Public key:  \(String(identity.publicKey.prefix(32)))...")
         print("  Data dir:    \(dataDirURL.path)")
-        print("  Listen port: \(port)")
+        print("  Listen port: \(effectivePort)")
         print("  Max peers:   \(effectiveMaxPeers)")
-        print("  Discovery:   \(!noDiscovery ? "enabled" : "disabled")")
+        print("  Discovery:   \(!effectiveNoDiscovery ? "enabled" : "disabled")")
         if !bootstrapPeers.isEmpty {
             print("  Peers:       \(bootstrapPeers.count) bootstrap peer(s)")
         }
         print()
 
-        let resources = discoveryOnly ? NodeResourceConfig.light : configureResources(nodeArgs)
+        let resources = effectiveDiscoveryOnly ? NodeResourceConfig.light : configureResources(nodeArgs)
         var updatedArgs = nodeArgs
         updatedArgs.memoryGB = resources.memoryBudgetGB
         updatedArgs.diskGB = resources.diskBudgetGB
@@ -152,7 +217,7 @@ struct NodeCommand: AsyncParsableCommand {
         updatedArgs.miningBatch = resources.miningBatchSize
         await state.updateArgs(updatedArgs)
 
-        if !discoveryOnly {
+        if !effectiveDiscoveryOnly {
             print("  Memory:      \(String(format: "%.2f", resources.memoryBudgetGB)) GB")
             print("  Disk:        \(String(format: "%.2f", resources.diskBudgetGB)) GB")
             print("  Mempool:     \(String(format: "%.0f", resources.mempoolBudgetMB)) MB")
@@ -160,7 +225,7 @@ struct NodeCommand: AsyncParsableCommand {
         }
 
         var allPeers = await loadPeers(dataDirURL: dataDirURL, bootstrapPeers: bootstrapPeers)
-        if !noDnsSeeds {
+        if !effectiveNoDnsSeeds {
             let dnsResolved = await DNSSeeds.resolve()
             if !dnsResolved.isEmpty {
                 let existingKeys = Set(allPeers.map { $0.publicKey })
@@ -177,24 +242,24 @@ struct NodeCommand: AsyncParsableCommand {
         }
 
         let parsedFinality = FinalityConfig(
-            policies: finalityPolicy.compactMap { FinalityPolicy.parse($0) },
-            defaultConfirmations: finalityConfirmations
+            policies: effectiveFinalityPolicy.compactMap { FinalityPolicy.parse($0) },
+            defaultConfirmations: effectiveFinalityConfirmations
         )
 
         let currentSubscriptions = await state.subscriptions
         let nodeConfig = LatticeNodeConfig(
             publicKey: identity.publicKey,
-            privateKey: identity.privateKey,
-            listenPort: port,
+            privateKey: privateKey,
+            listenPort: effectivePort,
             bootstrapPeers: allPeers,
             storagePath: dataDirURL,
-            enableLocalDiscovery: !noDiscovery,
+            enableLocalDiscovery: !effectiveNoDiscovery,
             persistInterval: 100,
             subscribedChains: currentSubscriptions,
             resources: resources,
             finality: parsedFinality,
             maxPeerConnections: effectiveMaxPeers,
-            discoveryOnly: discoveryOnly
+            discoveryOnly: effectiveDiscoveryOnly
         )
 
         let node = try await LatticeNode(
@@ -212,12 +277,12 @@ struct NodeCommand: AsyncParsableCommand {
         }
         print("  Genesis:     verified (\(String(node.genesisResult.blockHash.prefix(20)))...)")
 
-        if !discoveryOnly {
+        if !effectiveDiscoveryOnly {
             try? await node.restoreChildChains()
         }
         try await node.start()
 
-        if !discoveryOnly {
+        if !effectiveDiscoveryOnly {
             let mempoolLoader = MempoolPersistence(dataDir: dataDirURL)
             let savedTxs = mempoolLoader.load()
             if !savedTxs.isEmpty {
@@ -244,20 +309,20 @@ struct NodeCommand: AsyncParsableCommand {
         await health.start()
 
         var rpcTask: Task<Void, any Error>? = nil
-        if !discoveryOnly, let rpcPort = rpcPort {
+        if !effectiveDiscoveryOnly, let rpcPort = effectiveRpcPort {
             var cookieAuth: CookieAuth? = nil
-            if rpcAuth {
+            if effectiveRpcAuth {
                 let cookiePath = dataDirURL.appendingPathComponent(".cookie")
                 cookieAuth = try CookieAuth.generate(at: cookiePath)
                 print("  RPC auth:    cookie (\(cookiePath.path))")
             }
-            let server = RPCServer(node: node, port: rpcPort, bindAddress: rpcBind, allowedOrigin: rpcAllowedOrigin, auth: cookieAuth)
+            let server = RPCServer(node: node, port: rpcPort, bindAddress: effectiveRpcBind, allowedOrigin: effectiveRpcAllowedOrigin, auth: cookieAuth)
             rpcTask = Task { try await server.run() }
             print("  RPC server:  http://localhost:\(rpcPort)/api/chain/info")
         }
 
         var backgroundTasks: [Task<Void, Never>] = []
-        if discoveryOnly {
+        if effectiveDiscoveryOnly {
             // Seed crawler: scores peers and writes seeds.txt for DNS infrastructure
             if let network = await node.network(for: NexusGenesis.config.spec.directory) {
                 let crawler = SeedCrawler(ivy: network.ivy, dataDir: dataDirURL)
@@ -269,17 +334,19 @@ struct NodeCommand: AsyncParsableCommand {
                 await node.startMining(directory: chain)
                 print("  Mining started on \(chain)")
             }
-            backgroundTasks.append(startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: port))
+            backgroundTasks.append(startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: effectivePort))
             backgroundTasks.append(startMempoolLoop(node: node))
             backgroundTasks.append(startGarbageCollectionLoop(node: node, retentionDepth: nodeConfig.retentionDepth))
+            backgroundTasks.append(startPinReannounceLoop(node: node))
         }
 
         let peerRefreshTask = Task { await node.startPeerRefresh() }
 
+        let isDiscovery = effectiveDiscoveryOnly
         let healthTask = Task {
             while !Task.isCancelled {
                 let peerCount = await node.network(for: "Nexus")?.ivy.connectedPeers.count ?? 0
-                if discoveryOnly {
+                if isDiscovery {
                     await health.update(chainHeight: 0, peerCount: peerCount)
                 } else {
                     let height = await node.lattice.nexus.chain.getHighestBlockIndex()
@@ -289,7 +356,7 @@ struct NodeCommand: AsyncParsableCommand {
             }
         }
 
-        if discoveryOnly {
+        if effectiveDiscoveryOnly {
             print("  Discovery node running (\(effectiveMaxPeers) max peers). Type 'quit' to stop.")
         } else if !mineChains.isEmpty {
             print("  Node running. Type 'status' for chain info, 'quit' to stop.")
@@ -326,7 +393,7 @@ struct NodeCommand: AsyncParsableCommand {
         for task in backgroundTasks { task.cancel() }
         await health.stop()
 
-        if !discoveryOnly {
+        if !effectiveDiscoveryOnly {
             let mempoolPersistence = MempoolPersistence(dataDir: dataDirURL)
             let nexusDir = NexusGenesis.config.spec.directory
             if let network = await node.network(for: nexusDir) {
@@ -343,6 +410,7 @@ struct NodeCommand: AsyncParsableCommand {
         await node.stop()
         print("  \(peers.count) peer(s) saved. Goodbye.")
     }
+
 }
 
 // MARK: - Helpers

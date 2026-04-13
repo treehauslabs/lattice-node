@@ -74,6 +74,37 @@ extension LatticeNode {
         await lattice.nexus.chain.getMainChainBlockHash(atIndex: index)
     }
 
+    public func getDeposit(demander: String, amountDemanded: UInt64, nonce: UInt128, directory: String) async throws -> UInt64? {
+        guard let network = networks[directory] else { return nil }
+        let chain = directory == genesisConfig.spec.directory
+            ? await lattice.nexus.chain
+            : await lattice.nexus.children[directory]?.chain
+        guard let chain else { return nil }
+        guard let snapshot = await chain.tipSnapshot else { return nil }
+        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+        let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
+        guard let state = resolved.node else { return nil }
+        let key = DepositKey(nonce: nonce, demander: demander, amountDemanded: amountDemanded).description
+        let depositResolved = try await state.depositState.resolve(paths: [[key]: .targeted], fetcher: network.fetcher)
+        guard let depositDict = depositResolved.node else { return nil }
+        return try? depositDict.get(key: key)
+    }
+
+    public func getReceipt(demander: String, amountDemanded: UInt64, nonce: UInt128, directory: String) async throws -> String? {
+        let nexusDir = genesisConfig.spec.directory
+        guard let network = networks[nexusDir] else { return nil }
+        let chain = await lattice.nexus.chain
+        guard let snapshot = await chain.tipSnapshot else { return nil }
+        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+        let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
+        guard let state = resolved.node else { return nil }
+        let key = ReceiptKey(receiptAction: ReceiptAction(withdrawer: "", nonce: nonce, demander: demander, amountDemanded: amountDemanded, directory: directory)).description
+        let receiptResolved = try await state.receiptState.resolve(paths: [[key]: .targeted], fetcher: network.fetcher)
+        guard let receiptDict = receiptResolved.node else { return nil }
+        guard let stored: HeaderImpl<PublicKey> = try? receiptDict.get(key: key) else { return nil }
+        return stored.rawCID
+    }
+
     public func getBalanceProof(address: String, directory: String? = nil) async throws -> Data? {
         let dir = directory ?? genesisConfig.spec.directory
         guard let network = networks[dir] else { return nil }

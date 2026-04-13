@@ -187,9 +187,31 @@ public struct TransactionValidator: Sendable {
     }
 
     private func validateBalances(_ body: TransactionBody) async -> TransactionValidationError? {
-        // Only need to check debits have sufficient balance
-        let debitActions = body.accountActions.filter { $0.isDebit }
-        guard !debitActions.isEmpty else { return nil }
+        guard !isCoinbase else { return nil }
+        // Compute net debit per owner from explicit actions + implicit receipt transfers.
+        // Receipts on nexus generate implicit debit(withdrawer, amountDemanded) and
+        // credit(demander, amountDemanded) during block state computation. We must
+        // verify the withdrawer can afford this before accepting into the mempool.
+        var netDebit: [String: Int64] = [:]
+        for action in body.accountActions {
+            if action.delta == Int64.min { continue }
+            let (sum, overflow) = netDebit[action.owner, default: 0].addingReportingOverflow(action.delta)
+            if overflow { continue }
+            netDebit[action.owner] = sum
+        }
+        if isNexus {
+            for receipt in body.receiptActions {
+                guard receipt.amountDemanded > 0 && receipt.amountDemanded <= UInt64(Int64.max) else { continue }
+                let (wSum, wOverflow) = netDebit[receipt.withdrawer, default: 0].addingReportingOverflow(-Int64(receipt.amountDemanded))
+                if !wOverflow { netDebit[receipt.withdrawer] = wSum }
+                let (dSum, dOverflow) = netDebit[receipt.demander, default: 0].addingReportingOverflow(Int64(receipt.amountDemanded))
+                if !dOverflow { netDebit[receipt.demander] = dSum }
+            }
+        }
+
+        // Only owners with a net negative position need a balance check
+        let ownersToCheck = netDebit.filter { $0.value < 0 }
+        guard !ownersToCheck.isEmpty else { return nil }
 
         guard let snapshot = await chainState.tipSnapshot else {
             return .noStateAvailable
@@ -207,21 +229,20 @@ public struct TransactionValidator: Sendable {
             await frontierCache?.set(frontierCID: snapshot.frontierCID, state: state)
         }
 
-        let ownerKeys = debitActions.map { $0.owner }
         var accountPaths = [[String]: ResolutionStrategy]()
-        for key in ownerKeys { accountPaths[[key]] = .targeted }
+        for owner in ownersToCheck.keys { accountPaths[[owner]] = .targeted }
         guard let accountDict = try? await state.accountState.resolve(paths: accountPaths, fetcher: fetcher).node else {
             return .stateResolutionFailed
         }
 
-        for action in debitActions {
-            let actualBalance: UInt64 = (try? accountDict.get(key: action.owner)) ?? 0
-            let debitAmount = action.absoluteAmount
-            if actualBalance < debitAmount {
+        for (owner, delta) in ownersToCheck {
+            let required = UInt64(-delta)
+            let actualBalance: UInt64 = (try? accountDict.get(key: owner)) ?? 0
+            if actualBalance < required {
                 return .insufficientBalance(
-                    owner: action.owner,
+                    owner: owner,
                     balance: actualBalance,
-                    required: debitAmount
+                    required: required
                 )
             }
         }

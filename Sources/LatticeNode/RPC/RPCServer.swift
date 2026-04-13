@@ -4,6 +4,7 @@ import Hummingbird
 import HTTPTypes
 import cashew
 import UInt256
+import Logging
 
 public struct RPCServer: Sendable {
     private let app: Application<RouterResponder<BasicRequestContext>>
@@ -28,17 +29,30 @@ struct CORSMiddleware<Context: RequestContext>: RouterMiddleware {
     let allowedOrigin: String
 
     func handle(_ request: Request, context: Context, next: (Request, Context) async throws -> Response) async throws -> Response {
+        let requestOrigin = request.headers[.init("Origin")!]
+        let effectiveOrigin: String
+        if let requestOrigin, requestOrigin == allowedOrigin {
+            effectiveOrigin = allowedOrigin
+        } else {
+            effectiveOrigin = ""
+        }
+
         if request.method == .options {
+            guard !effectiveOrigin.isEmpty else {
+                return Response(status: .forbidden)
+            }
             var headers = HTTPFields()
-            headers.append(HTTPField(name: .init("Access-Control-Allow-Origin")!, value: allowedOrigin))
+            headers.append(HTTPField(name: .init("Access-Control-Allow-Origin")!, value: effectiveOrigin))
             headers.append(HTTPField(name: .init("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
             headers.append(HTTPField(name: .init("Access-Control-Allow-Headers")!, value: "Content-Type, Authorization"))
             return Response(status: .noContent, headers: headers)
         }
         var response = try await next(request, context)
-        response.headers.append(HTTPField(name: .init("Access-Control-Allow-Origin")!, value: allowedOrigin))
-        response.headers.append(HTTPField(name: .init("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
-        response.headers.append(HTTPField(name: .init("Access-Control-Allow-Headers")!, value: "Content-Type, Authorization"))
+        if !effectiveOrigin.isEmpty {
+            response.headers.append(HTTPField(name: .init("Access-Control-Allow-Origin")!, value: effectiveOrigin))
+            response.headers.append(HTTPField(name: .init("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
+            response.headers.append(HTTPField(name: .init("Access-Control-Allow-Headers")!, value: "Content-Type, Authorization"))
+        }
         return response
     }
 }
@@ -46,24 +60,26 @@ struct CORSMiddleware<Context: RequestContext>: RouterMiddleware {
 // MARK: - Routes
 
 enum RPCRoutes {
+    private static let log = Logger(label: "lattice.rpc")
+
     static func build(node: LatticeNode) -> Router<BasicRequestContext> {
         let router = Router()
         let api = router.group("api")
 
         api.get("chain/info") { _, _ in try await chainInfo(node: node) }
-        api.get("chain/spec") { _, _ in try await chainSpec(node: node) }
-        api.get("balance/{address}") { _, ctx in try await getBalance(node: node, address: ctx.parameters.require("address")) }
-        api.get("block/latest") { _, _ in try await latestBlock(node: node) }
-        api.get("block/{id}") { _, ctx in try await getBlock(node: node, id: ctx.parameters.require("id")) }
+        api.get("chain/spec") { req, _ in try await chainSpec(node: node, request: req) }
+        api.get("balance/{address}") { req, ctx in try await getBalance(node: node, address: ctx.parameters.require("address"), request: req) }
+        api.get("block/latest") { req, _ in try await latestBlock(node: node, request: req) }
+        api.get("block/{id}") { req, ctx in try await getBlock(node: node, id: ctx.parameters.require("id"), request: req) }
         api.post("transaction") { req, _ in try await submitTransaction(node: node, request: req) }
         api.post("transaction/prepare") { req, _ in try await prepareTransaction(node: node, request: req) }
-        api.get("mempool") { _, _ in try await mempool(node: node) }
+        api.get("mempool") { req, _ in try await mempool(node: node, request: req) }
         api.get("proof/{address}") { _, ctx in try await balanceProof(node: node, address: ctx.parameters.require("address")) }
         api.get("peers") { _, _ in try await getPeers(node: node) }
 
         api.get("fee/estimate") { req, _ in try await feeEstimate(node: node, request: req) }
         api.get("fee/histogram") { _, _ in try await feeHistogram(node: node) }
-        api.get("nonce/{address}") { _, ctx in try await getNonce(node: node, address: ctx.parameters.require("address")) }
+        api.get("nonce/{address}") { req, ctx in try await getNonce(node: node, address: ctx.parameters.require("address"), request: req) }
 
         api.get("receipt/{txCID}") { _, ctx in try await getReceipt(node: node, txCID: ctx.parameters.require("txCID")) }
         api.get("transactions/{address}") { _, ctx in try await getTransactionHistory(node: node, address: ctx.parameters.require("address")) }
@@ -76,6 +92,13 @@ enum RPCRoutes {
         api.post("mining/start") { req, _ in try await startMining(node: node, request: req) }
         api.post("mining/stop") { req, _ in try await stopMining(node: node, request: req) }
 
+        // Swap state queries
+        api.get("deposit") { req, _ in try await getDepositState(node: node, request: req) }
+        api.get("receipt-state") { req, _ in try await getReceiptState(node: node, request: req) }
+
+        // Health check
+        router.get("health") { _, _ in try await healthCheck(node: node) }
+
         // Serve static files for the web UI (if dist/ exists next to the binary)
         router.get("") { _, _ in
             return Response(status: .temporaryRedirect, headers: HTTPFields([HTTPField(name: .location, value: "/app/")]))
@@ -83,7 +106,7 @@ enum RPCRoutes {
 
         router.get("metrics") { _, _ in try await metricsEndpoint(node: node) }
 
-        router.get("ws") { _, _ in wsPlaceholder() }
+        router.get("ws") { req, _ in try await wsUpgrade(node: node, request: req) }
 
         return router
     }
@@ -107,20 +130,31 @@ enum RPCRoutes {
 
     static func jsonError(_ message: String, status: HTTPResponse.Status = .badRequest) -> Response {
         struct E: Encodable { let error: String }
+        log.warning("RPC error: \(message)")
         return json(E(error: message), status: status)
+    }
+
+    // MARK: - Query Parameter Helpers
+
+    private static func chainParam(_ request: Request) -> String? {
+        request.uri.queryParameters["chain"].map(String.init)
+    }
+
+    private static func resolveChain(node: LatticeNode, request: Request) -> String {
+        chainParam(request) ?? node.genesisConfig.spec.directory
     }
 
     // MARK: - Chain
 
     static func chainInfo(node: LatticeNode) async throws -> Response {
         let statuses = await node.chainStatus()
-        struct R: Encodable { let chains: [C]; let genesisHash: String }
+        struct R: Encodable { let chains: [C]; let genesisHash: String; let nexus: String }
         struct C: Encodable { let directory: String; let height: UInt64; let tip: String; let mining: Bool; let mempoolCount: Int; let syncing: Bool }
         let chains = statuses.map { C(directory: $0.directory, height: $0.height, tip: $0.tip, mining: $0.mining, mempoolCount: $0.mempoolCount, syncing: $0.syncing) }
-        return json(R(chains: chains, genesisHash: node.genesisResult.blockHash))
+        return json(R(chains: chains, genesisHash: node.genesisResult.blockHash, nexus: node.genesisConfig.spec.directory))
     }
 
-    static func chainSpec(node: LatticeNode) async throws -> Response {
+    static func chainSpec(node: LatticeNode, request: Request) async throws -> Response {
         let s = node.genesisConfig.spec
         struct R: Encodable { let directory: String; let targetBlockTime: UInt64; let initialReward: UInt64; let halvingInterval: UInt64; let maxTransactionsPerBlock: UInt64; let maxStateGrowth: Int; let maxBlockSize: Int; let premine: UInt64; let premineAmount: UInt64 }
         return json(R(directory: s.directory, targetBlockTime: s.targetBlockTime, initialReward: s.initialReward, halvingInterval: s.halvingInterval, maxTransactionsPerBlock: s.maxNumberOfTransactionsPerBlock, maxStateGrowth: s.maxStateGrowth, maxBlockSize: s.maxBlockSize, premine: s.premine, premineAmount: s.premineAmount()))
@@ -128,23 +162,46 @@ enum RPCRoutes {
 
     // MARK: - Balance & Blocks
 
-    static func getBalance(node: LatticeNode, address: String) async throws -> Response {
-        let balance = try await node.getBalance(address: address)
-        struct R: Encodable { let address: String; let balance: UInt64 }
-        return json(R(address: address, balance: balance))
+    static func getBalance(node: LatticeNode, address: String, request: Request) async throws -> Response {
+        let dir = chainParam(request)
+        do {
+            let balance = try await node.getBalance(address: address, directory: dir)
+            struct R: Encodable { let address: String; let balance: UInt64; let chain: String }
+            return json(R(address: address, balance: balance, chain: dir ?? node.genesisConfig.spec.directory))
+        } catch {
+            log.error("Balance query failed for \(address): \(error)")
+            return jsonError("Failed to query balance: \(error.localizedDescription)", status: .internalServerError)
+        }
     }
 
-    static func latestBlock(node: LatticeNode) async throws -> Response {
-        let tip = await node.lattice.nexus.chain.getMainChainTip()
-        let s = await node.lattice.nexus.chain.tipSnapshot
-        struct R: Encodable { let hash: String; let index: UInt64?; let timestamp: Int64?; let difficulty: String? }
-        return json(R(hash: tip, index: s?.index, timestamp: s?.timestamp, difficulty: s?.difficulty.toHexString()))
+    static func latestBlock(node: LatticeNode, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        let isNexus = dir == node.genesisConfig.spec.directory
+        let chain = isNexus
+            ? await node.lattice.nexus.chain
+            : await node.lattice.nexus.children[dir]?.chain
+        guard let chain else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
+        let tip = await chain.getMainChainTip()
+        let s = await chain.tipSnapshot
+        struct R: Encodable { let hash: String; let index: UInt64?; let timestamp: Int64?; let difficulty: String?; let chain: String }
+        return json(R(hash: tip, index: s?.index, timestamp: s?.timestamp, difficulty: s?.difficulty.toHexString(), chain: dir))
     }
 
-    static func getBlock(node: LatticeNode, id: String) async throws -> Response {
+    static func getBlock(node: LatticeNode, id: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
         var h = id
-        if let i = UInt64(id) { guard let found = await node.getBlockHash(atIndex: i) else { return jsonError("Block not found at index \(i)", status: .notFound) }; h = found }
-        guard let b = try await node.getBlock(hash: h) else { return jsonError("Block not found", status: .notFound) }
+        if let i = UInt64(id) {
+            let isNexus = dir == node.genesisConfig.spec.directory
+            let chain = isNexus
+                ? await node.lattice.nexus.chain
+                : await node.lattice.nexus.children[dir]?.chain
+            guard let chain else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
+            guard let found = await chain.getMainChainBlockHash(atIndex: i) else { return jsonError("Block not found at index \(i)", status: .notFound) }
+            h = found
+        }
+        let header = VolumeImpl<Block>(rawCID: h)
+        guard let b = try? await header.resolve(fetcher: network.fetcher).node else { return jsonError("Block not found", status: .notFound) }
         struct R: Encodable { let hash: String; let index: UInt64; let timestamp: Int64; let previousBlock: String?; let difficulty: String; let nonce: UInt64; let transactionsCID: String; let homesteadCID: String; let frontierCID: String }
         return json(R(hash: h, index: b.index, timestamp: b.timestamp, previousBlock: b.previousBlock?.rawCID, difficulty: b.difficulty.toHexString(), nonce: b.nonce, transactionsCID: b.transactions.rawCID, homesteadCID: b.homestead.rawCID, frontierCID: b.frontier.rawCID))
     }
@@ -152,12 +209,12 @@ enum RPCRoutes {
     // MARK: - Transactions
 
     static func submitTransaction(node: LatticeNode, request: Request) async throws -> Response {
-        struct Sub: Decodable { let signatures: [String: String]; let bodyCID: String; let bodyData: String? }
+        struct Sub: Decodable { let signatures: [String: String]; let bodyCID: String; let bodyData: String?; let chain: String? }
         guard let sub = try? await jsonDecoder.decode(Sub.self, from: request.body.collect(upTo: 1_048_576)) else {
             return jsonError("Invalid transaction format. Expected: {signatures, bodyCID, bodyData}")
         }
-        let dir = node.genesisConfig.spec.directory
-        guard let net = await node.network(for: dir) else { return jsonError("Network not available", status: .internalServerError) }
+        let dir = sub.chain ?? node.genesisConfig.spec.directory
+        guard let net = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
         if let hex = sub.bodyData, let raw = Data(hex: hex) {
             guard let parsed = TransactionBody(data: raw) else {
                 return jsonError("Invalid bodyData: cannot deserialize")
@@ -176,7 +233,9 @@ enum RPCRoutes {
         struct R: Encodable { let accepted: Bool; let txCID: String; let error: String? }
         switch result {
         case .success: return json(R(accepted: true, txCID: sub.bodyCID, error: nil))
-        case .failure(let r): return json(R(accepted: false, txCID: sub.bodyCID, error: r), status: .badRequest)
+        case .failure(let r):
+            log.info("Transaction rejected (\(sub.bodyCID)): \(r)")
+            return json(R(accepted: false, txCID: sub.bodyCID, error: r), status: .badRequest)
         }
     }
 
@@ -266,15 +325,17 @@ enum RPCRoutes {
 
     // MARK: - Mempool, Proof, Peers
 
-    static func mempool(node: LatticeNode) async throws -> Response {
-        let dir = node.genesisConfig.spec.directory
-        guard let net = await node.network(for: dir) else { return jsonError("Network not available", status: .internalServerError) }
-        struct R: Encodable { let count: Int; let totalFees: UInt64 }
-        return json(R(count: await net.nodeMempool.count, totalFees: await net.nodeMempool.totalFees()))
+    static func mempool(node: LatticeNode, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        guard let net = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
+        struct R: Encodable { let count: Int; let totalFees: UInt64; let chain: String }
+        return json(R(count: await net.nodeMempool.count, totalFees: await net.nodeMempool.totalFees(), chain: dir))
     }
 
     static func balanceProof(node: LatticeNode, address: String) async throws -> Response {
-        guard let proof = try await node.getBalanceProof(address: address) else { return jsonError("Proof generation failed", status: .internalServerError) }
+        guard let proof = try await node.getBalanceProof(address: address) else {
+            return jsonError("Proof generation failed", status: .internalServerError)
+        }
         var headers = HTTPFields()
         headers.append(HTTPField(name: .contentType, value: "application/json"))
         return Response(status: .ok, headers: headers, body: .init(byteBuffer: .init(data: proof)))
@@ -307,16 +368,16 @@ enum RPCRoutes {
 
     // MARK: - Nonce
 
-    static func getNonce(node: LatticeNode, address: String) async throws -> Response {
-        let dir = node.genesisConfig.spec.directory
+    static func getNonce(node: LatticeNode, address: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
         let nonce: UInt64
         if let store = await node.stateStore(for: dir) {
             nonce = store.getNonce(address: address) ?? 0
         } else {
             nonce = 0
         }
-        struct R: Encodable { let address: String; let nonce: UInt64 }
-        return json(R(address: address, nonce: nonce))
+        struct R: Encodable { let address: String; let nonce: UInt64; let chain: String }
+        return json(R(address: address, nonce: nonce, chain: dir))
     }
 
     // MARK: - Light Client
@@ -327,7 +388,7 @@ enum RPCRoutes {
         let from = UInt64(fromStr) ?? 0
         let to = UInt64(toStr) ?? 100
 
-        let dir = node.genesisConfig.spec.directory
+        let dir = resolveChain(node: node, request: request)
         guard let store = await node.stateStore(for: dir) else {
             return jsonError("State store not available", status: .internalServerError)
         }
@@ -433,6 +494,76 @@ enum RPCRoutes {
         return json(R(chains: configs, defaultConfirmations: finality.defaultConfirmations))
     }
 
+    // MARK: - Deposit & Receipt State Queries
+
+    static func getDepositState(node: LatticeNode, request: Request) async throws -> Response {
+        guard let demander = request.uri.queryParameters["demander"].map(String.init),
+              let amountStr = request.uri.queryParameters["amount"].map(String.init),
+              let amount = UInt64(amountStr),
+              let nonceHex = request.uri.queryParameters["nonce"].map(String.init),
+              let nonce = UInt128(nonceHex, radix: 16),
+              let chain = request.uri.queryParameters["chain"].map(String.init) else {
+            return jsonError("Required: ?demander=&amount=&nonce=<hex>&chain=")
+        }
+        do {
+            let deposited = try await node.getDeposit(demander: demander, amountDemanded: amount, nonce: nonce, directory: chain)
+            struct R: Encodable { let exists: Bool; let amountDeposited: UInt64?; let chain: String; let key: String }
+            let key = DepositKey(nonce: nonce, demander: demander, amountDemanded: amount).description
+            return json(R(exists: deposited != nil, amountDeposited: deposited, chain: chain, key: key))
+        } catch {
+            log.error("Deposit state query failed: \(error)")
+            return jsonError("Failed to query deposit state: \(error.localizedDescription)", status: .internalServerError)
+        }
+    }
+
+    static func getReceiptState(node: LatticeNode, request: Request) async throws -> Response {
+        guard let demander = request.uri.queryParameters["demander"].map(String.init),
+              let amountStr = request.uri.queryParameters["amount"].map(String.init),
+              let amount = UInt64(amountStr),
+              let nonceHex = request.uri.queryParameters["nonce"].map(String.init),
+              let nonce = UInt128(nonceHex, radix: 16),
+              let directory = request.uri.queryParameters["directory"].map(String.init) else {
+            return jsonError("Required: ?demander=&amount=&nonce=<hex>&directory=<childChain>")
+        }
+        do {
+            let withdrawer = try await node.getReceipt(demander: demander, amountDemanded: amount, nonce: nonce, directory: directory)
+            struct R: Encodable { let exists: Bool; let withdrawer: String?; let directory: String; let key: String }
+            let key = ReceiptKey(receiptAction: ReceiptAction(withdrawer: "", nonce: nonce, demander: demander, amountDemanded: amount, directory: directory)).description
+            return json(R(exists: withdrawer != nil, withdrawer: withdrawer, directory: directory, key: key))
+        } catch {
+            log.error("Receipt state query failed: \(error)")
+            return jsonError("Failed to query receipt state: \(error.localizedDescription)", status: .internalServerError)
+        }
+    }
+
+    // MARK: - Health Check
+
+    static func healthCheck(node: LatticeNode) async throws -> Response {
+        let statuses = await node.chainStatus()
+        let nexus = statuses.first { $0.directory == node.genesisConfig.spec.directory }
+        let peerCount = await node.connectedPeerEndpoints().count
+        let uptime = ProcessInfo.processInfo.systemUptime
+
+        struct R: Encodable {
+            let status: String
+            let chainHeight: UInt64
+            let peerCount: Int
+            let syncing: Bool
+            let chains: Int
+            let uptimeSeconds: Int
+        }
+        let syncing = statuses.contains { $0.syncing }
+        let status = peerCount > 0 ? "ok" : "degraded"
+        return json(R(
+            status: status,
+            chainHeight: nexus?.height ?? 0,
+            peerCount: peerCount,
+            syncing: syncing,
+            chains: statuses.count,
+            uptimeSeconds: Int(uptime)
+        ))
+    }
+
     // MARK: - Prometheus Metrics
 
     static func metricsEndpoint(node: LatticeNode) async throws -> Response {
@@ -449,10 +580,34 @@ enum RPCRoutes {
         return Response(status: .ok, headers: headers, body: .init(byteBuffer: .init(string: text)))
     }
 
-    // MARK: - WebSocket (placeholder)
+    // MARK: - WebSocket (SSE fallback)
 
-    static func wsPlaceholder() -> Response {
-        struct R: Encodable { let error: String }
-        return json(R(error: "WebSocket not yet available"), status: .notImplemented)
+    static func wsUpgrade(node: LatticeNode, request: Request) async throws -> Response {
+        // SSE (Server-Sent Events) endpoint since Hummingbird WebSocket requires a separate module.
+        // Clients connect via EventSource and receive JSON event frames.
+        let eventsParam = request.uri.queryParameters["events"].map(String.init) ?? "newBlock,newTransaction"
+        let eventTypes = Set(eventsParam.split(separator: ",").compactMap { SubscriptionEventType(rawValue: String($0)) })
+        if eventTypes.isEmpty {
+            return jsonError("No valid event types. Available: newBlock, newTransaction, chainReorg, syncStatus")
+        }
+
+        var headers = HTTPFields()
+        headers.append(HTTPField(name: .contentType, value: "text/event-stream"))
+        headers.append(HTTPField(name: .init("Cache-Control")!, value: "no-cache"))
+        headers.append(HTTPField(name: .init("Connection")!, value: "keep-alive"))
+
+        let subscriptions = node.subscriptions
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+
+        let subId = await subscriptions.subscribe(events: eventTypes) { json in
+            continuation.yield("data: \(json)\n\n")
+        }
+
+        let body = ResponseBody(asyncSequence: stream.map { ByteBuffer(string: $0) })
+        continuation.onTermination = { _ in
+            Task { await subscriptions.unsubscribe(id: subId) }
+        }
+
+        return Response(status: .ok, headers: headers, body: body)
     }
 }
