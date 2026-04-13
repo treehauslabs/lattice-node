@@ -203,14 +203,20 @@ enum RPCRoutes {
         }
 
         let accountActions = body.accountActions.map { AccountAction(owner: $0.owner, delta: $0.delta) }
-        let depositActions = (body.depositActions ?? []).map {
-            DepositAction(nonce: UInt128($0.nonce, radix: 16) ?? 0, demander: $0.demander, amountDemanded: $0.amountDemanded, amountDeposited: $0.amountDeposited)
+        var depositActions: [DepositAction] = []
+        for d in (body.depositActions ?? []) {
+            guard let nonce = UInt128(d.nonce, radix: 16) else { return jsonError("Invalid deposit nonce hex: \(d.nonce)") }
+            depositActions.append(DepositAction(nonce: nonce, demander: d.demander, amountDemanded: d.amountDemanded, amountDeposited: d.amountDeposited))
         }
-        let receiptActions = (body.receiptActions ?? []).map {
-            ReceiptAction(withdrawer: $0.withdrawer, nonce: UInt128($0.nonce, radix: 16) ?? 0, demander: $0.demander, amountDemanded: $0.amountDemanded, directory: $0.directory)
+        var receiptActions: [ReceiptAction] = []
+        for r in (body.receiptActions ?? []) {
+            guard let nonce = UInt128(r.nonce, radix: 16) else { return jsonError("Invalid receipt nonce hex: \(r.nonce)") }
+            receiptActions.append(ReceiptAction(withdrawer: r.withdrawer, nonce: nonce, demander: r.demander, amountDemanded: r.amountDemanded, directory: r.directory))
         }
-        let withdrawalActions = (body.withdrawalActions ?? []).map {
-            WithdrawalAction(withdrawer: $0.withdrawer, nonce: UInt128($0.nonce, radix: 16) ?? 0, demander: $0.demander, amountDemanded: $0.amountDemanded, amountWithdrawn: $0.amountWithdrawn)
+        var withdrawalActions: [WithdrawalAction] = []
+        for w in (body.withdrawalActions ?? []) {
+            guard let nonce = UInt128(w.nonce, radix: 16) else { return jsonError("Invalid withdrawal nonce hex: \(w.nonce)") }
+            withdrawalActions.append(WithdrawalAction(withdrawer: w.withdrawer, nonce: nonce, demander: w.demander, amountDemanded: w.amountDemanded, amountWithdrawn: w.amountWithdrawn))
         }
 
         let txBody = TransactionBody(

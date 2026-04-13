@@ -24,7 +24,7 @@ extension LatticeNode {
             ? await lattice.nexus.chain
             : await lattice.nexus.children[directory]?.chain
         if let chain {
-            let validator = TransactionValidator(fetcher: await network.fetcher, chainState: chain, stateStore: stateStores[directory], frontierCache: frontierCaches[directory])
+            let validator = TransactionValidator(fetcher: await network.fetcher, chainState: chain, stateStore: stateStores[directory], frontierCache: frontierCaches[directory], chainDirectory: directory)
             let result = await validator.validate(transaction)
             switch result {
             case .failure(let error):
@@ -86,6 +86,8 @@ extension LatticeNode {
             return "Transaction too large: \(size) bytes (max \(max))"
         case .feeTooHigh(let actual, let maximum):
             return "Fee too high: \(actual) > maximum \(maximum)"
+        case .chainPathMismatch:
+            return "Transaction chainPath does not match this chain"
         }
     }
 

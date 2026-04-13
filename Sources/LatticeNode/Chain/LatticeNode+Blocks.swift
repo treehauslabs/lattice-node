@@ -229,7 +229,7 @@ extension LatticeNode {
         }
 
         // Step 4: Re-validate orphaned txs and return to mempool
-        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, stateStore: stateStores[dir])
+        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, stateStore: stateStores[dir], chainDirectory: dir)
         var recovered = 0
         for entry in orphanedBlockTxs {
             for (cid, txHeader) in entry.txEntries {
@@ -310,7 +310,8 @@ extension LatticeNode {
                     let validator = TransactionValidator(
                         fetcher: fetcher,
                         chainState: childChain,
-                        stateStore: stateStores[childDir]
+                        stateStore: stateStores[childDir],
+                        chainDirectory: childDir
                     )
                     for (cid, txHeader) in childTxEntries {
                         guard let tx = txHeader.node else { continue }

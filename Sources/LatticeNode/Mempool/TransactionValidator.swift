@@ -23,6 +23,7 @@ public enum TransactionValidationError: Error, Sendable {
     case nonceFromFuture(nonce: UInt64)
     case balanceNotConserved(totalDebits: UInt64, totalCredits: UInt64, fee: UInt64)
     case transactionTooLarge(size: Int, max: Int)
+    case chainPathMismatch
 }
 
 public struct TransactionValidator: Sendable {
@@ -31,13 +32,15 @@ public struct TransactionValidator: Sendable {
     private let isCoinbase: Bool
     private let stateStore: StateStore?
     private let frontierCache: FrontierCache?
+    private let chainDirectory: String?
 
-    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, stateStore: StateStore? = nil, frontierCache: FrontierCache? = nil) {
+    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, stateStore: StateStore? = nil, frontierCache: FrontierCache? = nil, chainDirectory: String? = nil) {
         self.fetcher = fetcher
         self.chainState = chainState
         self.isCoinbase = isCoinbase
         self.stateStore = stateStore
         self.frontierCache = frontierCache
+        self.chainDirectory = chainDirectory
     }
 
     public func validate(_ transaction: Transaction) async -> Result<Void, TransactionValidationError> {
@@ -49,6 +52,7 @@ public struct TransactionValidator: Sendable {
         if let err = await validateSignatures(transaction, body: body) { return .failure(err) }
         if let err = validateFees(body) { return .failure(err) }
         if let err = validateNonce(body) { return .failure(err) }
+        if let err = validateChainPath(body) { return .failure(err) }
         if let err = validateSwaps(body) { return .failure(err) }
         if let err = validateUniqueOwners(body) { return .failure(err) }
         if let err = await validateBalances(body) { return .failure(err) }
@@ -133,15 +137,22 @@ public struct TransactionValidator: Sendable {
         return nil
     }
 
+    private func validateChainPath(_ body: TransactionBody) -> TransactionValidationError? {
+        guard !body.chainPath.isEmpty, let dir = chainDirectory else { return nil }
+        if !body.chainPath.contains(dir) { return .chainPathMismatch }
+        return nil
+    }
+
     private func validateSwaps(_ body: TransactionBody) -> TransactionValidationError? {
         let signerSet = Set(body.signers)
         for deposit in body.depositActions {
             if deposit.amountDeposited == 0 { return .swapSignerMismatch }
+            if deposit.amountDeposited != deposit.amountDemanded { return .swapSignerMismatch }
             if !signerSet.contains(deposit.demander) { return .swapSignerMismatch }
         }
         for withdrawal in body.withdrawalActions {
             if withdrawal.amountWithdrawn == 0 { return .swapSignerMismatch }
-            if withdrawal.amountWithdrawn > withdrawal.amountDemanded { return .swapSignerMismatch }
+            if withdrawal.amountWithdrawn != withdrawal.amountDemanded { return .swapSignerMismatch }
             if !signerSet.contains(withdrawal.withdrawer) { return .swapSignerMismatch }
         }
         for receipt in body.receiptActions {
