@@ -191,7 +191,24 @@ where a debit is `oldBalance - newBalance` for accounts whose balance decreases,
 
 Transactions may include `SwapAction` and `SwapClaimAction` entries for cross-account atomic swaps. These are validated as part of the same conservation check, ensuring atomicity without an intermediary.
 
-### 6.3 MEV Protection
+### 6.3 Persistent On-Chain Order Book
+
+Lattice supports a persistent on-chain order book where funds are escrowed at post time. Makers sign orders and include them in `postOrders` — the maker's account is debited `sourceAmount + fee` and the locked amount is recorded in `orderLockState`, an 8th Sparse Merkle Tree in the world state (key: `maker/nonce`, value: remaining locked amount).
+
+Orders persist across blocks until filled or cancelled:
+
+- **Fill:** A matcher includes a `MatchedOrder` in `orderFills`. The locked amounts are released from `orderLockState` and converted into swap locks, entering the standard settle/claim flow.
+- **Cancel:** The maker signs an `OrderCancellation`. The declared amount must exactly match the stored value — this is verified at consensus via a deletion proof, preventing cancel inflation.
+
+The balance equation extends to account for order locks:
+
+```
+totalCredits ≤ totalDebits + reward + fees + swapClaimed - swapLocked + orderReleased - orderLocked
+```
+
+Every phase (post, fill, cancel) is zero-sum. No tokens are created or destroyed.
+
+### 6.4 MEV Protection
 
 For the built-in decentralized exchange, a commit-reveal batch auction mechanism prevents miner front-running:
 

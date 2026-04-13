@@ -344,8 +344,8 @@ final class NetworkIntegrationTests: XCTestCase {
                     AccountAction(owner: minerAddr, delta: Int64(minerBalance - amount - fee) - Int64(minerBalance)),
                     AccountAction(owner: receiverAddr, delta: Int64(amount + reward))
                 ],
-                actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-                settleActions: [], signers: [minerAddr], fee: fee, nonce: 0
+                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: fee, nonce: 0
             )
             let bodyHeader = HeaderImpl<TransactionBody>(node: txBody)
             let sig = CryptoUtils.sign(message: bodyHeader.rawCID, privateKeyHex: kp1.privateKey)!
@@ -866,8 +866,8 @@ final class NetworkIntegrationTests: XCTestCase {
                 AccountAction(owner: minerAddr, delta: Int64(minerBalance - amount - fee) - Int64(minerBalance)),
                 AccountAction(owner: receiverAddr, delta: Int64(amount))
             ],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-            settleActions: [], signers: [minerAddr], fee: fee, nonce: 0
+            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: fee, nonce: 0
         )
         let bodyHeader = HeaderImpl<TransactionBody>(node: txBody)
         let sig = CryptoUtils.sign(message: bodyHeader.rawCID, privateKeyHex: kp1.privateKey)!
@@ -951,8 +951,8 @@ final class NetworkIntegrationTests: XCTestCase {
                 AccountAction(owner: minerAddr, delta: Int64(minerBalance - amount - fee) - Int64(minerBalance)),
                 AccountAction(owner: receiverAddr, delta: Int64(amount))
             ],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-            settleActions: [], signers: [minerAddr], fee: fee, nonce: 0
+            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: fee, nonce: 0
         )
         let bodyHeader = HeaderImpl<TransactionBody>(node: txBody)
         let sig = CryptoUtils.sign(message: bodyHeader.rawCID, privateKeyHex: kp1.privateKey)!
@@ -1033,8 +1033,8 @@ final class NetworkIntegrationTests: XCTestCase {
                     AccountAction(owner: minerAddr, delta: Int64(balance - amount - fee) - Int64(balance)),
                     AccountAction(owner: receiverAddr, delta: Int64(amount))
                 ],
-                actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-                settleActions: [], signers: [minerAddr], fee: fee, nonce: nonce
+                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: fee, nonce: nonce
             )
             let bodyHeader = HeaderImpl<TransactionBody>(node: txBody)
             let sig = CryptoUtils.sign(message: bodyHeader.rawCID, privateKeyHex: kp1.privateKey)!

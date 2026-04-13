@@ -23,7 +23,6 @@ extension LatticeNode {
             fetcher: network.ivyFetcher,
             spec: genesisConfig.spec,
             identity: identity,
-            broker: broker,
             childContextProvider: { [weak self] in
                 await self?.buildChildMiningContexts() ?? []
             },
@@ -113,8 +112,7 @@ extension LatticeNode {
                 chainState: childChainState,
                 mempool: network.nodeMempool,
                 fetcher: network.ivyFetcher,
-                spec: childSpec,
-                chainPath: [nexusDir, dir]
+                spec: childSpec
             ))
         }
         return contexts

@@ -37,8 +37,8 @@ final class StateRootVerificationTests: XCTestCase {
         let reward = s.rewardAtBlock(1)
         let coinbaseBody = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward))],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-            settleActions: [], signers: [minerAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
+            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: 0, nonce: 0
         )
         let coinbaseTx = sign(coinbaseBody, kp)
 
@@ -89,8 +89,8 @@ final class StateRootVerificationTests: XCTestCase {
         let premineAmount = s.premineAmount()
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: senderAddr, delta: Int64(premineAmount))],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-            settleActions: [], signers: [senderAddr], fee: 0, nonce: 0
+            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [senderAddr], fee: 0, nonce: 0
         )
         let genesis = try await BlockBuilder.buildGenesis(
             spec: s, transactions: [sign(premineBody, sender)],
@@ -109,8 +109,8 @@ final class StateRootVerificationTests: XCTestCase {
                 AccountAction(owner: senderAddr, delta: Int64(premineAmount - transfer - fee) - Int64(premineAmount)),
                 AccountAction(owner: receiverAddr, delta: Int64(transfer + reward))
             ],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-            settleActions: [], signers: [senderAddr], fee: fee, nonce: 1
+            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [senderAddr], fee: fee, nonce: 1
         )
         let tx = sign(txBody, sender)
 
@@ -232,8 +232,8 @@ final class MempoolLoadTests: XCTestCase {
             for nonce in 0..<100 {
                 let body = TransactionBody(
                     accountActions: [AccountAction(owner: senderAddr, delta: -1)],
-                    actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-                    settleActions: [], signers: [senderAddr], fee: UInt64(senderIdx * 100 + nonce + 1), nonce: UInt64(nonce)
+                    actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                    receiptActions: [], withdrawalActions: [], signers: [senderAddr], fee: UInt64(senderIdx * 100 + nonce + 1), nonce: UInt64(nonce)
                 )
                 let tx = sign(body, kp)
                 if await mempool.add(transaction: tx) { added += 1 }
@@ -269,8 +269,8 @@ final class MempoolLoadTests: XCTestCase {
         for i in 0..<100 {
             let body = TransactionBody(
                 accountActions: [AccountAction(owner: senderAddr, delta: Int64(999) - Int64(1000))],
-                actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-                settleActions: [], signers: [senderAddr], fee: 1, nonce: UInt64(i)
+                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                receiptActions: [], withdrawalActions: [], signers: [senderAddr], fee: 1, nonce: UInt64(i)
             )
             let _ = await mempool.add(transaction: sign(body, kp))
         }
@@ -282,8 +282,8 @@ final class MempoolLoadTests: XCTestCase {
         let addr2 = addr(kp2.publicKey)
         let highFeeBody = TransactionBody(
             accountActions: [AccountAction(owner: addr2, delta: Int64(999) - Int64(1000))],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-            settleActions: [], signers: [addr2], fee: 100, nonce: 0
+            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [addr2], fee: 100, nonce: 0
         )
         let added = await mempool.add(transaction: sign(highFeeBody, kp2))
         XCTAssertTrue(added, "High-fee tx should be accepted")
@@ -301,8 +301,8 @@ final class MempoolLoadTests: XCTestCase {
         for i in 0..<10 {
             let body = TransactionBody(
                 accountActions: [AccountAction(owner: senderAddr, delta: Int64(999) - Int64(1000))],
-                actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-                settleActions: [], signers: [senderAddr], fee: UInt64(i + 1), nonce: UInt64(i)
+                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                receiptActions: [], withdrawalActions: [], signers: [senderAddr], fee: UInt64(i + 1), nonce: UInt64(i)
             )
             let _ = await mempool.add(transaction: sign(body, kp))
         }
@@ -525,8 +525,8 @@ final class RestartResilienceTests: XCTestCase {
         for i in 0..<5 {
             let body = TransactionBody(
                 accountActions: [AccountAction(owner: senderAddr, delta: Int64(999) - Int64(1000))],
-                actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-                settleActions: [], signers: [senderAddr], fee: UInt64(i + 1), nonce: UInt64(i)
+                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                receiptActions: [], withdrawalActions: [], signers: [senderAddr], fee: UInt64(i + 1), nonce: UInt64(i)
             )
             let _ = await mempool.add(transaction: sign(body, kp))
         }

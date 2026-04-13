@@ -231,8 +231,8 @@ final class MultiChainEndToEndTests: XCTestCase {
 
         let childPremineBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(childPremine))],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-            settleActions: [], signers: [kpAddr], fee: 0, nonce: 0
+            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, transactions: [sign(childPremineBody, kp)],
@@ -257,8 +257,8 @@ final class MultiChainEndToEndTests: XCTestCase {
                 AccountAction(owner: kpAddr, delta: Int64(childPremine - 100) - Int64(childPremine)),
                 AccountAction(owner: receiverAddr, delta: Int64(100 + childReward))
             ],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [], peerActions: [],
-            settleActions: [], signers: [kpAddr], fee: 0, nonce: 1
+            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 1
         )
         let childTx = sign(transferBody, kp)
         let added = await childMempool.add(transaction: childTx)
@@ -266,8 +266,7 @@ final class MultiChainEndToEndTests: XCTestCase {
 
         let childCtx = ChildMiningContext(
             directory: "Payments", chainState: childChain,
-            mempool: childMempool, fetcher: f, spec: childSpec,
-            chainPath: ["Nexus", "Payments"]
+            mempool: childMempool, fetcher: f, spec: childSpec
         )
 
         let nexusMempool = NodeMempool(maxSize: 100)
@@ -309,8 +308,8 @@ final class MultiChainEndToEndTests: XCTestCase {
         let mempoolA = NodeMempool(maxSize: 100)
         let mempoolB = NodeMempool(maxSize: 100)
 
-        let ctxA = ChildMiningContext(directory: "Payments", chainState: chainA, mempool: mempoolA, fetcher: f, spec: childASpec, chainPath: ["Nexus", "Payments"])
-        let ctxB = ChildMiningContext(directory: "Identity", chainState: chainB, mempool: mempoolB, fetcher: f, spec: childBSpec, chainPath: ["Nexus", "Identity"])
+        let ctxA = ChildMiningContext(directory: "Payments", chainState: chainA, mempool: mempoolA, fetcher: f, spec: childASpec)
+        let ctxB = ChildMiningContext(directory: "Identity", chainState: chainB, mempool: mempoolB, fetcher: f, spec: childBSpec)
 
         let nexusMempool = NodeMempool(maxSize: 100)
         let miner = MinerLoop(
@@ -398,8 +397,8 @@ final class MempoolEndToEndTests: XCTestCase {
         let mempool = NodeMempool(maxSize: 100)
 
         let body = TransactionBody(
-            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-            peerActions: [], settleActions: [],
+            accountActions: [], actions: [], depositActions: [], genesisActions: [],
+            peerActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 50, nonce: 0
         )
         let tx = sign(body, kp)
@@ -419,8 +418,8 @@ final class MempoolEndToEndTests: XCTestCase {
         let mempool = NodeMempool(maxSize: 100)
 
         let body = TransactionBody(
-            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-            peerActions: [], settleActions: [],
+            accountActions: [], actions: [], depositActions: [], genesisActions: [],
+            peerActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 10, nonce: 0
         )
         let tx = sign(body, kp)
@@ -437,8 +436,8 @@ final class MempoolEndToEndTests: XCTestCase {
 
         for i: UInt64 in 0..<5 {
             let body = TransactionBody(
-                accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-                peerActions: [], settleActions: [],
+                accountActions: [], actions: [], depositActions: [], genesisActions: [],
+                peerActions: [], receiptActions: [], withdrawalActions: [],
                 signers: [kpAddr], fee: i * 10, nonce: i
             )
             let _ = await mempool.add(transaction: sign(body, kp))
@@ -457,8 +456,8 @@ final class MempoolEndToEndTests: XCTestCase {
         var cids: [String] = []
         for i: UInt64 in 0..<3 {
             let body = TransactionBody(
-                accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-                peerActions: [], settleActions: [],
+                accountActions: [], actions: [], depositActions: [], genesisActions: [],
+                peerActions: [], receiptActions: [], withdrawalActions: [],
                 signers: [kpAddr], fee: 10, nonce: i
             )
             let tx = sign(body, kp)
@@ -479,8 +478,8 @@ final class MempoolEndToEndTests: XCTestCase {
         let mempool = NodeMempool(maxSize: 100)
 
         let body = TransactionBody(
-            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-            peerActions: [], settleActions: [],
+            accountActions: [], actions: [], depositActions: [], genesisActions: [],
+            peerActions: [], receiptActions: [], withdrawalActions: [],
             signers: ["fake"], fee: 10, nonce: 0
         )
         let tx = Transaction(signatures: [kp.publicKey: "deadbeef"], body: HeaderImpl<TransactionBody>(node: body))
@@ -496,13 +495,13 @@ final class MempoolEndToEndTests: XCTestCase {
         let childMempool = NodeMempool(maxSize: 100)
 
         let nexusBody = TransactionBody(
-            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-            peerActions: [], settleActions: [],
+            accountActions: [], actions: [], depositActions: [], genesisActions: [],
+            peerActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 10, nonce: 0
         )
         let childBody = TransactionBody(
-            accountActions: [], actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-            peerActions: [], settleActions: [],
+            accountActions: [], actions: [], depositActions: [], genesisActions: [],
+            peerActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 20, nonce: 0
         )
 
@@ -902,8 +901,8 @@ private struct MultiChainEnv {
         )
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(childSpec.premineAmount()))],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-            peerActions: [], settleActions: [], signers: [kpAddr], fee: 0, nonce: 0
+            actions: [], depositActions: [], genesisActions: [],
+            peerActions: [], receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, transactions: [sign(premineBody, kp)],
@@ -1130,8 +1129,8 @@ final class MultiChainBalanceAndStateTests: XCTestCase {
                 AccountAction(owner: env.kpAddr, delta: Int64(premineAmount - 500) - Int64(premineAmount)),
                 AccountAction(owner: receiverAddr, delta: Int64(500))
             ],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-            peerActions: [], settleActions: [], signers: [env.kpAddr], fee: 0, nonce: 1
+            actions: [], depositActions: [], genesisActions: [],
+            peerActions: [], receiptActions: [], withdrawalActions: [], signers: [env.kpAddr], fee: 0, nonce: 1
         )
         let tx = sign(transferBody, env.kp)
 
@@ -1170,8 +1169,7 @@ final class MultiChainMiningContextTests: XCTestCase {
 
         let ctx = ChildMiningContext(
             directory: "Payments", chainState: childChain,
-            mempool: childMempool, fetcher: f, spec: childSpec,
-            chainPath: ["Nexus", "Payments"]
+            mempool: childMempool, fetcher: f, spec: childSpec
         )
         XCTAssertEqual(ctx.directory, "Payments")
         XCTAssertEqual(ctx.spec.directory, "Payments")
@@ -1199,8 +1197,7 @@ final class MultiChainMiningContextTests: XCTestCase {
             await f.store(rawCid: VolumeImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
             contexts.append(ChildMiningContext(
                 directory: dir, chainState: chain,
-                mempool: NodeMempool(maxSize: 100), fetcher: f, spec: spec,
-                chainPath: ["Nexus", dir]
+                mempool: NodeMempool(maxSize: 100), fetcher: f, spec: spec
             ))
         }
 
@@ -1222,8 +1219,8 @@ final class MultiChainMiningContextTests: XCTestCase {
 
         for (mempool, fee) in [(nexusMempool, 10 as UInt64), (childAMempool, 20), (childBMempool, 30)] {
             let body = TransactionBody(
-                accountActions: [], actions: [], swapActions: [], swapClaimActions: [],
-                genesisActions: [], peerActions: [], settleActions: [],
+                accountActions: [], actions: [], depositActions: [], 
+                genesisActions: [], peerActions: [], receiptActions: [], withdrawalActions: [],
                 signers: [kpAddr], fee: fee, nonce: 0
             )
             let _ = await mempool.add(transaction: sign(body, kp))
@@ -1660,8 +1657,7 @@ final class FullMiningIntegrationTests: XCTestCase {
         let childMempool = NodeMempool(maxSize: 100)
         let childCtx = ChildMiningContext(
             directory: "Payments", chainState: childChain,
-            mempool: childMempool, fetcher: f, spec: childSpec,
-            chainPath: ["Nexus", "Payments"]
+            mempool: childMempool, fetcher: f, spec: childSpec
         )
 
         let nexusMempool = NodeMempool(maxSize: 100)
@@ -1743,8 +1739,7 @@ final class FullMiningIntegrationTests: XCTestCase {
 
         let childCtx = ChildMiningContext(
             directory: "Payments", chainState: childChainA,
-            mempool: NodeMempool(maxSize: 100), fetcher: f, spec: childSpec,
-            chainPath: [nexusSpec.directory, "Payments"]
+            mempool: NodeMempool(maxSize: 100), fetcher: f, spec: childSpec
         )
         let miner = MinerLoop(
             chainState: chainA, mempool: NodeMempool(maxSize: 100), fetcher: f,
@@ -1812,8 +1807,8 @@ final class CASIsolationTests: XCTestCase {
 
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(childSpec.premineAmount()))],
-            actions: [], swapActions: [], swapClaimActions: [], genesisActions: [],
-            peerActions: [], settleActions: [], signers: [kpAddr], fee: 0, nonce: 0
+            actions: [], depositActions: [], genesisActions: [],
+            peerActions: [], receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, transactions: [sign(premineBody, kp)],

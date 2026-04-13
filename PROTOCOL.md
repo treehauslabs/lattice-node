@@ -46,6 +46,11 @@ Lattice is a proof-of-work blockchain with native multi-chain support via merged
 | signers | [Address] | Required signers |
 | fee | UInt64 | Transaction fee |
 | nonce | UInt64 | Height-based replay protection |
+| matchedOrders | [MatchedOrder] | Instant cross-chain order matches |
+| claimedOrders | [MatchedOrder] | Cross-chain swap claims |
+| postOrders | [SignedOrder] | Orders posted to on-chain order book |
+| cancelOrders | [OrderCancellation] | Order cancellations |
+| orderFills | [MatchedOrder] | Fills against posted orders |
 
 ### 1.4 AccountAction
 
@@ -399,6 +404,32 @@ When `--rpc-auth` is enabled, a random 32-byte hex token is written to `<dataDir
 | Difficulty adjustment window | 120 blocks (~20 minutes) |
 | Genesis timestamp | 1,742,601,600,000 (March 22, 2025 UTC) |
 | Genesis hash | `baguqeeraaw3cs4er3kqa5l3vng4hohn5axtnu2bl77mndbjz7vnf3q3wa5qa` |
+
+---
+
+## 9b. Cross-Chain Exchange
+
+### 9b.1 Instant Matching
+
+Two crossing `SignedOrder`s are paired into a `MatchedOrder` and included in a transaction's `matchedOrders` field. This atomically debits both makers, locks funds in `swapState`, and records settlement on the LCA chain (the chain where the transaction lives, determined by `chainPath`). Counterparties later claim via `claimedOrders`. Claim verification checks both the chain's own `settleState` and its parent's, so claims work whether settlement was placed on the current chain or its parent.
+
+### 9b.2 Persistent Order Book
+
+Orders can be posted on-chain and filled across blocks:
+
+**Post:** A `SignedOrder` in `postOrders` debits the maker `sourceAmount + fee` and inserts the locked amount into `orderLockState` (8th Sparse Merkle Tree, key: `maker/nonce`). The maker must be a transaction signer.
+
+**Fill:** A `MatchedOrder` in `orderFills` references two posted orders. The locked amounts are released from `orderLockState` and converted into swap locks. Fill transactions may be signer-less (`fee == 0`), as the signed orders provide authorization.
+
+**Cancel:** An `OrderCancellation` in `cancelOrders` returns the locked amount to the maker. The declared `amount` must exactly match the stored value in `orderLockState` (verified at consensus).
+
+### 9b.3 Balance Conservation
+
+```
+totalCredits ≤ totalDebits + reward + totalFees + totalSwapClaimed - totalSwapLocked + totalOrderReleased - totalOrderLocked
+```
+
+The `orderLocked`/`orderReleased` terms account for funds entering and leaving `orderLockState`. Every phase (post, fill, cancel) is zero-sum.
 
 ---
 

@@ -28,7 +28,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     private var mempoolPruneTask: Task<Void, Never>?
     private var gcTask: Task<Void, Never>?
     private var pinReannounceTask: Task<Void, Never>?
-    public let broker: Broker
     public let feeEstimator: FeeEstimator
     public let subscriptions: SubscriptionManager
     public let anchorPeers: AnchorPeers
@@ -119,7 +118,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         self.blocksSinceLastPersist = [:]
         self.recentPeerBlocks = [:]
         self.peerBlockCounts = [:]
-        self.broker = Broker()
         self.feeEstimator = FeeEstimator()
         self.subscriptions = SubscriptionManager()
         self.anchorPeers = AnchorPeers(dataDir: config.storagePath)

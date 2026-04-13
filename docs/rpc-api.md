@@ -133,32 +133,72 @@ Fee distribution across recent blocks.
 }
 ```
 
-## DEX (Batch Auction)
+## DEX (Order Book)
 
 ### GET /api/orders
-Active orders on the DEX.
-
-### POST /api/orders
-Place an order directly.
-
-### POST /api/orders/commit
-Submit a blinded order commitment (MEV protection).
-
-```json
-{"commitHash": "<hash>", "sender": "<address>"}
-```
-
-### POST /api/orders/reveal
-Reveal a previously committed order after the auction window.
+Active orders on the order book. Supports optional query parameters `sourceChain` and `destChain` to filter by trading pair.
 
 ```json
 {
-  "commitHash": "<hash>",
-  "side": "buy",
-  "price": 100,
-  "amount": 10,
-  "owner": "<address>",
-  "salt": "<random>"
+  "orders": [
+    {
+      "order": {
+        "maker": "baguqeera...",
+        "sourceChain": "Nexus",
+        "sourceAmount": 1000,
+        "destChain": "Payments",
+        "destAmount": 500,
+        "timelock": 100,
+        "nonce": "12345",
+        "fee": 10
+      },
+      "publicKey": "04abcd...",
+      "signature": "3045..."
+    }
+  ],
+  "count": 1
+}
+```
+
+### POST /api/orders
+Submit a signed order to the order book. The order is gossiped to peers and included in the next block as a `postOrders` entry. Funds (`sourceAmount + fee`) are locked in `orderLockState` on-chain when the block is mined.
+
+**Request:** A `SignedOrder` JSON object.
+
+```json
+{
+  "order": {
+    "maker": "baguqeera...",
+    "sourceChain": "Nexus",
+    "sourceAmount": 1000,
+    "destChain": "Payments",
+    "destAmount": 500,
+    "timelock": 100,
+    "nonce": "12345",
+    "fee": 10
+  },
+  "publicKey": "04abcd...",
+  "signature": "3045..."
+}
+```
+
+**Response:**
+```json
+{"accepted": true, "nonce": "12345"}
+```
+
+### POST /api/orders/cancel
+Cancel a previously posted order. The remaining locked amount is returned to the maker's account. The declared amount must match the on-chain locked value.
+
+**Request:** An `OrderCancellation` JSON object.
+
+```json
+{
+  "orderNonce": "12345",
+  "maker": "baguqeera...",
+  "publicKey": "04abcd...",
+  "signature": "3045...",
+  "amount": 1010
 }
 ```
 

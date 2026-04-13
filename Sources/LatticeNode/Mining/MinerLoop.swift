@@ -10,7 +10,6 @@ public actor MinerLoop {
     private let fetcher: Fetcher
     private let spec: ChainSpec
     private let identity: MinerIdentity?
-    private let broker: Broker?
     private let childContextProvider: (@Sendable () async -> [ChildMiningContext])?
     private let batchSize: UInt64
     private let tipCache: TipCache?
@@ -25,7 +24,6 @@ public actor MinerLoop {
         fetcher: Fetcher,
         spec: ChainSpec,
         identity: MinerIdentity? = nil,
-        broker: Broker? = nil,
         childContexts: [ChildMiningContext] = [],
         childContextProvider: (@Sendable () async -> [ChildMiningContext])? = nil,
         batchSize: UInt64 = 10_000,
@@ -36,7 +34,6 @@ public actor MinerLoop {
         self.fetcher = fetcher
         self.spec = spec
         self.identity = identity
-        self.broker = broker
         self.childContextProvider = childContextProvider ?? { childContexts }
         self.batchSize = batchSize
         self.tipCache = tipCache
@@ -71,29 +68,11 @@ public actor MinerLoop {
                 let previousBlockHash = VolumeImpl<Block>(node: previousBlock).rawCID
                 let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
 
-                // Phase 1: Parallel — tx selection, order matching, child context fetch
-                let maxTxCount = max(0, Int(spec.maxNumberOfTransactionsPerBlock) - 2) // reserve slots for order txs
-                async let txAsync = mempool.selectTransactions(maxCount: maxTxCount)
+                let maxTxCount = Int(spec.maxNumberOfTransactionsPerBlock) - 1 // reserve slot for coinbase
+                async let txAsync = mempool.selectTransactions(maxCount: max(0, maxTxCount))
                 let currentChildContexts = await childContextProvider?() ?? []
 
-                // Match orders and drain pending claims from previous block
-                var orderTransactions: [Transaction] = []
-                if let broker = broker {
-                    let currentBlockIndex = previousBlock.index + 1
-                    let matches = await broker.matchOrders(currentBlockIndex: currentBlockIndex)
-                    if let lockBody = await broker.lockAndSettleTransaction(for: matches, chainPath: [spec.directory]) {
-                        let lockTx = Transaction(signatures: [:], body: HeaderImpl<TransactionBody>(node: lockBody))
-                        orderTransactions.append(lockTx)
-                    }
-                    let claims = await broker.drainPendingClaims()
-                    if let claimBody = await broker.claimTransaction(for: claims, chainPath: [spec.directory]) {
-                        let claimTx = Transaction(signatures: [:], body: HeaderImpl<TransactionBody>(node: claimBody))
-                        orderTransactions.append(claimTx)
-                    }
-                }
-
                 var transactions = await txAsync
-                transactions.append(contentsOf: orderTransactions)
 
                 // Build child blocks in parallel, coinbase sequentially (depends on transactions)
                 async let childResultAsync = buildChildBlocks(
@@ -288,11 +267,11 @@ public actor MinerLoop {
         let body = TransactionBody(
             accountActions: [accountAction],
             actions: [],
-            swapActions: [],
-            swapClaimActions: [],
+            depositActions: [],
             genesisActions: [],
             peerActions: [],
-            settleActions: [],
+            receiptActions: [],
+            withdrawalActions: [],
             signers: [identity.address],
             fee: 0,
             nonce: previousBlock.index,

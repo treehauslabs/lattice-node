@@ -360,7 +360,7 @@ final class FeeEstimatorTests: XCTestCase {
 
 // ============================================================================
 // ============================================================================
-// (BatchAuction removed — cross-chain swaps use SwapAction/SwapClaimAction)
+// (BatchAuction removed — cross-chain swaps use DepositAction/WithdrawalAction)
 // ============================================================================
 
 // ============================================================================

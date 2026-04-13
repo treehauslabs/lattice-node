@@ -23,7 +23,8 @@ Lattice is a proof-of-work blockchain with native multi-chain support. The Nexus
 │  Merged  │  SQLite  │  Protocol │  Metrics          │
 │  Parallel│  CAS     │  Version  │                   │
 ├──────────┴──────────┴───────────┴───────────────────┤
-│  Lattice (external): Consensus, ChainState, Blocks   │
+│  Lattice (external): Consensus, ChainState, Blocks,   │
+│    Exchange (Order Book, Matching, Swap/Settle/Claim)  │
 │  Ivy (external): P2P, DHT, Tally                     │
 │  Acorn (external): Content-Addressed Storage          │
 │  cashew (external): Merkle trees, CAS diffing         │

@@ -77,11 +77,11 @@ struct SendCommand: AsyncParsableCommand {
         let body = TransactionBody(
             accountActions: [senderAction, recipientAction],
             actions: [],
-            swapActions: [],
-            swapClaimActions: [],
+            depositActions: [],
             genesisActions: [],
             peerActions: [],
-            settleActions: [],
+            receiptActions: [],
+            withdrawalActions: [],
             signers: [senderAddress],
             fee: fee,
             nonce: nonce

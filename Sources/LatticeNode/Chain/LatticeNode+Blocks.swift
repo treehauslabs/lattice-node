@@ -776,33 +776,5 @@ extension LatticeNode {
         }
     }
 
-    // MARK: - Order Reception (ChainNetworkDelegate)
-
-    nonisolated public func chainNetwork(
-        _ network: ChainNetwork,
-        didReceiveOrder order: SignedOrder,
-        from peer: PeerID
-    ) async {
-        let accepted = await broker.receiveOrder(order)
-        if accepted {
-            // Re-gossip to other peers
-            if let orderData = try? JSONEncoder().encode(order) {
-                await network.gossipOrder(orderData: orderData)
-            }
-        }
-    }
-
-    nonisolated public func chainNetwork(
-        _ network: ChainNetwork,
-        didReceiveCancellation cancellation: OrderCancellation,
-        from peer: PeerID
-    ) async {
-        let accepted = await broker.receiveCancellation(cancellation)
-        if accepted {
-            if let cancelData = try? JSONEncoder().encode(cancellation) {
-                await network.gossipOrderCancellation(cancelData: cancelData)
-            }
-        }
-    }
 }
 

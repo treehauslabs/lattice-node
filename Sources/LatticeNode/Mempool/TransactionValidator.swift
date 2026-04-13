@@ -135,21 +135,17 @@ public struct TransactionValidator: Sendable {
 
     private func validateSwaps(_ body: TransactionBody) -> TransactionValidationError? {
         let signerSet = Set(body.signers)
-        for swap in body.swapActions {
-            if swap.amount == 0 { return .swapSignerMismatch }
-            if !signerSet.contains(swap.sender) { return .swapSignerMismatch }
+        for deposit in body.depositActions {
+            if deposit.amountDeposited == 0 { return .swapSignerMismatch }
+            if !signerSet.contains(deposit.demander) { return .swapSignerMismatch }
         }
-        for claim in body.swapClaimActions {
-            if claim.amount == 0 { return .swapSignerMismatch }
-            if claim.isRefund {
-                if !signerSet.contains(claim.sender) { return .swapSignerMismatch }
-            } else {
-                if !signerSet.contains(claim.recipient) { return .swapSignerMismatch }
-            }
+        for withdrawal in body.withdrawalActions {
+            if withdrawal.amountWithdrawn == 0 { return .swapSignerMismatch }
+            if withdrawal.amountWithdrawn > withdrawal.amountDemanded { return .swapSignerMismatch }
+            if !signerSet.contains(withdrawal.withdrawer) { return .swapSignerMismatch }
         }
-        for settle in body.settleActions {
-            if !signerSet.contains(settle.senderA) { return .swapSignerMismatch }
-            if !signerSet.contains(settle.senderB) { return .swapSignerMismatch }
+        for receipt in body.receiptActions {
+            if !signerSet.contains(receipt.withdrawer) { return .swapSignerMismatch }
         }
         return nil
     }

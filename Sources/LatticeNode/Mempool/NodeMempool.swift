@@ -15,11 +15,10 @@ public struct StateKeySet: Sendable {
     public static func from(_ body: TransactionBody) -> StateKeySet {
         var s = StateKeySet()
         for a in body.accountActions { s.accounts.insert(a.owner) }
-        for a in body.swapActions { s.swaps.insert(SwapKey(swapAction: a).description) }
-        for a in body.swapClaimActions { s.swaps.insert(SwapKey(swapClaimAction: a).description) }
-        for a in body.settleActions {
-            s.settles.insert(SettleKey(directory: a.directoryA, swapKey: a.swapKeyA).description)
-            s.settles.insert(SettleKey(directory: a.directoryB, swapKey: a.swapKeyB).description)
+        for a in body.depositActions { s.swaps.insert(DepositKey(depositAction: a).description) }
+        for a in body.withdrawalActions { s.swaps.insert(DepositKey(withdrawalAction: a).description) }
+        for a in body.receiptActions {
+            s.settles.insert(ReceiptKey(receiptAction: a).description)
         }
         for a in body.actions { s.general.insert(a.key) }
         for a in body.genesisActions { s.genesis.insert(a.directory) }

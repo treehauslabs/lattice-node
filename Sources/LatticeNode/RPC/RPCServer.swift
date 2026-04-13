@@ -76,10 +76,6 @@ enum RPCRoutes {
         api.post("mining/start") { req, _ in try await startMining(node: node, request: req) }
         api.post("mining/stop") { req, _ in try await stopMining(node: node, request: req) }
 
-        api.post("orders") { req, _ in try await submitOrder(node: node, request: req) }
-        api.post("orders/cancel") { req, _ in try await cancelOrder(node: node, request: req) }
-        api.get("orders") { req, _ in try await getOrders(node: node, request: req) }
-
         // Serve static files for the web UI (if dist/ exists next to the binary)
         router.get("") { _, _ in
             return Response(status: .temporaryRedirect, headers: HTTPFields([HTTPField(name: .location, value: "/app/")]))
@@ -188,18 +184,18 @@ enum RPCRoutes {
 
     static func prepareTransaction(node: LatticeNode, request: Request) async throws -> Response {
         struct AccountActionInput: Decodable { let owner: String; let delta: Int64 }
-        struct SwapInput: Decodable { let nonce: String; let sender: String; let recipient: String; let amount: UInt64; let timelock: UInt64 }
-        struct SwapClaimInput: Decodable { let nonce: String; let sender: String; let recipient: String; let amount: UInt64; let timelock: UInt64; let isRefund: Bool }
-        struct SettleInput: Decodable { let nonce: String; let senderA: String; let senderB: String; let swapKeyA: String; let directoryA: String; let swapKeyB: String; let directoryB: String }
+        struct DepositInput: Decodable { let nonce: String; let demander: String; let amountDemanded: UInt64; let amountDeposited: UInt64 }
+        struct ReceiptInput: Decodable { let withdrawer: String; let nonce: String; let demander: String; let amountDemanded: UInt64; let directory: String }
+        struct WithdrawalInput: Decodable { let withdrawer: String; let nonce: String; let demander: String; let amountDemanded: UInt64; let amountWithdrawn: UInt64 }
         struct Body: Decodable {
-            let chainPath: [String]
             let nonce: UInt64
             let signers: [String]
             let fee: UInt64
             let accountActions: [AccountActionInput]
-            let swapActions: [SwapInput]?
-            let swapClaimActions: [SwapClaimInput]?
-            let settleActions: [SettleInput]?
+            let depositActions: [DepositInput]?
+            let receiptActions: [ReceiptInput]?
+            let withdrawalActions: [WithdrawalInput]?
+            let chainPath: [String]?
         }
 
         guard let body = try? await jsonDecoder.decode(Body.self, from: request.body.collect(upTo: 1_048_576)) else {
@@ -207,28 +203,28 @@ enum RPCRoutes {
         }
 
         let accountActions = body.accountActions.map { AccountAction(owner: $0.owner, delta: $0.delta) }
-        let swapActions = (body.swapActions ?? []).map {
-            SwapAction(nonce: UInt128($0.nonce, radix: 16) ?? 0, sender: $0.sender, recipient: $0.recipient, amount: $0.amount, timelock: $0.timelock)
+        let depositActions = (body.depositActions ?? []).map {
+            DepositAction(nonce: UInt128($0.nonce, radix: 16) ?? 0, demander: $0.demander, amountDemanded: $0.amountDemanded, amountDeposited: $0.amountDeposited)
         }
-        let swapClaimActions = (body.swapClaimActions ?? []).map {
-            SwapClaimAction(nonce: UInt128($0.nonce, radix: 16) ?? 0, sender: $0.sender, recipient: $0.recipient, amount: $0.amount, timelock: $0.timelock, isRefund: $0.isRefund)
+        let receiptActions = (body.receiptActions ?? []).map {
+            ReceiptAction(withdrawer: $0.withdrawer, nonce: UInt128($0.nonce, radix: 16) ?? 0, demander: $0.demander, amountDemanded: $0.amountDemanded, directory: $0.directory)
         }
-        let settleActions = (body.settleActions ?? []).map {
-            SettleAction(nonce: UInt128($0.nonce, radix: 16) ?? 0, senderA: $0.senderA, senderB: $0.senderB, swapKeyA: $0.swapKeyA, directoryA: $0.directoryA, swapKeyB: $0.swapKeyB, directoryB: $0.directoryB)
+        let withdrawalActions = (body.withdrawalActions ?? []).map {
+            WithdrawalAction(withdrawer: $0.withdrawer, nonce: UInt128($0.nonce, radix: 16) ?? 0, demander: $0.demander, amountDemanded: $0.amountDemanded, amountWithdrawn: $0.amountWithdrawn)
         }
 
         let txBody = TransactionBody(
             accountActions: accountActions,
             actions: [],
-            swapActions: swapActions,
-            swapClaimActions: swapClaimActions,
+            depositActions: depositActions,
             genesisActions: [],
             peerActions: [],
-            settleActions: settleActions,
+            receiptActions: receiptActions,
+            withdrawalActions: withdrawalActions,
             signers: body.signers,
             fee: body.fee,
             nonce: body.nonce,
-            chainPath: body.chainPath
+            chainPath: body.chainPath ?? []
         )
 
         let header = HeaderImpl<TransactionBody>(node: txBody)
@@ -429,61 +425,6 @@ enum RPCRoutes {
         }
         struct R: Encodable { let chains: [ChainFinality]; let defaultConfirmations: UInt64 }
         return json(R(chains: configs, defaultConfirmations: finality.defaultConfirmations))
-    }
-
-    // MARK: - Orders (DEX)
-
-    static func submitOrder(node: LatticeNode, request: Request) async throws -> Response {
-        guard let order = try? await jsonDecoder.decode(SignedOrder.self, from: request.body.collect(upTo: 1_048_576)) else {
-            return jsonError("Invalid order format. Expected a SignedOrder JSON object.")
-        }
-        let accepted = await node.broker.receiveOrder(order)
-        if accepted {
-            // Gossip the order to peers
-            if let orderData = try? JSONEncoder().encode(order) {
-                let dir = node.genesisConfig.spec.directory
-                if let network = await node.network(for: dir) {
-                    await network.gossipOrder(orderData: orderData)
-                }
-            }
-        }
-        struct R: Encodable { let accepted: Bool; let nonce: String }
-        return json(R(accepted: accepted, nonce: String(order.order.nonce)))
-    }
-
-    static func cancelOrder(node: LatticeNode, request: Request) async throws -> Response {
-        let cancelData = try await request.body.collect(upTo: 1_048_576)
-        guard let cancellation = try? jsonDecoder.decode(OrderCancellation.self, from: cancelData) else {
-            return jsonError("Invalid cancellation format. Expected an OrderCancellation JSON object.")
-        }
-        let accepted = await node.broker.receiveCancellation(cancellation)
-        if accepted {
-            if let cancelData = try? JSONEncoder().encode(cancellation) {
-                let dir = node.genesisConfig.spec.directory
-                if let network = await node.network(for: dir) {
-                    await network.gossipOrderCancellation(cancelData: cancelData)
-                }
-            }
-        }
-        struct R: Encodable { let accepted: Bool; let nonce: String }
-        return json(R(accepted: accepted, nonce: String(cancellation.orderNonce)))
-    }
-
-    static func getOrders(node: LatticeNode, request: Request) async throws -> Response {
-        let sourceChain = request.uri.queryParameters["source"].map(String.init) ?? ""
-        let destChain = request.uri.queryParameters["dest"].map(String.init) ?? ""
-        let count = await node.broker.orderBook.pendingCount()
-        if !sourceChain.isEmpty && !destChain.isEmpty {
-            let orders = await node.broker.orderBook.pendingOrders(sourceChain: sourceChain, destChain: destChain)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            let data = (try? encoder.encode(orders)) ?? Data("[]".utf8)
-            var headers = HTTPFields()
-            headers.append(HTTPField(name: .contentType, value: "application/json"))
-            return Response(status: .ok, headers: headers, body: .init(byteBuffer: .init(data: data)))
-        }
-        struct R: Encodable { let pendingCount: Int; let pendingClaims: Int }
-        return json(R(pendingCount: count, pendingClaims: await node.broker.pendingClaimCount()))
     }
 
     // MARK: - Prometheus Metrics
