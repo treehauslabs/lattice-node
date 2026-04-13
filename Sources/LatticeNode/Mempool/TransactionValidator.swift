@@ -24,6 +24,7 @@ public enum TransactionValidationError: Error, Sendable {
     case balanceNotConserved(totalDebits: UInt64, totalCredits: UInt64, fee: UInt64)
     case transactionTooLarge(size: Int, max: Int)
     case chainPathMismatch
+    case depositOrWithdrawalOnNexus
 }
 
 public struct TransactionValidator: Sendable {
@@ -33,14 +34,16 @@ public struct TransactionValidator: Sendable {
     private let stateStore: StateStore?
     private let frontierCache: FrontierCache?
     private let chainDirectory: String?
+    private let isNexus: Bool
 
-    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, stateStore: StateStore? = nil, frontierCache: FrontierCache? = nil, chainDirectory: String? = nil) {
+    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, stateStore: StateStore? = nil, frontierCache: FrontierCache? = nil, chainDirectory: String? = nil, isNexus: Bool = false) {
         self.fetcher = fetcher
         self.chainState = chainState
         self.isCoinbase = isCoinbase
         self.stateStore = stateStore
         self.frontierCache = frontierCache
         self.chainDirectory = chainDirectory
+        self.isNexus = isNexus
     }
 
     public func validate(_ transaction: Transaction) async -> Result<Void, TransactionValidationError> {
@@ -144,6 +147,11 @@ public struct TransactionValidator: Sendable {
     }
 
     private func validateSwaps(_ body: TransactionBody) -> TransactionValidationError? {
+        // Nexus cannot have deposit or withdrawal actions
+        if isNexus {
+            if !body.depositActions.isEmpty { return .depositOrWithdrawalOnNexus }
+            if !body.withdrawalActions.isEmpty { return .depositOrWithdrawalOnNexus }
+        }
         let signerSet = Set(body.signers)
         for deposit in body.depositActions {
             if deposit.amountDeposited == 0 { return .swapSignerMismatch }
@@ -155,9 +163,8 @@ public struct TransactionValidator: Sendable {
             if withdrawal.amountWithdrawn != withdrawal.amountDemanded { return .swapSignerMismatch }
             if !signerSet.contains(withdrawal.withdrawer) { return .swapSignerMismatch }
         }
-        for receipt in body.receiptActions {
-            if !signerSet.contains(receipt.withdrawer) { return .swapSignerMismatch }
-        }
+        // Receipt actions don't need specific signer checks — the normal
+        // account action signing ensures the fee payer authorized the transaction
         return nil
     }
 
@@ -239,9 +246,25 @@ public struct TransactionValidator: Sendable {
                 totalCredits = newCredits
             }
         }
-        // Conservation: debits = credits + fee (for non-coinbase transactions)
+        // Conservation: debits + totalWithdrawn = credits + fee + totalDeposited
+        // Deposits lock funds (outflow), withdrawals unlock funds (inflow)
+        var totalDeposited: UInt64 = 0
+        for deposit in body.depositActions {
+            let (nd, dOverflow) = totalDeposited.addingReportingOverflow(deposit.amountDeposited)
+            if dOverflow { return .balanceNotConserved(totalDebits: totalDebits, totalCredits: totalCredits, fee: body.fee) }
+            totalDeposited = nd
+        }
+        var totalWithdrawn: UInt64 = 0
+        for withdrawal in body.withdrawalActions {
+            let (nw, wOverflow) = totalWithdrawn.addingReportingOverflow(withdrawal.amountWithdrawn)
+            if wOverflow { return .balanceNotConserved(totalDebits: totalDebits, totalCredits: totalCredits, fee: body.fee) }
+            totalWithdrawn = nw
+        }
+
+        let (lhs, lhsOverflow) = totalDebits.addingReportingOverflow(totalWithdrawn)
         let (creditsWithFee, feeOverflow) = totalCredits.addingReportingOverflow(body.fee)
-        if feeOverflow || totalDebits != creditsWithFee {
+        let (rhs, rhsOverflow) = creditsWithFee.addingReportingOverflow(totalDeposited)
+        if lhsOverflow || feeOverflow || rhsOverflow || lhs != rhs {
             return .balanceNotConserved(
                 totalDebits: totalDebits,
                 totalCredits: totalCredits,
