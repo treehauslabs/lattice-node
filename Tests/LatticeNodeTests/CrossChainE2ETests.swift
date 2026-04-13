@@ -9,18 +9,6 @@ import Acorn
 
 private func f() -> AcornFetcher { cas() }
 
-private func signMulti(
-    _ body: TransactionBody,
-    _ keypairs: [(privateKey: String, publicKey: String)]
-) -> Transaction {
-    let h = HeaderImpl<TransactionBody>(node: body)
-    var sigs = [String: String]()
-    for kp in keypairs {
-        sigs[kp.publicKey] = CryptoUtils.sign(message: h.rawCID, privateKeyHex: kp.privateKey)!
-    }
-    return Transaction(signatures: sigs, body: h)
-}
-
 // ============================================================================
 // MARK: - Mempool Validator: Cross-Chain Action Checks
 // ============================================================================
@@ -108,7 +96,7 @@ final class CrossChainMempoolTests: XCTestCase {
         }
     }
 
-    func testReceiptAcceptedWithAnySigner() async throws {
+    func testReceiptRequiresWithdrawerSigner() async throws {
         let fetcher = f()
         let spec = testSpec()
         let genesis = try await BlockBuilder.buildGenesis(
@@ -121,7 +109,8 @@ final class CrossChainMempoolTests: XCTestCase {
         let demanderAddr = addr(demander.publicKey)
         let withdrawerAddr = addr(withdrawer.publicKey)
 
-        let body = TransactionBody(
+        // Withdrawer NOT in signers — should fail
+        let bodyMissing = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
             genesisActions: [], peerActions: [],
@@ -131,11 +120,61 @@ final class CrossChainMempoolTests: XCTestCase {
             withdrawalActions: [],
             signers: [demanderAddr], fee: 0, nonce: 0
         )
-        let tx = sign(body, demander)
+        let txMissing = sign(bodyMissing, demander)
         let validator = TransactionValidator(fetcher: fetcher, chainState: chain, isCoinbase: true, isNexus: true)
+        let resultMissing = await validator.validate(txMissing)
+        if case .failure(.swapSignerMismatch) = resultMissing {
+            // Expected: withdrawer must be in signers
+        } else {
+            XCTFail("Receipt without withdrawer in signers should be rejected, got: \(resultMissing)")
+        }
+
+        // Withdrawer in signers — should pass
+        let bodyValid = TransactionBody(
+            accountActions: [],
+            actions: [], depositActions: [],
+            genesisActions: [], peerActions: [],
+            receiptActions: [
+                ReceiptAction(withdrawer: withdrawerAddr, nonce: 1, demander: demanderAddr, amountDemanded: 100, directory: "Child")
+            ],
+            withdrawalActions: [],
+            signers: [withdrawerAddr], fee: 0, nonce: 0
+        )
+        let txValid = sign(bodyValid, withdrawer)
+        let resultValid = await validator.validate(txValid)
+        if case .failure(let err) = resultValid {
+            XCTFail("Receipt with withdrawer in signers should be accepted, got: \(err)")
+        }
+    }
+
+    func testReceiptRejectedOnChildChain() async throws {
+        let fetcher = f()
+        let spec = testSpec("Child")
+        let genesis = try await BlockBuilder.buildGenesis(
+            spec: spec, timestamp: 1_000_000, difficulty: UInt256.max, fetcher: fetcher
+        )
+        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
+
+        let kp = CryptoUtils.generateKeyPair()
+        let address = addr(kp.publicKey)
+
+        let body = TransactionBody(
+            accountActions: [],
+            actions: [], depositActions: [],
+            genesisActions: [], peerActions: [],
+            receiptActions: [
+                ReceiptAction(withdrawer: address, nonce: 1, demander: "someone", amountDemanded: 100, directory: "Child")
+            ],
+            withdrawalActions: [],
+            signers: [address], fee: 0, nonce: 0
+        )
+        let tx = sign(body, kp)
+        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, isCoinbase: true, chainDirectory: "Child", isNexus: false)
         let result = await validator.validate(tx)
-        if case .failure(let err) = result {
-            XCTFail("Receipt with demander signer should be accepted, got: \(err)")
+        if case .failure(.receiptOnChildChain) = result {
+            // Expected
+        } else {
+            XCTFail("Child chain should reject receipt actions, got: \(result)")
         }
     }
 
@@ -378,22 +417,23 @@ final class CrossChainBlockBuildingTests: XCTestCase {
         let depositStored: UInt64? = try? childFrontier1.depositState.node?.get(key: depositKey)
         XCTAssertEqual(depositStored, depositAmount, "Deposit should be in child state")
 
-        // Step 3: Receipt on nexus (demander + withdrawer both sign)
+        // Step 3: Receipt on nexus (withdrawer pays demander via receipt)
         let nexusGenesis = try await BlockBuilder.buildGenesis(
             spec: nSpec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
+        // Withdrawer gets the block reward and pays demander via receipt
         let receiptBody = TransactionBody(
-            accountActions: [AccountAction(owner: demanderAddr, delta: Int64(nexusReward))],
+            accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(nexusReward))],
             actions: [], depositActions: [],
             genesisActions: [], peerActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, directory: cSpec.directory)
             ],
             withdrawalActions: [],
-            signers: [demanderAddr], fee: 0, nonce: 0
+            signers: [withdrawerAddr], fee: 0, nonce: 0
         )
         let nexusBlock1 = try await BlockBuilder.buildBlock(
-            previous: nexusGenesis, transactions: [sign(receiptBody, demander)],
+            previous: nexusGenesis, transactions: [sign(receiptBody, withdrawer)],
             timestamp: t + 1000, difficulty: UInt256(1000), fetcher: fetcher
         )
 
@@ -476,22 +516,23 @@ final class CrossChainBlockBuildingTests: XCTestCase {
             timestamp: t + 1000, difficulty: UInt256(1000), fetcher: fetcher
         )
 
-        // Receipt on nexus — authorized to `withdrawer`
+        // Receipt on nexus — withdrawer pays demander, authorized to `withdrawer`
         let nexusGenesis = try await BlockBuilder.buildGenesis(
             spec: nSpec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
+        // Withdrawer gets the block reward and pays demander via receipt
         let receiptBody = TransactionBody(
-            accountActions: [AccountAction(owner: demanderAddr, delta: Int64(nexusReward))],
+            accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(nexusReward))],
             actions: [], depositActions: [],
             genesisActions: [], peerActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, directory: cSpec.directory)
             ],
             withdrawalActions: [],
-            signers: [demanderAddr], fee: 0, nonce: 0
+            signers: [withdrawerAddr], fee: 0, nonce: 0
         )
         let nexusBlock1 = try await BlockBuilder.buildBlock(
-            previous: nexusGenesis, transactions: [sign(receiptBody, demander)],
+            previous: nexusGenesis, transactions: [sign(receiptBody, withdrawer)],
             timestamp: t + 1000, difficulty: UInt256(1000), fetcher: fetcher
         )
 

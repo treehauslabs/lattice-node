@@ -91,6 +91,8 @@ extension LatticeNode {
             return "Transaction chainPath does not match this chain"
         case .depositOrWithdrawalOnNexus:
             return "Deposit and withdrawal actions are not allowed on the nexus chain"
+        case .receiptOnChildChain:
+            return "Receipt actions are not allowed on child chains"
         }
     }
 

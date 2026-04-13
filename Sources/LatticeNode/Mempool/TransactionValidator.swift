@@ -25,6 +25,7 @@ public enum TransactionValidationError: Error, Sendable {
     case transactionTooLarge(size: Int, max: Int)
     case chainPathMismatch
     case depositOrWithdrawalOnNexus
+    case receiptOnChildChain
 }
 
 public struct TransactionValidator: Sendable {
@@ -152,6 +153,10 @@ public struct TransactionValidator: Sendable {
             if !body.depositActions.isEmpty { return .depositOrWithdrawalOnNexus }
             if !body.withdrawalActions.isEmpty { return .depositOrWithdrawalOnNexus }
         }
+        // Child chains cannot have receipt actions (receipts are nexus-only)
+        if !isNexus {
+            if !body.receiptActions.isEmpty { return .receiptOnChildChain }
+        }
         let signerSet = Set(body.signers)
         for deposit in body.depositActions {
             if deposit.amountDeposited == 0 { return .swapSignerMismatch }
@@ -163,8 +168,11 @@ public struct TransactionValidator: Sendable {
             if withdrawal.amountWithdrawn != withdrawal.amountDemanded { return .swapSignerMismatch }
             if !signerSet.contains(withdrawal.withdrawer) { return .swapSignerMismatch }
         }
-        // Receipt actions don't need specific signer checks — the normal
-        // account action signing ensures the fee payer authorized the transaction
+        // Receipt: withdrawer must sign (their nexus funds are debited to pay demander)
+        for receipt in body.receiptActions {
+            if receipt.amountDemanded == 0 { return .swapSignerMismatch }
+            if !signerSet.contains(receipt.withdrawer) { return .swapSignerMismatch }
+        }
         return nil
     }
 

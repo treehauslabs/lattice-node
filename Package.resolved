@@ -1,5 +1,5 @@
 {
-  "originHash" : "7aa353ed8b6462f0e0e7e9427e08f3637ff584b974ecf5a25295d5101aca2796",
+  "originHash" : "b96300e2419f7db1b09c81c19637a6e654b79d3c80897a1e227f715e7e24a27b",
   "pins" : [
     {
       "identity" : "acorn",
@@ -105,8 +105,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
-        "revision" : "90a04de0f1f4118899ae8f0c7d2514f7c9766aa6",
-        "version" : "7.2.1"
+        "revision" : "2a9aaa363536b57effc8438d93195dd9e237ecf7",
+        "version" : "7.3.0"
       }
     },
     {
@@ -364,7 +364,7 @@
     {
       "identity" : "swift-system",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-system.git",
+      "location" : "https://github.com/apple/swift-system",
       "state" : {
         "revision" : "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
         "version" : "1.6.4"
