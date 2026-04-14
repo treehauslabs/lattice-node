@@ -4,7 +4,7 @@ import Ivy
 public actor AnchorPeers {
     private let storagePath: URL
     private var anchors: [PeerEndpoint] = []
-    private let maxAnchors: Int = 2
+    private let maxAnchors: Int = 6
 
     public init(dataDir: URL) {
         self.storagePath = dataDir.appendingPathComponent("anchors.json")

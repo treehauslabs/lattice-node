@@ -28,7 +28,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     private var mempoolPruneTask: Task<Void, Never>?
     private var gcTask: Task<Void, Never>?
     private var pinReannounceTask: Task<Void, Never>?
-    public let feeEstimator: FeeEstimator
+    public var feeEstimators: [String: FeeEstimator]
     public let subscriptions: SubscriptionManager
     public let anchorPeers: AnchorPeers
     public let metrics: NodeMetrics
@@ -118,7 +118,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         self.blocksSinceLastPersist = [:]
         self.recentPeerBlocks = [:]
         self.peerBlockCounts = [:]
-        self.feeEstimator = FeeEstimator()
+        self.feeEstimators = [genesisConfig.spec.directory: FeeEstimator()]
         self.subscriptions = SubscriptionManager()
         self.anchorPeers = AnchorPeers(dataDir: config.storagePath)
         self.metrics = NodeMetrics()
@@ -136,9 +136,22 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         stateStores[directory]
     }
 
+    func feeEstimator(for directory: String) -> FeeEstimator {
+        if let existing = feeEstimators[directory] {
+            return existing
+        }
+        let estimator = FeeEstimator()
+        feeEstimators[directory] = estimator
+        return estimator
+    }
+
     // MARK: - Lifecycle
 
     public func start() async throws {
+        if config.bootstrapPeers.isEmpty && !config.enableLocalDiscovery {
+            let log = NodeLogger("startup")
+            log.warn("No bootstrap peers configured and local discovery disabled — node may not find peers")
+        }
         await lattice.setDelegate(self)
         for (dir, network) in networks {
             await network.setDelegate(self)
@@ -221,6 +234,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         if tipCaches[directory] == nil {
             tipCaches[directory] = TipCache(tip: "")
         }
+        if frontierCaches[directory] == nil {
+            frontierCaches[directory] = FrontierCache()
+        }
         try await network.start()
     }
 
@@ -257,9 +273,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
     // MARK: - Peer Persistence
 
-    public func connectedPeerEndpoints() async -> [PeerEndpoint] {
-        let nexusDir = genesisConfig.spec.directory
-        guard let network = networks[nexusDir] else { return [] }
+    public func connectedPeerEndpoints(directory: String? = nil) async -> [PeerEndpoint] {
+        let dir = directory ?? genesisConfig.spec.directory
+        guard let network = networks[dir] else { return [] }
         let entries = await network.ivy.router.allPeers()
         return entries.map { $0.endpoint }
     }

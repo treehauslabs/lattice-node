@@ -96,6 +96,30 @@ extension LatticeNode {
         }
     }
 
+    // MARK: - Gossip Validation
+
+    nonisolated public func chainNetwork(_ network: ChainNetwork, shouldAcceptTransaction transaction: Transaction, bodyCID: String) async -> Bool {
+        let directory = await network.directory
+        return await validateGossipedTransaction(transaction, directory: directory)
+    }
+
+    func validateGossipedTransaction(_ transaction: Transaction, directory: String) async -> Bool {
+        guard let chain = await chain(for: directory) else { return true }
+        guard let network = networks[directory] else { return true }
+        let isNexus = directory == genesisConfig.spec.directory
+        let validator = TransactionValidator(
+            fetcher: await network.fetcher,
+            chainState: chain,
+            stateStore: stateStores[directory],
+            frontierCache: frontierCaches[directory],
+            chainDirectory: directory,
+            isNexus: isNexus
+        )
+        let result = await validator.validate(transaction)
+        if case .success = result { return true }
+        return false
+    }
+
     public func broadcastTransaction(directory: String, transaction: Transaction) async {
         guard let network = networks[directory] else { return }
         guard let bodyData = transaction.body.node?.toData() else { return }

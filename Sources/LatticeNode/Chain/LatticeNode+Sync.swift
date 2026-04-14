@@ -13,11 +13,13 @@ extension LatticeNode {
         network: ChainNetwork
     ) async -> Bool {
         guard syncTask == nil else { return true }
-        let localHeight = await lattice.nexus.chain.getHighestBlockIndex()
+        let directory = await network.directory
+        guard let chainState = await chain(for: directory) else { return false }
+        let localHeight = await chainState.getHighestBlockIndex()
         let gap = peerBlock.index > localHeight ? peerBlock.index - localHeight : 0
         guard gap > config.retentionDepth else { return false }
 
-        if let localSnapshot = await lattice.nexus.chain.tipSnapshot {
+        if let localSnapshot = await chainState.tipSnapshot {
             if peerBlock.difficulty <= localSnapshot.difficulty && peerBlock.index <= localHeight {
                 return false
             }
@@ -27,16 +29,36 @@ extension LatticeNode {
         return true
     }
 
+    static let syncTimeout: Duration = .seconds(600)
+
     func startSync(peerTipCID: String, network: ChainNetwork) {
         syncTask = Task { [weak self] in
             guard let self = self else { return }
-            switch self.config.syncStrategy {
-            case .headersFirst:
-                await self.performHeadersFirstSync(peerTipCID: peerTipCID, network: network)
-            case .full, .snapshot:
-                await self.performSync(peerTipCID: peerTipCID, network: network)
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    switch self.config.syncStrategy {
+                    case .headersFirst:
+                        await self.performHeadersFirstSync(peerTipCID: peerTipCID, network: network)
+                    case .full, .snapshot:
+                        await self.performSync(peerTipCID: peerTipCID, network: network)
+                    }
+                }
+                group.addTask {
+                    try? await Task.sleep(for: Self.syncTimeout)
+                }
+                await group.next()
+                group.cancelAll()
             }
+            if Task.isCancelled {
+                let log = NodeLogger("sync")
+                log.warn("Sync timed out — will retry on next peer block")
+            }
+            await self.clearSyncTask()
         }
+    }
+
+    func clearSyncTask() {
+        syncTask = nil
     }
 
     func performSync(peerTipCID: String, network: ChainNetwork) async {
@@ -62,8 +84,6 @@ extension LatticeNode {
             let log = NodeLogger("sync")
             log.error("Sync failed: \(error) — will retry on next peer block")
         }
-
-        syncTask = nil
     }
 
     func performHeadersFirstSync(peerTipCID: String, network: ChainNetwork) async {
@@ -131,7 +151,6 @@ extension LatticeNode {
 
             await finalizeSyncResult(result, network: network, fetcher: fetcher)
 
-            syncTask = nil
             log.info("Headers-first sync complete")
 
         } catch {

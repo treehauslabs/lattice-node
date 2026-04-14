@@ -82,7 +82,7 @@ extension LatticeNode {
             }
 
             if connected >= 2 {
-                let bestPeers = Array(connectedEndpoints.prefix(2))
+                let bestPeers = Array(connectedEndpoints.prefix(6))
                 await anchorPeers.update(peers: bestPeers)
             }
         }

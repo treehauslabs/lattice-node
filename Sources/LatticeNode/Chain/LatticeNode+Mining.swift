@@ -10,22 +10,32 @@ extension LatticeNode {
         guard let network = networks[directory] else { return }
         guard miners[directory] == nil else { return }
 
-        let nexus = await lattice.nexus
-        let chainState = await nexus.chain
+        guard let chainState = await chain(for: directory) else { return }
+        let isNexus = directory == genesisConfig.spec.directory
+        let spec: ChainSpec
+        if isNexus {
+            spec = genesisConfig.spec
+        } else if let snapshot = await chainState.tipSnapshot,
+                  let resolved = try? await HeaderImpl<ChainSpec>(rawCID: snapshot.specCID).resolve(fetcher: network.ivyFetcher).node {
+            spec = resolved
+        } else {
+            return
+        }
         let identity = MinerIdentity(
             publicKeyHex: config.publicKey,
             privateKeyHex: config.privateKey
         )
         let tipCache = tipCaches[directory]
+        let childProvider: (@Sendable () async -> [ChildMiningContext])? = isNexus
+            ? { [weak self] in await self?.buildChildMiningContexts() ?? [] }
+            : nil
         let miner = MinerLoop(
             chainState: chainState,
             mempool: network.nodeMempool,
             fetcher: network.ivyFetcher,
-            spec: genesisConfig.spec,
+            spec: spec,
             identity: identity,
-            childContextProvider: { [weak self] in
-                await self?.buildChildMiningContexts() ?? []
-            },
+            childContextProvider: childProvider,
             batchSize: config.resources.miningBatchSize,
             tipCache: tipCache
         )

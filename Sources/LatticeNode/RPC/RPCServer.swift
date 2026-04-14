@@ -74,20 +74,20 @@ enum RPCRoutes {
         api.post("transaction") { req, _ in try await submitTransaction(node: node, request: req) }
         api.post("transaction/prepare") { req, _ in try await prepareTransaction(node: node, request: req) }
         api.get("mempool") { req, _ in try await mempool(node: node, request: req) }
-        api.get("proof/{address}") { _, ctx in try await balanceProof(node: node, address: ctx.parameters.require("address")) }
-        api.get("peers") { _, _ in try await getPeers(node: node) }
+        api.get("proof/{address}") { req, ctx in try await balanceProof(node: node, address: ctx.parameters.require("address"), request: req) }
+        api.get("peers") { req, _ in try await getPeers(node: node, request: req) }
 
         api.get("fee/estimate") { req, _ in try await feeEstimate(node: node, request: req) }
-        api.get("fee/histogram") { _, _ in try await feeHistogram(node: node) }
+        api.get("fee/histogram") { req, _ in try await feeHistogram(node: node, request: req) }
         api.get("nonce/{address}") { req, ctx in try await getNonce(node: node, address: ctx.parameters.require("address"), request: req) }
 
-        api.get("receipt/{txCID}") { _, ctx in try await getReceipt(node: node, txCID: ctx.parameters.require("txCID")) }
-        api.get("transactions/{address}") { _, ctx in try await getTransactionHistory(node: node, address: ctx.parameters.require("address")) }
-        api.get("finality/{height}") { _, ctx in try await getFinality(node: node, height: ctx.parameters.require("height")) }
+        api.get("receipt/{txCID}") { req, ctx in try await getReceipt(node: node, txCID: ctx.parameters.require("txCID"), request: req) }
+        api.get("transactions/{address}") { req, ctx in try await getTransactionHistory(node: node, address: ctx.parameters.require("address"), request: req) }
+        api.get("finality/{height}") { req, ctx in try await getFinality(node: node, height: ctx.parameters.require("height"), request: req) }
         api.get("finality/config") { _, _ in try await getFinalityConfig(node: node) }
         let light = api.group("light")
         light.get("headers") { req, _ in try await lightHeaders(node: node, request: req) }
-        light.get("proof/{address}") { _, ctx in try await lightProof(node: node, address: ctx.parameters.require("address")) }
+        light.get("proof/{address}") { req, ctx in try await lightProof(node: node, address: ctx.parameters.require("address"), request: req) }
 
         api.post("mining/start") { req, _ in try await startMining(node: node, request: req) }
         api.post("mining/stop") { req, _ in try await stopMining(node: node, request: req) }
@@ -155,7 +155,18 @@ enum RPCRoutes {
     }
 
     static func chainSpec(node: LatticeNode, request: Request) async throws -> Response {
-        let s = node.genesisConfig.spec
+        let dir = resolveChain(node: node, request: request)
+        let s: ChainSpec
+        if dir == node.genesisConfig.spec.directory {
+            s = node.genesisConfig.spec
+        } else if let chainState = await node.chain(for: dir),
+                  let snapshot = await chainState.tipSnapshot,
+                  let network = await node.network(for: dir),
+                  let resolved = try? await HeaderImpl<ChainSpec>(rawCID: snapshot.specCID).resolve(fetcher: network.ivyFetcher).node {
+            s = resolved
+        } else {
+            return jsonError("Chain not found: \(dir)", status: .notFound)
+        }
         struct R: Encodable { let directory: String; let targetBlockTime: UInt64; let initialReward: UInt64; let halvingInterval: UInt64; let maxTransactionsPerBlock: UInt64; let maxStateGrowth: Int; let maxBlockSize: Int; let premine: UInt64; let premineAmount: UInt64 }
         return json(R(directory: s.directory, targetBlockTime: s.targetBlockTime, initialReward: s.initialReward, halvingInterval: s.halvingInterval, maxTransactionsPerBlock: s.maxNumberOfTransactionsPerBlock, maxStateGrowth: s.maxStateGrowth, maxBlockSize: s.maxBlockSize, premine: s.premine, premineAmount: s.premineAmount()))
     }
@@ -332,8 +343,9 @@ enum RPCRoutes {
         return json(R(count: await net.nodeMempool.count, totalFees: await net.nodeMempool.totalFees(), chain: dir))
     }
 
-    static func balanceProof(node: LatticeNode, address: String) async throws -> Response {
-        guard let proof = try await node.getBalanceProof(address: address) else {
+    static func balanceProof(node: LatticeNode, address: String, request: Request) async throws -> Response {
+        let dir = chainParam(request)
+        guard let proof = try await node.getBalanceProof(address: address, directory: dir) else {
             return jsonError("Proof generation failed", status: .internalServerError)
         }
         var headers = HTTPFields()
@@ -341,8 +353,9 @@ enum RPCRoutes {
         return Response(status: .ok, headers: headers, body: .init(byteBuffer: .init(data: proof)))
     }
 
-    static func getPeers(node: LatticeNode) async throws -> Response {
-        let peers = await node.connectedPeerEndpoints()
+    static func getPeers(node: LatticeNode, request: Request) async throws -> Response {
+        let dir = chainParam(request)
+        let peers = await node.connectedPeerEndpoints(directory: dir)
         struct P: Encodable { let publicKey: String; let host: String; let port: UInt16 }
         struct R: Encodable { let count: Int; let peers: [P] }
         return json(R(count: peers.count, peers: peers.map { P(publicKey: String($0.publicKey.prefix(16)) + "...", host: $0.host, port: $0.port) }))
@@ -351,19 +364,23 @@ enum RPCRoutes {
     // MARK: - Fee Estimation
 
     static func feeEstimate(node: LatticeNode, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
         let targetStr = request.uri.queryParameters["target"].map(String.init) ?? "5"
         let target = Int(targetStr) ?? 5
-        let fee = await node.feeEstimator.estimate(confirmationTarget: target)
-        struct R: Encodable { let fee: UInt64; let target: Int }
-        return json(R(fee: fee, target: target))
+        let estimator = await node.feeEstimator(for: dir)
+        let fee = await estimator.estimate(confirmationTarget: target)
+        struct R: Encodable { let fee: UInt64; let target: Int; let chain: String }
+        return json(R(fee: fee, target: target, chain: dir))
     }
 
-    static func feeHistogram(node: LatticeNode) async throws -> Response {
-        let histogram = await node.feeEstimator.histogram()
+    static func feeHistogram(node: LatticeNode, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        let estimator = await node.feeEstimator(for: dir)
+        let histogram = await estimator.histogram()
         struct Bucket: Encodable { let range: String; let count: Int }
-        struct R: Encodable { let buckets: [Bucket]; let blockCount: Int }
-        let blockCount = await node.feeEstimator.blockCount
-        return json(R(buckets: histogram.map { Bucket(range: $0.range, count: $0.count) }, blockCount: blockCount))
+        struct R: Encodable { let buckets: [Bucket]; let blockCount: Int; let chain: String }
+        let blockCount = await estimator.blockCount
+        return json(R(buckets: histogram.map { Bucket(range: $0.range, count: $0.count) }, blockCount: blockCount, chain: dir))
     }
 
     // MARK: - Nonce
@@ -386,7 +403,8 @@ enum RPCRoutes {
         let fromStr = request.uri.queryParameters["from"].map(String.init) ?? "0"
         let toStr = request.uri.queryParameters["to"].map(String.init) ?? "100"
         let from = UInt64(fromStr) ?? 0
-        let to = UInt64(toStr) ?? 100
+        let maxRange: UInt64 = 500
+        let to = min(UInt64(toStr) ?? 100, from + maxRange)
 
         let dir = resolveChain(node: node, request: request)
         guard let store = await node.stateStore(for: dir) else {
@@ -402,13 +420,15 @@ enum RPCRoutes {
         return json(R(headers: headers, count: headers.count))
     }
 
-    static func lightProof(node: LatticeNode, address: String) async throws -> Response {
-        let dir = node.genesisConfig.spec.directory
+    static func lightProof(node: LatticeNode, address: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
         guard let store = await node.stateStore(for: dir) else {
             return jsonError("State store not available", status: .internalServerError)
         }
 
-        let chain = await node.lattice.nexus.chain
+        guard let chain = await node.chain(for: dir) else {
+            return jsonError("Chain not found: \(dir)", status: .notFound)
+        }
         let height = await chain.getHighestBlockIndex()
         let tip = await chain.getMainChainTip()
         let stateRoot = store.getChainTip() ?? ""
@@ -426,8 +446,8 @@ enum RPCRoutes {
 
     // MARK: - Transaction Receipts
 
-    static func getReceipt(node: LatticeNode, txCID: String) async throws -> Response {
-        let dir = node.genesisConfig.spec.directory
+    static func getReceipt(node: LatticeNode, txCID: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
         guard let store = await node.stateStore(for: dir),
               let network = await node.network(for: dir) else {
             return jsonError("State store not available", status: .internalServerError)
@@ -441,8 +461,8 @@ enum RPCRoutes {
 
     // MARK: - Transaction History
 
-    static func getTransactionHistory(node: LatticeNode, address: String) async throws -> Response {
-        let dir = node.genesisConfig.spec.directory
+    static func getTransactionHistory(node: LatticeNode, address: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
         guard let store = await node.stateStore(for: dir) else {
             return jsonError("State store not available", status: .internalServerError)
         }
@@ -458,12 +478,15 @@ enum RPCRoutes {
 
     // MARK: - Finality
 
-    static func getFinality(node: LatticeNode, height: String) async throws -> Response {
+    static func getFinality(node: LatticeNode, height: String, request: Request) async throws -> Response {
         guard let blockHeight = UInt64(height) else {
             return jsonError("Invalid height", status: .badRequest)
         }
-        let dir = node.genesisConfig.spec.directory
-        let currentHeight = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let dir = resolveChain(node: node, request: request)
+        guard let chainState = await node.chain(for: dir) else {
+            return jsonError("Chain not found: \(dir)", status: .notFound)
+        }
+        let currentHeight = await chainState.getHighestBlockIndex()
         let finality = node.config.finality
         let isFinal = finality.isFinal(chain: dir, blockHeight: blockHeight, currentHeight: currentHeight)
         let confirmations = currentHeight >= blockHeight ? currentHeight - blockHeight : 0

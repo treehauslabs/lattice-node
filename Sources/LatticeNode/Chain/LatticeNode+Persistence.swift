@@ -1,6 +1,7 @@
 import Lattice
 import Foundation
 import cashew
+import Ivy
 
 extension LatticeNode {
 
@@ -81,6 +82,17 @@ extension LatticeNode {
             let childLevel = ChainLevel(chain: childChain, children: [:])
             await lattice.nexus.restoreChildChain(directory: dirName, level: childLevel)
             persisters[dirName] = persister
+
+            // Register network so child chain is operational immediately
+            if networks[dirName] == nil {
+                let port = deterministicPort(basePort: config.listenPort, directory: dirName)
+                let childConfig = IvyConfig(
+                    publicKey: config.publicKey,
+                    listenPort: port,
+                    enableLocalDiscovery: config.enableLocalDiscovery
+                )
+                try? await registerChainNetwork(directory: dirName, config: childConfig)
+            }
         }
     }
 }

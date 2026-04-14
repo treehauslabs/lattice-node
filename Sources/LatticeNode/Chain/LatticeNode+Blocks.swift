@@ -36,12 +36,15 @@ extension LatticeNode {
         await storer.flush(to: network)
     }
 
+    static let maxCopyDepth = 64
+
     func deepCopyBlock(cid: String, from source: ChainNetwork, to dest: ChainNetwork) async {
         var visited = Set<String>()
-        await copyCIDRecursive(cid, from: source, to: dest, visited: &visited)
+        await copyCIDRecursive(cid, from: source, to: dest, visited: &visited, depth: 0)
     }
 
-    private func copyCIDRecursive(_ cid: String, from source: ChainNetwork, to dest: ChainNetwork, visited: inout Set<String>) async {
+    private func copyCIDRecursive(_ cid: String, from source: ChainNetwork, to dest: ChainNetwork, visited: inout Set<String>, depth: Int) async {
+        guard depth < Self.maxCopyDepth else { return }
         guard !cid.isEmpty, !visited.contains(cid) else { return }
         visited.insert(cid)
         guard let data = try? await source.fetcher.fetch(rawCid: cid) else { return }
@@ -49,14 +52,14 @@ extension LatticeNode {
 
         if let block = Block(data: data) {
             if let prevCID = block.previousBlock?.rawCID {
-                await copyCIDRecursive(prevCID, from: source, to: dest, visited: &visited)
+                await copyCIDRecursive(prevCID, from: source, to: dest, visited: &visited, depth: depth + 1)
             }
-            await copyCIDRecursive(block.transactions.rawCID, from: source, to: dest, visited: &visited)
-            await copyCIDRecursive(block.spec.rawCID, from: source, to: dest, visited: &visited)
-            await copyCIDRecursive(block.homestead.rawCID, from: source, to: dest, visited: &visited)
-            await copyCIDRecursive(block.frontier.rawCID, from: source, to: dest, visited: &visited)
-            await copyCIDRecursive(block.parentHomestead.rawCID, from: source, to: dest, visited: &visited)
-            await copyCIDRecursive(block.childBlocks.rawCID, from: source, to: dest, visited: &visited)
+            await copyCIDRecursive(block.transactions.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
+            await copyCIDRecursive(block.spec.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
+            await copyCIDRecursive(block.homestead.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
+            await copyCIDRecursive(block.frontier.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
+            await copyCIDRecursive(block.parentHomestead.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
+            await copyCIDRecursive(block.childBlocks.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
         }
     }
 
@@ -111,6 +114,7 @@ extension LatticeNode {
                 await recoverOrphanedTransactions(
                     oldTip: tipBefore,
                     newTip: tipAfter,
+                    directory: directory,
                     chain: chain,
                     fetcher: fetcher
                 )
@@ -123,11 +127,12 @@ extension LatticeNode {
     private func recoverOrphanedTransactions(
         oldTip: String,
         newTip: String,
+        directory: String,
         chain: ChainState,
         fetcher: Fetcher
     ) async {
         let log = NodeLogger("reorg")
-        let dir = genesisConfig.spec.directory
+        let dir = directory
         let network = networks[dir]
 
         let newChainHashes = await collectAncestors(
@@ -229,7 +234,8 @@ extension LatticeNode {
         }
 
         // Step 4: Re-validate orphaned txs and return to mempool
-        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, stateStore: stateStores[dir], chainDirectory: dir, isNexus: true)
+        let isNexus = dir == genesisConfig.spec.directory
+        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, stateStore: stateStores[dir], frontierCache: frontierCaches[dir], chainDirectory: dir, isNexus: isNexus)
         var recovered = 0
         for entry in orphanedBlockTxs {
             for (cid, txHeader) in entry.txEntries {
@@ -311,7 +317,9 @@ extension LatticeNode {
                         fetcher: fetcher,
                         chainState: childChain,
                         stateStore: stateStores[childDir],
-                        chainDirectory: childDir
+                        frontierCache: frontierCaches[childDir],
+                        chainDirectory: childDir,
+                        isNexus: false
                     )
                     for (cid, txHeader) in childTxEntries {
                         guard let tx = txHeader.node else { continue }
@@ -578,7 +586,7 @@ extension LatticeNode {
         }
 
         if !txFees.isEmpty {
-            await feeEstimator.recordBlock(height: blockHeight, transactionFees: txFees)
+            await feeEstimator(for: directory).recordBlock(height: blockHeight, transactionFees: txFees)
         }
 
         await subscriptions.emit(.newBlock(
@@ -762,6 +770,11 @@ extension LatticeNode {
             enableLocalDiscovery: config.enableLocalDiscovery
         )
         try? await registerChainNetwork(directory: directory, config: ivyConfig)
+
+        // Restore any persisted mempool transactions for this child chain
+        if let childNetwork = networks[directory], !config.discoveryOnly {
+            await restoreMempool(directory: directory, network: childNetwork, fetcher: childNetwork.ivyFetcher)
+        }
 
         if let childNetwork = networks[directory],
            let childLevel = await lattice.nexus.children[directory] {

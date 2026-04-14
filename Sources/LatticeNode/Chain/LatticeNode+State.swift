@@ -63,15 +63,17 @@ extension LatticeNode {
         return balance
     }
 
-    public func getBlock(hash: String) async throws -> Block? {
-        let dir = genesisConfig.spec.directory
+    public func getBlock(hash: String, directory: String? = nil) async throws -> Block? {
+        let dir = directory ?? genesisConfig.spec.directory
         guard let network = networks[dir] else { return nil }
         let header = VolumeImpl<Block>(rawCID: hash)
         return try await header.resolve(fetcher: network.fetcher).node
     }
 
-    public func getBlockHash(atIndex index: UInt64) async -> String? {
-        await lattice.nexus.chain.getMainChainBlockHash(atIndex: index)
+    public func getBlockHash(atIndex index: UInt64, directory: String? = nil) async -> String? {
+        let dir = directory ?? genesisConfig.spec.directory
+        guard let chainState = await chain(for: dir) else { return nil }
+        return await chainState.getMainChainBlockHash(atIndex: index)
     }
 
     public func getDeposit(demander: String, amountDemanded: UInt64, nonce: UInt128, directory: String) async throws -> UInt64? {

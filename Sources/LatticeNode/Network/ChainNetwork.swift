@@ -7,10 +7,12 @@ import AcornMemoryWorker
 import Tally
 import cashew
 import UInt256
+import OrderedCollections
 
 public protocol ChainNetworkDelegate: AnyObject, Sendable {
     func chainNetwork(_ network: ChainNetwork, didReceiveBlock cid: String, data: Data, from peer: PeerID) async
     func chainNetwork(_ network: ChainNetwork, didReceiveBlockAnnouncement cid: String, from peer: PeerID) async
+    func chainNetwork(_ network: ChainNetwork, shouldAcceptTransaction transaction: Transaction, bodyCID: String) async -> Bool
 }
 
 public actor ChainNetwork: IvyDelegate {
@@ -27,6 +29,9 @@ public actor ChainNetwork: IvyDelegate {
     private let resources: NodeResourceConfig
     public weak var delegate: ChainNetworkDelegate?
     private var subscribedChains: Set<String>
+    private var recentTxCIDs: OrderedDictionary<String, ContinuousClock.Instant> = [:]
+    private static let maxRecentTxCIDs = 8192
+    private static let txDeduplicationWindow: Duration = .seconds(60)
 
     public init(
         directory: String,
@@ -377,16 +382,27 @@ public actor ChainNetwork: IvyDelegate {
             let cidLen = Int(payload.withUnsafeBytes { $0.load(as: UInt16.self) })
             guard payload.count >= 2 + cidLen else { break }
             let cidStr = String(data: payload[2..<2+cidLen], encoding: .utf8) ?? ""
+            // Dedup: skip if we've seen this tx CID recently
+            let now = ContinuousClock.Instant.now
+            if let lastSeen = recentTxCIDs[cidStr], now - lastSeen < Self.txDeduplicationWindow {
+                break
+            }
+            recentTxCIDs.removeValue(forKey: cidStr)
+            recentTxCIDs[cidStr] = now
+            while recentTxCIDs.count > Self.maxRecentTxCIDs {
+                recentTxCIDs.removeFirst()
+            }
             let txData = Data(payload[(2+cidLen)...])
             if let tx = Transaction(data: txData) {
-                // Verify body CID matches the advertised CID
                 if tx.body.rawCID == cidStr {
-                    // Store body to CAS so we can serve it during block resolution
+                    // Validate before mempool admission
+                    if let del = delegate, !(await del.chainNetwork(self, shouldAcceptTransaction: tx, bodyCID: cidStr)) {
+                        break
+                    }
                     if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
                         await storeLocally(cid: cidStr, data: bodyData)
                     }
                     let accepted = await nodeMempool.add(transaction: tx)
-                    // Re-gossip to all peers so transactions propagate network-wide
                     if accepted {
                         await ivy.broadcastMessage(topic: "mempool-full", payload: payload)
                     }
@@ -395,6 +411,12 @@ public actor ChainNetwork: IvyDelegate {
         case "mempool":
             // Legacy CID-only gossip (fallback)
             if let txCID = String(data: payload, encoding: .utf8) {
+                let mNow = ContinuousClock.Instant.now
+                if let lastSeen = recentTxCIDs[txCID], mNow - lastSeen < Self.txDeduplicationWindow {
+                    break
+                }
+                recentTxCIDs.removeValue(forKey: txCID)
+                recentTxCIDs[txCID] = mNow
                 if let txData = try? await ivyFetcher.fetch(rawCid: txCID) {
                     if let tx = Transaction(data: txData) {
                         _ = await nodeMempool.add(transaction: tx)
