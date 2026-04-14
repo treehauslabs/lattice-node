@@ -76,16 +76,15 @@ extension LatticeNode {
 
     /// Submit mining proof to Ivy creditors to settle outstanding debt.
     /// Each mined block is simultaneously a settlement proof — the work was real.
+    /// We settle whenever we have any debt, not just past threshold, because
+    /// graduated debt pressure means even small debt reduces our service quality.
     private func settleWithCreditors(network: ChainNetwork, nonce: UInt64, blockHash: Data) async {
         let ledger = await network.ivy.ledger
         let allLines = await ledger.allLines
         for (peer, line) in allLines {
-            // Only settle with peers we owe (negative balance = we're the debtor)
+            // Settle with any peer we owe (negative balance = we're the debtor)
             guard line.balance < 0 else { continue }
-            guard line.needsSettlement else { continue }
 
-            // Send the mining solution as a native settlement message
-            // Ivy's handleMiningSettlement will verify the work and credit our balance
             await network.ivy.submitSettlement(
                 to: peer,
                 nonce: nonce,

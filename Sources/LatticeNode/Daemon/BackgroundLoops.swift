@@ -58,6 +58,7 @@ func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
     }
 }
 
+
 @discardableResult
 func startGarbageCollectionLoop(node: LatticeNode, retentionDepth: UInt64) -> Task<Void, Never> {
     Task {

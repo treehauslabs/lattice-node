@@ -18,7 +18,7 @@ public actor ChainNetwork: IvyDelegate {
     public let ivy: Ivy
     public let ivyFetcher: IvyFetcher
     public let nodeMempool: NodeMempool
-    public let verifiedStore: VerifiedDistanceStore
+    public let verifiedStore: ProfitWeightedStore
     public let protectionPolicy: BlockchainProtectionPolicy
     private let localCAS: any AcornCASWorker
     /// Separate store for earning pins — LFU eviction keeps profitable data.
@@ -57,7 +57,7 @@ public actor ChainNetwork: IvyDelegate {
 
         let policy = BlockchainProtectionPolicy()
         self.protectionPolicy = policy
-        let verified = VerifiedDistanceStore(
+        let verified = ProfitWeightedStore(
             inner: disk,
             nodePublicKey: config.publicKey,
             maxEntries: max(diskBytes / 4096, 1000),
@@ -385,7 +385,11 @@ public actor ChainNetwork: IvyDelegate {
                     if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
                         await storeLocally(cid: cidStr, data: bodyData)
                     }
-                    _ = await nodeMempool.add(transaction: tx)
+                    let accepted = await nodeMempool.add(transaction: tx)
+                    // Re-gossip to all peers so transactions propagate network-wide
+                    if accepted {
+                        await ivy.broadcastMessage(topic: "mempool-full", payload: payload)
+                    }
                 }
             }
         case "mempool":
@@ -405,6 +409,7 @@ public actor ChainNetwork: IvyDelegate {
             break
         }
     }
+
 }
 
 extension Ivy {
