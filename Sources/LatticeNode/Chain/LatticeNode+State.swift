@@ -107,6 +107,22 @@ extension LatticeNode {
         return stored.rawCID
     }
 
+    public func listDeposits(directory: String, limit: Int = 100, after: String? = nil) async throws -> [(key: String, amountDeposited: UInt64)] {
+        guard let network = networks[directory] else { return [] }
+        let chain = directory == genesisConfig.spec.directory
+            ? await lattice.nexus.chain
+            : await lattice.nexus.children[directory]?.chain
+        guard let chain else { return [] }
+        guard let snapshot = await chain.tipSnapshot else { return [] }
+        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+        let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
+        guard let state = resolved.node else { return [] }
+        let depositResolved = try await state.depositState.resolveRecursive(fetcher: network.fetcher)
+        guard let depositDict = depositResolved.node else { return [] }
+        let entries = try depositDict.sortedKeysAndValues(limit: limit, after: after)
+        return entries.map { (key: $0.key, amountDeposited: $0.value) }
+    }
+
     public func getBalanceProof(address: String, directory: String? = nil) async throws -> Data? {
         let dir = directory ?? genesisConfig.spec.directory
         guard let network = networks[dir] else { return nil }

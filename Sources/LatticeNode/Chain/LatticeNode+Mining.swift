@@ -27,7 +27,7 @@ extension LatticeNode {
         )
         let tipCache = tipCaches[directory]
         let childProvider: (@Sendable () async -> [ChildMiningContext])? = isNexus
-            ? { [weak self] in await self?.buildChildMiningContexts() ?? [] }
+            ? { @Sendable [weak self] in await self?.buildChildMiningContexts() ?? [] }
             : nil
         let miner = MinerLoop(
             chainState: chainState,

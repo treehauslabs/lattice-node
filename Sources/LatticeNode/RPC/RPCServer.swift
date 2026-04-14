@@ -71,6 +71,8 @@ enum RPCRoutes {
         api.get("balance/{address}") { req, ctx in try await getBalance(node: node, address: ctx.parameters.require("address"), request: req) }
         api.get("block/latest") { req, _ in try await latestBlock(node: node, request: req) }
         api.get("block/{id}") { req, ctx in try await getBlock(node: node, id: ctx.parameters.require("id"), request: req) }
+        api.get("block/{id}/transactions") { req, ctx in try await getBlockTransactions(node: node, id: ctx.parameters.require("id"), request: req) }
+        api.get("block/{id}/children") { req, ctx in try await getBlockChildren(node: node, id: ctx.parameters.require("id"), request: req) }
         api.post("transaction") { req, _ in try await submitTransaction(node: node, request: req) }
         api.post("transaction/prepare") { req, _ in try await prepareTransaction(node: node, request: req) }
         api.get("mempool") { req, _ in try await mempool(node: node, request: req) }
@@ -92,8 +94,13 @@ enum RPCRoutes {
         api.post("mining/start") { req, _ in try await startMining(node: node, request: req) }
         api.post("mining/stop") { req, _ in try await stopMining(node: node, request: req) }
 
+        // State explorer
+        api.get("state/account/{address}") { req, ctx in try await getAccountState(node: node, address: ctx.parameters.require("address"), request: req) }
+        api.get("state/summary") { req, _ in try await getStateSummary(node: node, request: req) }
+
         // Swap state queries
         api.get("deposit") { req, _ in try await getDepositState(node: node, request: req) }
+        api.get("deposits") { req, _ in try await listDeposits(node: node, request: req) }
         api.get("receipt-state") { req, _ in try await getReceiptState(node: node, request: req) }
 
         // Health check
@@ -213,8 +220,126 @@ enum RPCRoutes {
         }
         let header = VolumeImpl<Block>(rawCID: h)
         guard let b = try? await header.resolve(fetcher: network.fetcher).node else { return jsonError("Block not found", status: .notFound) }
-        struct R: Encodable { let hash: String; let index: UInt64; let timestamp: Int64; let previousBlock: String?; let difficulty: String; let nonce: UInt64; let transactionsCID: String; let homesteadCID: String; let frontierCID: String }
-        return json(R(hash: h, index: b.index, timestamp: b.timestamp, previousBlock: b.previousBlock?.rawCID, difficulty: b.difficulty.toHexString(), nonce: b.nonce, transactionsCID: b.transactions.rawCID, homesteadCID: b.homestead.rawCID, frontierCID: b.frontier.rawCID))
+        let txCount: Int
+        if let txNode = try? await b.transactions.resolveRecursive(fetcher: network.fetcher).node {
+            txCount = txNode.count
+        } else {
+            txCount = 0
+        }
+        let childCount: Int
+        if let cbNode = try? await b.childBlocks.resolveRecursive(fetcher: network.fetcher).node {
+            childCount = cbNode.count
+        } else {
+            childCount = 0
+        }
+        struct R: Encodable {
+            let hash: String; let index: UInt64; let timestamp: Int64
+            let previousBlock: String?; let difficulty: String; let nextDifficulty: String
+            let nonce: UInt64; let version: UInt16
+            let transactionsCID: String; let homesteadCID: String; let frontierCID: String
+            let parentHomesteadCID: String; let specCID: String; let childBlocksCID: String
+            let transactionCount: Int; let childBlockCount: Int
+            let chain: String
+        }
+        return json(R(
+            hash: h, index: b.index, timestamp: b.timestamp,
+            previousBlock: b.previousBlock?.rawCID,
+            difficulty: b.difficulty.toHexString(), nextDifficulty: b.nextDifficulty.toHexString(),
+            nonce: b.nonce, version: b.version,
+            transactionsCID: b.transactions.rawCID, homesteadCID: b.homestead.rawCID,
+            frontierCID: b.frontier.rawCID, parentHomesteadCID: b.parentHomestead.rawCID,
+            specCID: b.spec.rawCID, childBlocksCID: b.childBlocks.rawCID,
+            transactionCount: txCount, childBlockCount: childCount,
+            chain: dir
+        ))
+    }
+
+    // MARK: - Block Detail Endpoints
+
+    static func getBlockTransactions(node: LatticeNode, id: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
+        let block = try await resolveBlock(id: id, dir: dir, node: node, fetcher: network.fetcher)
+        guard let b = block else { return jsonError("Block not found", status: .notFound) }
+        guard let txNode = try? await b.transactions.resolveRecursive(fetcher: network.fetcher).node else {
+            return jsonError("Failed to resolve transactions", status: .internalServerError)
+        }
+        guard let entries = try? txNode.sortedKeysAndValues() else {
+            return jsonError("Failed to enumerate transactions", status: .internalServerError)
+        }
+        struct TxSummary: Encodable {
+            let txCID: String; let bodyCID: String; let fee: UInt64; let nonce: UInt64
+            let signers: [String]; let accountActionCount: Int
+            let depositActionCount: Int; let receiptActionCount: Int; let withdrawalActionCount: Int
+        }
+        var txs: [TxSummary] = []
+        for (_, txHeader) in entries {
+            guard let tx = txHeader.node else { continue }
+            let body = tx.body.node
+            txs.append(TxSummary(
+                txCID: txHeader.rawCID, bodyCID: tx.body.rawCID,
+                fee: body?.fee ?? 0, nonce: body?.nonce ?? 0,
+                signers: body?.signers ?? [],
+                accountActionCount: body?.accountActions.count ?? 0,
+                depositActionCount: body?.depositActions.count ?? 0,
+                receiptActionCount: body?.receiptActions.count ?? 0,
+                withdrawalActionCount: body?.withdrawalActions.count ?? 0
+            ))
+        }
+        struct R: Encodable { let transactions: [TxSummary]; let count: Int; let blockHash: String }
+        return json(R(transactions: txs, count: txs.count, blockHash: id))
+    }
+
+    static func getBlockChildren(node: LatticeNode, id: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
+        let block = try await resolveBlock(id: id, dir: dir, node: node, fetcher: network.fetcher)
+        guard let b = block else { return jsonError("Block not found", status: .notFound) }
+        guard let cbNode = try? await b.childBlocks.resolveRecursive(fetcher: network.fetcher).node else {
+            struct R: Encodable { let children: [String]; let count: Int }
+            return json(R(children: [], count: 0))
+        }
+        guard let entries = try? cbNode.sortedKeysAndValues() else {
+            struct R: Encodable { let children: [String]; let count: Int }
+            return json(R(children: [], count: 0))
+        }
+        struct ChildEntry: Encodable {
+            let directory: String; let blockHash: String; let index: UInt64; let timestamp: Int64
+            let difficulty: String; let transactionCount: Int
+        }
+        var children: [ChildEntry] = []
+        for (key, blockHeader) in entries {
+            guard let childBlock = blockHeader.node else { continue }
+            let txCount: Int
+            if let txNode = try? await childBlock.transactions.resolveRecursive(fetcher: network.fetcher).node {
+                txCount = txNode.count
+            } else {
+                txCount = 0
+            }
+            children.append(ChildEntry(
+                directory: key, blockHash: blockHeader.rawCID,
+                index: childBlock.index, timestamp: childBlock.timestamp,
+                difficulty: childBlock.difficulty.toHexString(),
+                transactionCount: txCount
+            ))
+        }
+        struct R: Encodable { let children: [ChildEntry]; let count: Int }
+        return json(R(children: children, count: children.count))
+    }
+
+    private static func resolveBlock(id: String, dir: String, node: LatticeNode, fetcher: any Fetcher) async throws -> Block? {
+        var h = id
+        if let i = UInt64(id) {
+            let isNexus = dir == node.genesisConfig.spec.directory
+            let chain = isNexus
+                ? await node.lattice.nexus.chain
+                : await node.lattice.nexus.children[dir]?.chain
+            guard let chain else { return nil }
+            guard let found = await chain.getMainChainBlockHash(atIndex: i) else { return nil }
+            h = found
+        }
+        let header = VolumeImpl<Block>(rawCID: h)
+        return try? await header.resolve(fetcher: fetcher).node
     }
 
     // MARK: - Transactions
@@ -517,6 +642,47 @@ enum RPCRoutes {
         return json(R(chains: configs, defaultConfirmations: finality.defaultConfirmations))
     }
 
+    // MARK: - State Explorer
+
+    static func getAccountState(node: LatticeNode, address: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        guard let store = await node.stateStore(for: dir) else {
+            return jsonError("State store not available", status: .internalServerError)
+        }
+        let account = store.getAccount(address: address)
+        let history = store.getTransactionHistory(address: address)
+        struct TxEntry: Encodable { let txCID: String; let blockHash: String; let height: UInt64 }
+        struct R: Encodable {
+            let address: String; let chain: String
+            let balance: UInt64; let nonce: UInt64; let exists: Bool
+            let recentTransactions: [TxEntry]; let transactionCount: Int
+        }
+        return json(R(
+            address: address, chain: dir,
+            balance: account?.balance ?? 0, nonce: account?.nonce ?? 0,
+            exists: account != nil,
+            recentTransactions: history.prefix(50).map { TxEntry(txCID: $0.txCID, blockHash: $0.blockHash, height: $0.height) },
+            transactionCount: history.count
+        ))
+    }
+
+    static func getStateSummary(node: LatticeNode, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        guard let store = await node.stateStore(for: dir) else {
+            return jsonError("State store not available", status: .internalServerError)
+        }
+        guard let chainState = await node.chain(for: dir) else {
+            return jsonError("Chain not found", status: .notFound)
+        }
+        let height = await chainState.getHighestBlockIndex()
+        let tip = await chainState.getMainChainTip()
+        let stateRoot = store.getChainTip() ?? ""
+        struct R: Encodable {
+            let chain: String; let height: UInt64; let tip: String; let stateRoot: String
+        }
+        return json(R(chain: dir, height: height, tip: tip, stateRoot: stateRoot))
+    }
+
     // MARK: - Deposit & Receipt State Queries
 
     static func getDepositState(node: LatticeNode, request: Request) async throws -> Response {
@@ -556,6 +722,38 @@ enum RPCRoutes {
         } catch {
             log.error("Receipt state query failed: \(error)")
             return jsonError("Failed to query receipt state: \(error.localizedDescription)", status: .internalServerError)
+        }
+    }
+
+    static func listDeposits(node: LatticeNode, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        let limitStr = request.uri.queryParameters["limit"].map(String.init)
+        let limit = min(limitStr.flatMap(Int.init) ?? 100, 1000)
+        let after = request.uri.queryParameters["after"].map(String.init)
+        do {
+            let entries = try await node.listDeposits(directory: dir, limit: limit, after: after)
+            struct DepositEntry: Encodable {
+                let key: String
+                let demander: String
+                let amountDemanded: UInt64
+                let nonce: String
+                let amountDeposited: UInt64
+            }
+            let deposits = entries.compactMap { entry -> DepositEntry? in
+                guard let dk = DepositKey(entry.key) else { return nil }
+                return DepositEntry(
+                    key: entry.key,
+                    demander: dk.demander,
+                    amountDemanded: dk.amountDemanded,
+                    nonce: String(dk.nonce, radix: 16),
+                    amountDeposited: entry.amountDeposited
+                )
+            }
+            struct R: Encodable { let deposits: [DepositEntry]; let count: Int; let chain: String }
+            return json(R(deposits: deposits, count: deposits.count, chain: dir))
+        } catch {
+            log.error("List deposits failed: \(error)")
+            return jsonError("Failed to list deposits: \(error.localizedDescription)", status: .internalServerError)
         }
     }
 
