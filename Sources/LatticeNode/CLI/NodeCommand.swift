@@ -368,7 +368,7 @@ struct NodeCommand: AsyncParsableCommand {
         let peerStore = PeerStore(dataDir: dataDirURL)
         let shutdownRequested = ShutdownFlag()
 
-        installSignalHandlers {
+        let signalSources = installSignalHandlers {
             shutdownRequested.set()
         }
 
@@ -385,6 +385,7 @@ struct NodeCommand: AsyncParsableCommand {
         }
 
         await shutdownRequested.wait()
+        withExtendedLifetime(signalSources) {}
 
         print("\n  Shutting down...")
         healthTask.cancel()
@@ -469,7 +470,7 @@ private final class ShutdownFlag: Sendable {
     }
 }
 
-private func installSignalHandlers(_ handler: @escaping @Sendable () -> Void) {
+private func installSignalHandlers(_ handler: @escaping @Sendable () -> Void) -> (DispatchSourceSignal, DispatchSourceSignal) {
     let queue = DispatchQueue(label: "lattice.signal")
     signal(SIGINT, SIG_IGN)
     signal(SIGTERM, SIG_IGN)
@@ -479,4 +480,5 @@ private func installSignalHandlers(_ handler: @escaping @Sendable () -> Void) {
     src2.setEventHandler(handler: handler)
     src1.resume()
     src2.resume()
+    return (src1, src2)
 }

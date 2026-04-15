@@ -56,14 +56,16 @@ public actor TransactionReceiptStore {
         guard let blockData = try? await fetcher.fetch(rawCid: index.blockHash),
               let block = Block(data: blockData) else { return nil }
 
-        // Targeted resolve: load only the radix path to this one transaction
-        guard let txDict = try? await block.transactions.resolve(
-            paths: [[txCID]: .targeted], fetcher: fetcher
-        ).node else { return nil }
+        // Dict keys are sequential indices, not CIDs — resolve all and match by rawCID
+        guard let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,
+              let entries = try? txDict.allKeysAndValues() else { return nil }
 
-        guard let txHeader: VolumeImpl<Transaction> = try? txDict.get(key: txCID) else { return nil }
+        var matchedHeader: VolumeImpl<Transaction>?
+        for (_, txHeader) in entries {
+            if txHeader.rawCID == txCID { matchedHeader = txHeader; break }
+        }
+        guard let txHeader = matchedHeader else { return nil }
 
-        // The transaction value may need resolution after targeted dict resolve
         let tx: Transaction
         if let n = txHeader.node {
             tx = n

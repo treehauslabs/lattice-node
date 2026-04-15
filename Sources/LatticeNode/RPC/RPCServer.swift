@@ -88,6 +88,8 @@ enum RPCRoutes {
         api.get("transactions/{address}") { req, ctx in try await getTransactionHistory(node: node, address: ctx.parameters.require("address"), request: req) }
         api.get("finality/{height}") { req, ctx in try await getFinality(node: node, height: ctx.parameters.require("height"), request: req) }
         api.get("finality/config") { _, _ in try await getFinalityConfig(node: node) }
+        api.get("block/{id}/state") { req, ctx in try await getBlockState(node: node, blockId: ctx.parameters.require("id"), request: req) }
+        api.get("block/{id}/state/account/{address}") { req, ctx in try await getBlockAccountState(node: node, blockId: ctx.parameters.require("id"), address: ctx.parameters.require("address"), request: req) }
         let light = api.group("light")
         light.get("headers") { req, _ in try await lightHeaders(node: node, request: req) }
         light.get("proof/{address}") { req, ctx in try await lightProof(node: node, address: ctx.parameters.require("address"), request: req) }
@@ -589,36 +591,58 @@ enum RPCRoutes {
 
     static func getTransaction(node: LatticeNode, txCID: String, request: Request) async throws -> Response {
         let dir = resolveChain(node: node, request: request)
-        guard let store = await node.stateStore(for: dir),
-              let network = await node.network(for: dir) else {
-            return jsonError("State store not available", status: .internalServerError)
-        }
-        let receiptStore = await TransactionReceiptStore(store: store, fetcher: network.fetcher)
-        guard let receipt = await receiptStore.getReceipt(txCID: txCID) else {
-            return jsonError("Transaction not found", status: .notFound)
+        guard let network = await node.network(for: dir) else {
+            return jsonError("Unknown chain: \(dir)", status: .notFound)
         }
 
-        // Resolve the full transaction body from the block
-        guard let blockData = try? await network.fetcher.fetch(rawCid: receipt.blockHash),
+        // Determine block hash: prefer explicit ?blockHash param, fall back to receipt index
+        let blockHash: String
+        let blockHeight: UInt64
+        let blockTimestamp: Int64
+        if let explicitHash = request.uri.queryParameters["blockHash"].map(String.init) {
+            guard let data = try? await network.fetcher.fetch(rawCid: explicitHash),
+                  let b = Block(data: data) else {
+                return jsonError("Block not found", status: .notFound)
+            }
+            blockHash = explicitHash
+            blockHeight = b.index
+            blockTimestamp = b.timestamp
+        } else {
+            guard let store = await node.stateStore(for: dir) else {
+                return jsonError("State store not available", status: .internalServerError)
+            }
+            let receiptStore = await TransactionReceiptStore(store: store, fetcher: network.fetcher)
+            guard let receipt = await receiptStore.getReceipt(txCID: txCID) else {
+                return jsonError("Transaction not found", status: .notFound)
+            }
+            blockHash = receipt.blockHash
+            blockHeight = receipt.blockHeight
+            blockTimestamp = receipt.timestamp
+        }
+
+        // Resolve the full transaction body from the block.
+        // Transaction dict keys are sequential indices ("0","1",...), not CIDs,
+        // so we resolve all entries and match by rawCID.
+        guard let blockData = try? await network.fetcher.fetch(rawCid: blockHash),
               let block = Block(data: blockData) else {
             return jsonError("Block not found", status: .notFound)
         }
-        guard let txDict = try? await block.transactions.resolve(
-            paths: [[txCID]: .targeted], fetcher: network.fetcher
-        ).node else {
+        guard let txDict = try? await block.transactions.resolveRecursive(fetcher: network.fetcher).node,
+              let entries = try? txDict.allKeysAndValues() else {
             return jsonError("Transaction not found in block", status: .notFound)
         }
-        guard let txHeader: VolumeImpl<Transaction> = try? txDict.get(key: txCID) else {
-            return jsonError("Transaction not found in block", status: .notFound)
-        }
-        let tx: Transaction
-        if let n = txHeader.node {
-            tx = n
-        } else {
-            guard let resolved = try? await txHeader.resolve(fetcher: network.fetcher).node else {
-                return jsonError("Failed to resolve transaction", status: .internalServerError)
+        var matchedTx: Transaction?
+        for (_, txHeader) in entries {
+            guard txHeader.rawCID == txCID else { continue }
+            if let n = txHeader.node {
+                matchedTx = n
+            } else {
+                matchedTx = try? await txHeader.resolve(fetcher: network.fetcher).node
             }
-            tx = resolved
+            break
+        }
+        guard let tx = matchedTx else {
+            return jsonError("Transaction not found in block", status: .notFound)
         }
         let body: TransactionBody
         if let n = tx.body.node {
@@ -647,7 +671,7 @@ enum RPCRoutes {
         }
         return json(R(
             txCID: txCID, bodyCID: tx.body.rawCID,
-            blockHash: receipt.blockHash, blockHeight: receipt.blockHeight, timestamp: receipt.timestamp,
+            blockHash: blockHash, blockHeight: blockHeight, timestamp: blockTimestamp,
             fee: body.fee, nonce: body.nonce,
             signers: body.signers, chainPath: body.chainPath,
             signatures: tx.signatures,
@@ -756,6 +780,71 @@ enum RPCRoutes {
             let chain: String; let height: UInt64; let tip: String; let stateRoot: String
         }
         return json(R(chain: dir, height: height, tip: tip, stateRoot: stateRoot))
+    }
+
+    // MARK: - Block State
+
+    static func getBlockState(node: LatticeNode, blockId: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
+        guard let block = try await resolveBlock(id: blockId, dir: dir, node: node, fetcher: network.fetcher) else {
+            return jsonError("Block not found", status: .notFound)
+        }
+
+        // Resolve the frontier (post-block state) to get sub-tree CIDs
+        let state = try? await block.frontier.resolve(fetcher: network.fetcher).node
+
+        struct StateSection: Encodable { let name: String; let cid: String }
+        var sections: [StateSection] = []
+        if let state {
+            sections = [
+                StateSection(name: "accountState", cid: state.accountState.rawCID),
+                StateSection(name: "depositState", cid: state.depositState.rawCID),
+                StateSection(name: "receiptState", cid: state.receiptState.rawCID),
+                StateSection(name: "peerState", cid: state.peerState.rawCID),
+                StateSection(name: "genesisState", cid: state.genesisState.rawCID),
+                StateSection(name: "transactionState", cid: state.transactionState.rawCID),
+                StateSection(name: "generalState", cid: state.generalState.rawCID),
+            ]
+        }
+
+        struct R: Encodable {
+            let blockHash: String; let blockHeight: UInt64
+            let homesteadCID: String; let frontierCID: String
+            let sections: [StateSection]; let chain: String
+        }
+        return json(R(
+            blockHash: VolumeImpl<Block>(node: block).rawCID,
+            blockHeight: block.index,
+            homesteadCID: block.homestead.rawCID,
+            frontierCID: block.frontier.rawCID,
+            sections: sections,
+            chain: dir
+        ))
+    }
+
+    static func getBlockAccountState(node: LatticeNode, blockId: String, address: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
+        guard let block = try await resolveBlock(id: blockId, dir: dir, node: node, fetcher: network.fetcher) else {
+            return jsonError("Block not found", status: .notFound)
+        }
+
+        // Resolve the frontier's account state with targeted path for this address
+        guard let state = try? await block.frontier.resolve(fetcher: network.fetcher).node else {
+            return jsonError("Failed to resolve block state", status: .internalServerError)
+        }
+        let resolved = try? await state.accountState.resolve(paths: [[address]: .targeted], fetcher: network.fetcher)
+        let balance: UInt64 = resolved?.node.flatMap({ try? $0.get(key: address) }) ?? 0
+
+        struct R: Encodable {
+            let address: String; let balance: UInt64; let exists: Bool
+            let blockHeight: UInt64; let chain: String
+        }
+        return json(R(
+            address: address, balance: balance, exists: balance > 0,
+            blockHeight: block.index, chain: dir
+        ))
     }
 
     // MARK: - Deposit & Receipt State Queries

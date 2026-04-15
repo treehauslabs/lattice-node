@@ -698,15 +698,17 @@ extension LatticeNode {
         let txList = Array(txEntries)
 
         // Process transactions in parallel — each receipt is independent
+        // Note: dict keys are sequential indices ("0","1",...) — use rawCID for receipt indexing.
         let results: [TxReceiptData] = await withTaskGroup(of: TxReceiptData.self) { group in
-            for (cid, txHeader) in txList {
+            for (_, txHeader) in txList {
+                let txCID = txHeader.rawCID
                 group.addTask {
                     var generalEntries: [(key: String, value: Data, height: UInt64)] = []
                     var txHistory: [(address: String, txCID: String, blockHash: String, height: UInt64)] = []
 
                     struct ReceiptIdx: Codable { let blockHash: String; let blockHeight: UInt64 }
                     if let idxData = try? Self.receiptEncoder.encode(ReceiptIdx(blockHash: blockHash, blockHeight: blockHeight)) {
-                        generalEntries.append((key: "receipt-idx:\(cid)", value: idxData, height: blockHeight))
+                        generalEntries.append((key: "receipt-idx:\(txCID)", value: idxData, height: blockHeight))
                     }
 
                     if let tx = txHeader.node, let body = tx.body.node {
@@ -714,17 +716,17 @@ extension LatticeNode {
                         var actions: [TransactionReceipt.ReceiptAction] = []
                         actions.reserveCapacity(body.accountActions.count)
                         for action in body.accountActions {
-                            txHistory.append((address: action.owner, txCID: cid, blockHash: blockHash, height: blockHeight))
+                            txHistory.append((address: action.owner, txCID: txCID, blockHash: blockHash, height: blockHeight))
                             actions.append(TransactionReceipt.ReceiptAction(owner: action.owner, delta: action.delta))
                         }
                         let receipt = TransactionReceipt(
-                            txCID: cid, blockHash: blockHash, blockHeight: blockHeight,
+                            txCID: txCID, blockHash: blockHash, blockHeight: blockHeight,
                             timestamp: blockTimestamp, fee: body.fee,
                             sender: body.signers.first ?? "", status: "confirmed",
                             accountActions: actions
                         )
                         if let data = try? Self.receiptEncoder.encode(receipt) {
-                            generalEntries.append((key: "receipt:\(cid)", value: data, height: blockHeight))
+                            generalEntries.append((key: "receipt:\(txCID)", value: data, height: blockHeight))
                         }
                     }
 
