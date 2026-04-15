@@ -448,28 +448,33 @@ extension LatticeNode {
 
         let header = VolumeImpl<Block>(rawCID: cid)
 
-        if let block = try? await header.resolve(fetcher: resolveFetcher).node {
-            if !isBlockTimestampValid(block) {
-                tally.recordFailure(peer: peer)
-                return
-            }
-            if await checkSyncNeeded(
-                peerBlock: block,
-                peerTipCID: cid,
-                network: network
-            ) {
-                tally.recordSuccess(peer: peer)
-                return
-            }
+        // Resolve the full block before processing — don't update chain tip
+        // unless the block data is locally available for the miner to read.
+        guard let block = try? await header.resolve(fetcher: resolveFetcher).node else {
+            return
+        }
+
+        if !isBlockTimestampValid(block) {
+            tally.recordFailure(peer: peer)
+            return
+        }
+
+        if await checkSyncNeeded(
+            peerBlock: block,
+            peerTipCID: cid,
+            network: network
+        ) {
+            tally.recordSuccess(peer: peer)
+            return
         }
 
         let directory = await network.directory
         let accepted = await processBlockAndRecoverReorg(
-            header: header, directory: directory, fetcher: resolveFetcher
+            header: header, directory: directory, fetcher: resolveFetcher,
+            resolvedBlock: block
         )
         if accepted {
             tally.recordSuccess(peer: peer)
-            // Fetch raw bytes from CAS (local hit) instead of resolve+toData() re-serialization
             if let blockData = try? await resolveFetcher.fetch(rawCid: cid) {
                 await network.announceStoredBlock(cid: cid, data: blockData)
             }

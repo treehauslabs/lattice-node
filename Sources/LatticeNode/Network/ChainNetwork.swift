@@ -23,6 +23,8 @@ public actor ChainNetwork: IvyDelegate {
     public let verifiedStore: ProfitWeightedStore
     public let protectionPolicy: BlockchainProtectionPolicy
     private let localCAS: any AcornCASWorker
+    /// Raw disk worker reference for persisting state on shutdown.
+    private let diskStore: DiskCASWorker<DefaultFileSystem>
     /// Separate store for earning pins — LFU eviction keeps profitable data.
     /// Not distance-based; stores whatever peers request us to pin.
     private let pinStore: DiskCASWorker<DefaultFileSystem>
@@ -69,6 +71,7 @@ public actor ChainNetwork: IvyDelegate {
             protectionPolicy: policy
         )
         self.verifiedStore = verified
+        self.diskStore = disk
 
         // Earning pin store: LFU eviction keeps frequently-requested (profitable) data.
         // Separate from blockchain data — stores whatever maximizes serving revenue.
@@ -123,6 +126,11 @@ public actor ChainNetwork: IvyDelegate {
 
     public func stop() async {
         await ivy.stop()
+    }
+
+    public func persistDiskState() async {
+        try? await diskStore.persistState()
+        try? await pinStore.persistState()
     }
 
     // MARK: - Fetcher (unified read path)

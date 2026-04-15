@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/AcornDiskWorker.git",
       "state" : {
-        "revision" : "b03dc1b81627c0b9b3736790aed28b6d38b31ad2",
-        "version" : "2.0.0"
+        "revision" : "5cc8dc7f37ed89b2f1b2a65ecee0ffabd03129f3",
+        "version" : "2.1.0"
       }
     },
     {

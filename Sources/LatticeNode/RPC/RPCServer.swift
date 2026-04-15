@@ -84,6 +84,7 @@ enum RPCRoutes {
         api.get("nonce/{address}") { req, ctx in try await getNonce(node: node, address: ctx.parameters.require("address"), request: req) }
 
         api.get("receipt/{txCID}") { req, ctx in try await getReceipt(node: node, txCID: ctx.parameters.require("txCID"), request: req) }
+        api.get("transaction/{txCID}") { req, ctx in try await getTransaction(node: node, txCID: ctx.parameters.require("txCID"), request: req) }
         api.get("transactions/{address}") { req, ctx in try await getTransactionHistory(node: node, address: ctx.parameters.require("address"), request: req) }
         api.get("finality/{height}") { req, ctx in try await getFinality(node: node, height: ctx.parameters.require("height"), request: req) }
         api.get("finality/config") { _, _ in try await getFinalityConfig(node: node) }
@@ -582,6 +583,80 @@ enum RPCRoutes {
             return jsonError("Receipt not found", status: .notFound)
         }
         return json(receipt)
+    }
+
+    // MARK: - Transaction Detail
+
+    static func getTransaction(node: LatticeNode, txCID: String, request: Request) async throws -> Response {
+        let dir = resolveChain(node: node, request: request)
+        guard let store = await node.stateStore(for: dir),
+              let network = await node.network(for: dir) else {
+            return jsonError("State store not available", status: .internalServerError)
+        }
+        let receiptStore = await TransactionReceiptStore(store: store, fetcher: network.fetcher)
+        guard let receipt = await receiptStore.getReceipt(txCID: txCID) else {
+            return jsonError("Transaction not found", status: .notFound)
+        }
+
+        // Resolve the full transaction body from the block
+        guard let blockData = try? await network.fetcher.fetch(rawCid: receipt.blockHash),
+              let block = Block(data: blockData) else {
+            return jsonError("Block not found", status: .notFound)
+        }
+        guard let txDict = try? await block.transactions.resolve(
+            paths: [[txCID]: .targeted], fetcher: network.fetcher
+        ).node else {
+            return jsonError("Transaction not found in block", status: .notFound)
+        }
+        guard let txHeader: VolumeImpl<Transaction> = try? txDict.get(key: txCID) else {
+            return jsonError("Transaction not found in block", status: .notFound)
+        }
+        let tx: Transaction
+        if let n = txHeader.node {
+            tx = n
+        } else {
+            guard let resolved = try? await txHeader.resolve(fetcher: network.fetcher).node else {
+                return jsonError("Failed to resolve transaction", status: .internalServerError)
+            }
+            tx = resolved
+        }
+        let body: TransactionBody
+        if let n = tx.body.node {
+            body = n
+        } else if let resolved = try? await tx.body.resolve(fetcher: network.fetcher).node {
+            body = resolved
+        } else {
+            return jsonError("Failed to resolve transaction body", status: .internalServerError)
+        }
+
+        struct AccountActionJSON: Encodable { let owner: String; let delta: Int64 }
+        struct DepositActionJSON: Encodable { let nonce: String; let demander: String; let amountDemanded: UInt64; let amountDeposited: UInt64 }
+        struct ReceiptActionJSON: Encodable { let withdrawer: String; let nonce: String; let demander: String; let amountDemanded: UInt64; let directory: String }
+        struct WithdrawalActionJSON: Encodable { let withdrawer: String; let nonce: String; let demander: String; let amountDemanded: UInt64; let amountWithdrawn: UInt64 }
+        struct R: Encodable {
+            let txCID: String; let bodyCID: String
+            let blockHash: String; let blockHeight: UInt64; let timestamp: Int64
+            let fee: UInt64; let nonce: UInt64
+            let signers: [String]; let chainPath: [String]
+            let signatures: [String: String]
+            let accountActions: [AccountActionJSON]
+            let depositActions: [DepositActionJSON]
+            let receiptActions: [ReceiptActionJSON]
+            let withdrawalActions: [WithdrawalActionJSON]
+            let chain: String
+        }
+        return json(R(
+            txCID: txCID, bodyCID: tx.body.rawCID,
+            blockHash: receipt.blockHash, blockHeight: receipt.blockHeight, timestamp: receipt.timestamp,
+            fee: body.fee, nonce: body.nonce,
+            signers: body.signers, chainPath: body.chainPath,
+            signatures: tx.signatures,
+            accountActions: body.accountActions.map { AccountActionJSON(owner: $0.owner, delta: $0.delta) },
+            depositActions: body.depositActions.map { DepositActionJSON(nonce: String($0.nonce, radix: 16), demander: $0.demander, amountDemanded: $0.amountDemanded, amountDeposited: $0.amountDeposited) },
+            receiptActions: body.receiptActions.map { ReceiptActionJSON(withdrawer: $0.withdrawer, nonce: String($0.nonce, radix: 16), demander: $0.demander, amountDemanded: $0.amountDemanded, directory: $0.directory) },
+            withdrawalActions: body.withdrawalActions.map { WithdrawalActionJSON(withdrawer: $0.withdrawer, nonce: String($0.nonce, radix: 16), demander: $0.demander, amountDemanded: $0.amountDemanded, amountWithdrawn: $0.amountWithdrawn) },
+            chain: dir
+        ))
     }
 
     // MARK: - Transaction History

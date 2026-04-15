@@ -184,6 +184,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         for (dir, network) in networks {
             await persistChainState(directory: dir)
             await persistMempool(directory: dir, network: network)
+            await network.persistDiskState()
         }
         let currentPeers = await connectedPeerEndpoints()
         await anchorPeers.update(peers: currentPeers)
