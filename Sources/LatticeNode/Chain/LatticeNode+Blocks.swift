@@ -88,7 +88,22 @@ extension LatticeNode {
         guard let chain = await chain(for: directory) else { return false }
         let tipBefore = await chain.getMainChainTip()
 
-        let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
+        // When processing nexus blocks, child block validation needs access to
+        // state data in child CAS stores (e.g., radix trie nodes for the
+        // frontier state). Build a composite fetcher that falls back to child
+        // CAS stores when the nexus CAS doesn't have the requested data.
+        let validationFetcher: Fetcher
+        if directory == genesisConfig.spec.directory {
+            let childFetchers = await lattice.nexus.childDirectories().compactMap { networks[$0]?.ivyFetcher }
+            if childFetchers.isEmpty {
+                validationFetcher = fetcher
+            } else {
+                validationFetcher = CompositeFetcher(primary: fetcher, fallbacks: childFetchers)
+            }
+        } else {
+            validationFetcher = fetcher
+        }
+        let accepted = await lattice.processBlockHeader(header, fetcher: validationFetcher)
         guard accepted else { return false }
 
         let block: Block?
@@ -104,6 +119,12 @@ extension LatticeNode {
                 block: block, blockHash: header.rawCID,
                 txEntries: txEntries, directory: directory
             )
+            // Apply child block state changes (StateStore, mempool, receipts).
+            // The Lattice library processes child blocks into ChainState, but
+            // LatticeNode-level state (deposits, balances, etc.) must be applied here.
+            if directory == genesisConfig.spec.directory {
+                await applyChildBlockStates(nexusBlock: block, fetcher: fetcher)
+            }
         }
 
         let tipAfter = await chain.getMainChainTip()
@@ -544,6 +565,77 @@ extension LatticeNode {
         return [:]
     }
 
+    /// Apply a genesis block's state changes (balances, receipts, etc.) to the chain's StateStore.
+    /// Must be called after `registerChainNetwork` and after the genesis block is stored in the CAS.
+    public func applyGenesisBlock(directory: String, block: Block) async {
+        guard let network = networks[directory] else { return }
+        let fetcher = await buildMempoolAwareFetcher(directory: directory, baseFetcher: network.ivyFetcher)
+        let blockHash = VolumeImpl<Block>(node: block).rawCID
+        let txEntries = await resolveBlockTransactions(block: block, fetcher: fetcher)
+        await applyAcceptedBlock(
+            block: block, blockHash: blockHash,
+            txEntries: txEntries, directory: directory
+        )
+    }
+
+    /// Apply child block state changes for each child block embedded in a nexus block.
+    /// Stores the child block in the child CAS, applies state changes (StateStore,
+    /// mempool nonces, receipts), and prunes confirmed transactions from the child mempool.
+    private func applyChildBlockStates(nexusBlock: Block, fetcher: Fetcher) async {
+        guard let childBlocksNode = try? await nexusBlock.childBlocks.resolve(
+            paths: [[""]: .list], fetcher: fetcher
+        ).node,
+              let childDirs = try? childBlocksNode.allKeys() else { return }
+        for childDir in childDirs {
+            guard let childBlockHeader: VolumeImpl<Block> = try? childBlocksNode.get(key: childDir) else { continue }
+            let childBlock: Block
+            if let n = childBlockHeader.node {
+                childBlock = n
+            } else {
+                guard let resolved = try? await childBlockHeader.resolve(fetcher: fetcher).node else { continue }
+                childBlock = resolved
+            }
+            // Store the child block and its frontier state in the child CAS.
+            // The block data is needed so the miner can fetch the previous block.
+            // The frontier state tree (deposits, accounts, etc.) is needed for
+            // RPC queries that resolve state from the child chain's CAS.
+            // The miner stores everything in the nexus CAS, but the child CAS
+            // only has what we explicitly copy here.
+            if let childNet = networks[childDir] {
+                await storeBlockRecursively(childBlock, network: childNet)
+                // The frontier/homestead state trees are content-addressed tries
+                // that only exist in the nexus CAS after mining. Resolve them from
+                // the nexus fetcher and store in the child CAS so queries work.
+                let storer = BufferedStorer()
+                if let frontier = try? await childBlock.frontier.resolveRecursive(fetcher: fetcher) {
+                    try? frontier.storeRecursively(storer: storer)
+                }
+                if let homestead = try? await childBlock.homestead.resolveRecursive(fetcher: fetcher) {
+                    try? homestead.storeRecursively(storer: storer)
+                }
+                await storer.flush(to: childNet)
+            }
+            // Use the child network's fetcher for resolving child transactions
+            // since child tx data lives in the child CAS
+            let childFetcher: Fetcher
+            if let childNet = networks[childDir] {
+                childFetcher = await buildMempoolAwareFetcher(directory: childDir, baseFetcher: childNet.ivyFetcher)
+            } else {
+                childFetcher = fetcher
+            }
+            let txEntries = await resolveBlockTransactions(block: childBlock, fetcher: childFetcher)
+            await applyAcceptedBlock(
+                block: childBlock, blockHash: childBlockHeader.rawCID,
+                txEntries: txEntries, directory: childDir
+            )
+            // Prune confirmed child transactions from the child mempool
+            if let childNet = networks[childDir] {
+                let confirmedCIDs = Set(txEntries.keys)
+                await childNet.nodeMempool.removeAll(txCIDs: confirmedCIDs)
+            }
+        }
+    }
+
     /// Apply an accepted block's state changes, receipts, fees, events, and metrics.
     private func applyAcceptedBlock(
         block: Block,
@@ -618,10 +710,8 @@ extension LatticeNode {
 
         for (_, txHeader) in txEntries {
             guard let body = txHeader.node?.body.node else { continue }
-            if body.fee > 0 {
-                let sender = body.signers.first ?? ""
-                senderTxCounts[sender, default: 0] += 1
-            }
+            let sender = body.signers.first ?? ""
+            senderTxCounts[sender, default: 0] += 1
             for action in body.accountActions {
                 if netDeltas[action.owner] == nil {
                     addressOrder.append(action.owner)

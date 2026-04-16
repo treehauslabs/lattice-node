@@ -101,7 +101,10 @@ extension LatticeNode {
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
         guard let state = resolved.node else { return nil }
         let key = ReceiptKey(receiptAction: ReceiptAction(withdrawer: "", nonce: nonce, demander: demander, amountDemanded: amountDemanded, directory: directory)).description
-        let receiptResolved = try await state.receiptState.resolve(paths: [[key]: .targeted], fetcher: network.fetcher)
+        // Use .list to resolve the trie structure without resolving leaf values.
+        // The receipt state stores withdrawer addresses as CID references in
+        // HeaderImpl<PublicKey>; .targeted would try to fetch the CID as data.
+        let receiptResolved = try await state.receiptState.resolve(paths: [[""]: .list], fetcher: network.fetcher)
         guard let receiptDict = receiptResolved.node else { return nil }
         guard let stored: HeaderImpl<PublicKey> = try? receiptDict.get(key: key) else { return nil }
         return stored.rawCID

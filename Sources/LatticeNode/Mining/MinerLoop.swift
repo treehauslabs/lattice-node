@@ -83,7 +83,9 @@ public actor MinerLoop {
                     previousBlock: previousBlock,
                     mempoolTransactions: transactions
                 ) {
-                    transactions.insert(coinbase, at: 0)
+                    // Coinbase goes AFTER user txs so its nonce doesn't
+                    // collide with miner-signed mempool transactions.
+                    transactions.append(coinbase)
                 }
                 let childResult = await childResultAsync
                 let blockDifficulty = previousBlock.nextDifficulty
@@ -101,6 +103,18 @@ public actor MinerLoop {
                 } else {
                     computedNextDifficulty = blockDifficulty
                 }
+                // Use a composite fetcher so nexus block building can resolve
+                // CIDs that live in child CAS stores (e.g. during receipt
+                // deletion when processing child withdrawals).
+                let blockFetcher: Fetcher
+                if !currentChildContexts.isEmpty {
+                    blockFetcher = CompositeFetcher(
+                        primary: fetcher,
+                        fallbacks: currentChildContexts.map { $0.fetcher }
+                    )
+                } else {
+                    blockFetcher = fetcher
+                }
                 let template = try await BlockBuilder.buildBlock(
                     previous: previousBlock,
                     transactions: transactions,
@@ -109,7 +123,7 @@ public actor MinerLoop {
                     difficulty: blockDifficulty,
                     nextDifficulty: computedNextDifficulty,
                     nonce: 0,
-                    fetcher: fetcher
+                    fetcher: blockFetcher
                 )
 
                 let prefixBytes = difficultyHashPrefixBytes(template)
@@ -241,6 +255,25 @@ public actor MinerLoop {
 
     // MARK: - Coinbase Transaction
 
+    /// Resolve the miner's latest transaction nonce from the previous block's state.
+    /// Returns nil when the state can't be read or no nonce exists yet.
+    private func resolveLatestMinerNonce(previousBlock: Block) async -> UInt64? {
+        guard let identity = identity else { return nil }
+        // Step 1: resolve frontier to get LatticeState
+        guard let frontierNode = try? await previousBlock.frontier.resolve(fetcher: fetcher).node else { return nil }
+        // Step 2: resolve nonce key in the transaction state
+        let nonceKey = "_nonce_" + identity.address
+        let txState = frontierNode.transactionState
+        guard let resolvedTx = try? await txState.resolve(
+            paths: [[nonceKey]: .targeted],
+            fetcher: fetcher
+        ) else { return nil }
+        guard let txNode = resolvedTx.node,
+              let nonceStr: String = try? txNode.get(key: nonceKey),
+              let nonce = UInt64(nonceStr) else { return nil }
+        return nonce
+    }
+
     private func buildCoinbaseTransaction(
         previousBlock: Block,
         mempoolTransactions: [Transaction]
@@ -259,6 +292,20 @@ public actor MinerLoop {
         if payoutOverflow { return nil }
         guard payout > 0 && payout <= UInt64(Int64.max) else { return nil }
 
+        // Coinbase nonce must follow the miner's latest nonce in the state
+        // PLUS any miner-signed mempool txs that precede the coinbase in the block.
+        let latestNonce = await resolveLatestMinerNonce(previousBlock: previousBlock)
+        let minerTxsInBlock = mempoolTransactions.filter { tx in
+            tx.body.node?.signers.contains(identity.address) == true
+        }.count
+        let coinbaseNonce: UInt64
+        if let latest = latestNonce {
+            coinbaseNonce = latest + 1 + UInt64(minerTxsInBlock)
+        } else {
+            // Genesis or first block — no prior nonce
+            coinbaseNonce = (previousBlock.index == 0 ? 0 : previousBlock.index) + UInt64(minerTxsInBlock)
+        }
+
         let accountAction = AccountAction(
             owner: identity.address,
             delta: Int64(payout)
@@ -274,7 +321,7 @@ public actor MinerLoop {
             withdrawalActions: [],
             signers: [identity.address],
             fee: 0,
-            nonce: previousBlock.index,
+            nonce: coinbaseNonce,
             chainPath: [spec.directory]
         )
         let bodyHeader = HeaderImpl<TransactionBody>(node: body)
@@ -309,7 +356,15 @@ public actor MinerLoop {
                     do {
                         let childTipHash = await ctx.chainState.getMainChainTip()
                         let childTipData = try await ctx.fetcher.fetch(rawCid: childTipHash)
-                        guard let childTip = Block(data: childTipData) else { return nil }
+                        guard let childTipRaw = Block(data: childTipData) else { return nil }
+                        // Resolve properties inherited by the new child block so they
+                        // get stored in the nexus CAS via storeRecursively. Without
+                        // this, CID-only references from the child CAS are skipped and
+                        // nexus-side child block validation can't resolve them.
+                        let childTip = childTipRaw.set(properties: [
+                            "spec": try await childTipRaw.spec.resolve(fetcher: ctx.fetcher),
+                            "frontier": try await childTipRaw.frontier.resolve(fetcher: ctx.fetcher),
+                        ])
 
                         let childTxs = await ctx.mempool.selectTransactions(
                             maxCount: max(0, Int(ctx.spec.maxNumberOfTransactionsPerBlock) - 1)
@@ -325,10 +380,17 @@ public actor MinerLoop {
                             ancestorTimestamps: childWindowTs
                         )
 
+                        // The child block's parentHomestead must match the
+                        // CURRENT nexus block's homestead (= previous nexus
+                        // block's frontier). BlockBuilder uses
+                        // parentChainBlock.homestead, so adjust accordingly.
+                        let parentForChild = nexusBlock.set(properties: [
+                            "homestead": nexusBlock.frontier
+                        ])
                         let childBlock = try await BlockBuilder.buildBlock(
                             previous: childTip,
                             transactions: childTxs,
-                            parentChainBlock: nexusBlock,
+                            parentChainBlock: parentForChild,
                             timestamp: timestamp,
                             difficulty: childDifficulty,
                             nextDifficulty: childNextDifficulty,
@@ -338,6 +400,7 @@ public actor MinerLoop {
                         let cids = Set(childTxs.map { $0.body.rawCID })
                         return (ctx.directory, childBlock, ctx.mempool, cids)
                     } catch {
+                        NodeLogger("child-block-builder").error("Failed to build child block for \(ctx.directory): \(error)")
                         return nil
                     }
                 }
