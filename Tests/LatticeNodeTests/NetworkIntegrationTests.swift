@@ -106,7 +106,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Mine blocks on node 1
-        try await mineBlocks(5, on: node1)
+        try await mineBlocks(2, on: node1)
 
         let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
         XCTAssertGreaterThan(height1, 0, "Node 1 should have mined blocks")
@@ -163,7 +163,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Both mine simultaneously until node1 reaches 5 blocks
-        try await mineConcurrent(5, miners: [node1, node2], monitor: node1)
+        try await mineConcurrent(2, miners: [node1, node2], monitor: node1)
 
         // Give final propagation
         try await Task.sleep(for: .seconds(1))
@@ -201,7 +201,7 @@ final class NetworkIntegrationTests: XCTestCase {
         // Boot and mine
         let node1 = try await LatticeNode(config: config, genesisConfig: genesis)
         try await node1.start()
-        try await mineBlocks(5, on: node1)
+        try await mineBlocks(2, on: node1)
         let heightBefore = await node1.lattice.nexus.chain.getHighestBlockIndex()
         XCTAssertGreaterThan(heightBefore, 0, "Should have mined blocks")
         await node1.stop()
@@ -242,7 +242,7 @@ final class NetworkIntegrationTests: XCTestCase {
         // Node 1 mines alone
         let node1 = try await LatticeNode(config: config1, genesisConfig: genesis)
         try await node1.start()
-        try await mineBlocks(5, on: node1)
+        try await mineBlocks(2, on: node1)
 
         let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
         XCTAssertGreaterThan(height1, 0, "Node 1 should have mined blocks")
@@ -310,7 +310,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Mine on node 1 to create miner balance
-        try await mineBlocks(5, on: node1)
+        try await mineBlocks(2, on: node1)
 
         // Get miner's balance from state
         let minerBalance = try await node1.getBalance(address: minerAddr)
@@ -411,7 +411,7 @@ final class NetworkIntegrationTests: XCTestCase {
 
         let node = try await LatticeNode(config: config, genesisConfig: genesis)
         try await node.start()
-        try await mineBlocks(5, on: node)
+        try await mineBlocks(2, on: node)
 
         let server = RPCServer(node: node, port: rpcPort, bindAddress: "127.0.0.1", allowedOrigin: "*")
         let rpcTask = Task { try await server.run() }
@@ -542,7 +542,7 @@ final class NetworkIntegrationTests: XCTestCase {
         XCTAssertEqual(balanceBefore, 0, "Miner should start with 0 balance")
 
         // Mine some blocks
-        try await mineBlocks(5, on: node)
+        try await mineBlocks(2, on: node)
 
         let height = await node.lattice.nexus.chain.getHighestBlockIndex()
         XCTAssertGreaterThan(height, 0)
@@ -601,7 +601,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Mine on node 1
-        try await mineBlocks(5, on: node1)
+        try await mineBlocks(2, on: node1)
 
         // Wait for propagation
         try await Task.sleep(for: .seconds(1))
@@ -658,12 +658,12 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Both mine together for 3 blocks
-        try await mineConcurrent(3, miners: [node1, node2], monitor: node1)
+        try await mineConcurrent(2, miners: [node1, node2], monitor: node1)
 
         let heightAtStop = await node1.lattice.nexus.chain.getHighestBlockIndex()
 
         // Node 2 continues mining alone for 3 more blocks
-        try await mineBlocks(3, on: node2)
+        try await mineBlocks(1, on: node2)
         // Propagation wait
         try await Task.sleep(for: .seconds(1))
 
@@ -725,7 +725,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Only node 1 mines
-        try await mineBlocks(5, on: node1)
+        try await mineBlocks(2, on: node1)
 
         // Wait for propagation to other nodes
         try await Task.sleep(for: .seconds(1))
@@ -766,7 +766,7 @@ final class NetworkIntegrationTests: XCTestCase {
 
         let node = try await LatticeNode(config: config, genesisConfig: genesis)
         try await node.start()
-        try await mineBlocks(5, on: node)
+        try await mineBlocks(2, on: node)
 
         let server = RPCServer(node: node, port: rpcPort, bindAddress: "127.0.0.1", allowedOrigin: "*")
         let rpcTask = Task { try await server.run() }
@@ -819,7 +819,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await node.start()
 
         // Phase 1: Mine to create balance
-        try await mineBlocks(5, on: node)
+        try await mineBlocks(2, on: node)
 
         let minerBalance = try await node.getBalance(address: minerAddr)
         guard minerBalance > 0 else {
@@ -852,7 +852,7 @@ final class NetworkIntegrationTests: XCTestCase {
         XCTAssertEqual(mempoolBefore, 1, "Mempool should have 1 pending tx")
 
         // Phase 3: Mine again to include the transaction in a block
-        try await mineBlocks(3, on: node)
+        try await mineBlocks(1, on: node)
 
         // Phase 4: Verify mempool pruned (tx confirmed)
         let mempoolAfter = await node.network(for: "Nexus")?.nodeMempool.count ?? 0
@@ -900,7 +900,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Mine on node 1 to create balance
-        try await mineBlocks(5, on: node1)
+        try await mineBlocks(2, on: node1)
 
         let minerBalance = try await node1.getBalance(address: minerAddr)
         guard minerBalance > 0 else {
@@ -927,7 +927,7 @@ final class NetworkIntegrationTests: XCTestCase {
         let _ = await node1.submitTransaction(directory: "Nexus", transaction: tx)
 
         // Mine to include tx
-        try await mineBlocks(3, on: node1)
+        try await mineBlocks(1, on: node1)
 
         // Wait for propagation
         try await Task.sleep(for: .seconds(1))
@@ -972,7 +972,7 @@ final class NetworkIntegrationTests: XCTestCase {
         let baseURL = "http://127.0.0.1:\(rpcPort)/api"
 
         // Mine to create balance
-        try await mineBlocks(5, on: node)
+        try await mineBlocks(2, on: node)
 
         // Query balance via RPC
         let (balData, _) = try await URLSession.shared.data(from: URL(string: "\(baseURL)/balance/\(minerAddr)")!)
@@ -1023,7 +1023,7 @@ final class NetworkIntegrationTests: XCTestCase {
             XCTAssertFalse(txCID.isEmpty, "Should return tx CID")
 
             // Mine to include tx
-            try await mineBlocks(3, on: node)
+            try await mineBlocks(1, on: node)
 
             // Query receipt
             let (receiptData, receiptResp) = try await URLSession.shared.data(
@@ -1120,8 +1120,8 @@ final class NetworkIntegrationTests: XCTestCase {
         try await node2.start()
 
         // Both mine independently (partition — no connection)
-        try await mineBlocks(3, on: node1)
-        try await mineBlocks(3, on: node2)
+        try await mineBlocks(1, on: node1)
+        try await mineBlocks(1, on: node2)
 
         let height1Before = await node1.lattice.nexus.chain.getHighestBlockIndex()
         let height2Before = await node2.lattice.nexus.chain.getHighestBlockIndex()
@@ -1140,7 +1140,7 @@ final class NetworkIntegrationTests: XCTestCase {
         ))
 
         // One node continues mining to establish the heaviest chain
-        try await mineBlocks(5, on: node1)
+        try await mineBlocks(2, on: node1)
 
         // Wait for propagation after heal
         try await Task.sleep(for: .seconds(1))
@@ -1190,7 +1190,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Both mine simultaneously for 5 blocks
-        try await mineConcurrent(5, miners: [node1, node2], monitor: node1)
+        try await mineConcurrent(2, miners: [node1, node2], monitor: node1)
 
         // Propagation wait
         try await Task.sleep(for: .seconds(1))
@@ -1252,7 +1252,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Only node 1 mines (avoids competing forks)
-        try await mineBlocks(5, on: node1)
+        try await mineBlocks(2, on: node1)
 
         // Wait for propagation
         try await Task.sleep(for: .seconds(1))

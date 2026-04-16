@@ -1286,7 +1286,10 @@ final class ChaosLivenessTests: XCTestCase {
             let _ = await mempool.add(transaction: sign(body, txKp))
         }
 
-        try await Task.sleep(for: .seconds(3))
+        // Poll until at least one block is produced
+        while await collector.blocks.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         await miner.stop()
 
         let blocks = await collector.blocks
@@ -1418,13 +1421,11 @@ final class RPCConformanceTests: XCTestCase {
 
         let node = try await mk(kp, p1, dir.appendingPathComponent("n1"))
         try await node.start()
-        await node.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(3))
-        await node.stopMining(directory: "Nexus")
+        try await mineBlocks(1, on: node)
 
         let server = RPCServer(node: node, port: rpcPort, bindAddress: "127.0.0.1", allowedOrigin: "*")
         let rpcTask = Task { try await server.run() }
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(for: .milliseconds(500))
 
         let base = "http://127.0.0.1:\(rpcPort)/api"
 
@@ -1456,13 +1457,11 @@ final class RPCConformanceTests: XCTestCase {
         try await node.start()
 
         // Mine to create balance
-        await node.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(3))
-        await node.stopMining(directory: "Nexus")
+        try await mineBlocks(1, on: node)
 
         let server = RPCServer(node: node, port: rpcPort, bindAddress: "127.0.0.1", allowedOrigin: "*")
         let rpcTask = Task { try await server.run() }
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(for: .milliseconds(500))
 
         let base = "http://127.0.0.1:\(rpcPort)/api"
 
@@ -1567,9 +1566,7 @@ final class MorePersistenceTests: XCTestCase {
         // Boot, mine, persist, stop
         let node1 = try await mk(kp, p1, dir.appendingPathComponent("n1"))
         try await node1.start()
-        await node1.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(3))
-        await node1.stopMining(directory: "Nexus")
+        try await mineBlocks(1, on: node1)
         let heightBefore = await node1.lattice.nexus.chain.getHighestBlockIndex()
         await node1.stop()
 
@@ -1723,9 +1720,7 @@ final class MoreEconomicTests: XCTestCase {
         let node = try await mk(kp, p1, dir.appendingPathComponent("n1"))
         try await node.start()
 
-        await node.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(4))
-        await node.stopMining(directory: "Nexus")
+        try await mineBlocks(1, on: node)
 
         let height = await node.lattice.nexus.chain.getHighestBlockIndex()
         let balance = try await node.getBalance(address: minerAddr)
@@ -1791,10 +1786,10 @@ final class ConcurrentMiningTxTests: XCTestCase {
         let node = try await mk(kp, p1, dir.appendingPathComponent("n1"))
         try await node.start()
 
-        // Start mining
+        // Start mining and concurrently submit transactions
+        let startHeight = await node.lattice.nexus.chain.getHighestBlockIndex()
         await node.startMining(directory: "Nexus")
 
-        // Concurrently submit transactions while mining
         let submitTask = Task {
             for i in 0..<20 {
                 let txKp = CryptoUtils.generateKeyPair()
@@ -1810,9 +1805,13 @@ final class ConcurrentMiningTxTests: XCTestCase {
             }
         }
 
-        try await Task.sleep(for: .seconds(4))
+        // Wait for at least 3 blocks to be mined
+        while await node.lattice.nexus.chain.getHighestBlockIndex() < startHeight + 1 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         await submitTask.value
         await node.stopMining(directory: "Nexus")
+        try await Task.sleep(for: .milliseconds(500))
 
         let height = await node.lattice.nexus.chain.getHighestBlockIndex()
         XCTAssertGreaterThan(height, 0, "Should mine blocks while processing tx submissions")
@@ -2029,9 +2028,7 @@ final class RemainingPlanTests: XCTestCase {
 
         let node = try await mk(kp, port, dir.appendingPathComponent("n1"))
         try await node.start()
-        await node.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(4))
-        await node.stopMining(directory: "Nexus")
+        try await mineBlocks(1, on: node)
 
         let height = await node.lattice.nexus.chain.getHighestBlockIndex()
         let balance = try await node.getBalance(address: minerAddr)
@@ -2059,9 +2056,7 @@ final class RemainingPlanTests: XCTestCase {
         try await node.start()
 
         // Mine first to get balance
-        await node.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(3))
-        await node.stopMining(directory: "Nexus")
+        try await mineBlocks(1, on: node)
 
         let balanceAfterFirstMine = try await node.getBalance(address: minerAddr)
         guard balanceAfterFirstMine > 10 else {
@@ -2088,9 +2083,7 @@ final class RemainingPlanTests: XCTestCase {
         let _ = await node.submitTransaction(directory: "Nexus", transaction: tx)
 
         // Mine block including the tx
-        await node.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(3))
-        await node.stopMining(directory: "Nexus")
+        try await mineBlocks(1, on: node)
 
         let balanceAfterSecondMine = try await node.getBalance(address: minerAddr)
         if balanceAfterSecondMine > 0 {

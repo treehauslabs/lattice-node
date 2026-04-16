@@ -1606,7 +1606,9 @@ final class FullMiningIntegrationTests: XCTestCase {
         await miner.setDelegate(collector)
         await miner.start()
 
-        try await Task.sleep(for: .seconds(3))
+        while await collector.blocks.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         await miner.stop()
 
         let minedBlocks = await collector.blocks
@@ -1671,7 +1673,9 @@ final class FullMiningIntegrationTests: XCTestCase {
         await miner.setDelegate(collector)
         await miner.start()
 
-        try await Task.sleep(for: .seconds(3))
+        while await collector.blocks.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         await miner.stop()
 
         let minedBlocks = await collector.blocks
@@ -1750,7 +1754,9 @@ final class FullMiningIntegrationTests: XCTestCase {
         let collector = BlockCollector()
         await miner.setDelegate(collector)
         await miner.start()
-        try await Task.sleep(for: .seconds(3))
+        while await collector.blocks.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         await miner.stop()
 
         let minedBlocks = await collector.blocks
