@@ -79,6 +79,24 @@ func mineBlocks(
     try await Task.sleep(for: .milliseconds(500))
 }
 
+/// Mine with multiple nodes simultaneously until the monitored node reaches
+/// `count` new blocks. Use for multi-miner convergence/competition tests.
+func mineConcurrent(
+    _ count: Int,
+    miners: [LatticeNode],
+    monitor: LatticeNode? = nil
+) async throws {
+    let target = monitor ?? miners[0]
+    let startHeight = await target.lattice.nexus.chain.getHighestBlockIndex()
+    let targetHeight = startHeight + UInt64(count)
+    for miner in miners { await miner.startMining(directory: "Nexus") }
+    while await target.lattice.nexus.chain.getHighestBlockIndex() < targetHeight {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    for miner in miners { await miner.stopMining(directory: "Nexus") }
+    try await Task.sleep(for: .milliseconds(500))
+}
+
 // MARK: - Port Allocation
 
 private let _testPortCounter = Mutex<UInt16>(UInt16(ProcessInfo.processInfo.processIdentifier % 5000) + 40000)

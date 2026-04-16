@@ -160,19 +160,13 @@ final class NetworkIntegrationTests: XCTestCase {
         try await node1.start()
         try await node2.start()
 
-        try await Task.sleep(for: .seconds(3))
+        try await Task.sleep(for: .seconds(2))
 
-        // Both mine simultaneously
-        await node1.startMining(directory: "Nexus")
-        await node2.startMining(directory: "Nexus")
-
-        try await Task.sleep(for: .seconds(8))
-
-        await node1.stopMining(directory: "Nexus")
-        await node2.stopMining(directory: "Nexus")
+        // Both mine simultaneously until node1 reaches 5 blocks
+        try await mineConcurrent(5, miners: [node1, node2], monitor: node1)
 
         // Give final propagation
-        try await Task.sleep(for: .seconds(2))
+        try await Task.sleep(for: .seconds(1))
 
         let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
         let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
@@ -382,9 +376,11 @@ final class NetworkIntegrationTests: XCTestCase {
         XCTAssertFalse(statusBefore[0].mining)
         XCTAssertEqual(statusBefore[0].height, 0)
 
-        // Start mining
+        // Mine 1 block and check status
         await node.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(2))
+        while await node.lattice.nexus.chain.getHighestBlockIndex() < 1 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
 
         let statusDuring = await node.chainStatus()
         XCTAssertTrue(statusDuring[0].mining)
@@ -661,19 +657,15 @@ final class NetworkIntegrationTests: XCTestCase {
         try await node2.start()
         try await Task.sleep(for: .seconds(2))
 
-        // Both mine together
-        await node1.startMining(directory: "Nexus")
-        await node2.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(3))
+        // Both mine together for 3 blocks
+        try await mineConcurrent(3, miners: [node1, node2], monitor: node1)
 
-        // Node 1 stops mining
-        await node1.stopMining(directory: "Nexus")
         let heightAtStop = await node1.lattice.nexus.chain.getHighestBlockIndex()
 
-        // Node 2 continues mining alone
-        try await Task.sleep(for: .seconds(4))
-        await node2.stopMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(3))
+        // Node 2 continues mining alone for 3 more blocks
+        try await mineBlocks(3, on: node2)
+        // Propagation wait
+        try await Task.sleep(for: .seconds(1))
 
         let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
         XCTAssertGreaterThanOrEqual(height2, heightAtStop, "Node 2 should have advanced at least as far as where Node 1 stopped")
@@ -1128,11 +1120,8 @@ final class NetworkIntegrationTests: XCTestCase {
         try await node2.start()
 
         // Both mine independently (partition — no connection)
-        await node1.startMining(directory: "Nexus")
-        await node2.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(4))
-        await node1.stopMining(directory: "Nexus")
-        await node2.stopMining(directory: "Nexus")
+        try await mineBlocks(3, on: node1)
+        try await mineBlocks(3, on: node2)
 
         let height1Before = await node1.lattice.nexus.chain.getHighestBlockIndex()
         let height2Before = await node2.lattice.nexus.chain.getHighestBlockIndex()
@@ -1200,15 +1189,11 @@ final class NetworkIntegrationTests: XCTestCase {
         try await node2.start()
         try await Task.sleep(for: .seconds(2))
 
-        // Both mine simultaneously — will create competing blocks at same heights
-        await node1.startMining(directory: "Nexus")
-        await node2.startMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(10))
+        // Both mine simultaneously for 5 blocks
+        try await mineConcurrent(5, miners: [node1, node2], monitor: node1)
 
-        // Stop both
-        await node1.stopMining(directory: "Nexus")
-        await node2.stopMining(directory: "Nexus")
-        try await Task.sleep(for: .seconds(3))
+        // Propagation wait
+        try await Task.sleep(for: .seconds(1))
 
         let h1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
         let h2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
