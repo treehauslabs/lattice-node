@@ -45,6 +45,7 @@ public actor MinerLoop {
     public func start() {
         guard !mining else { return }
         mining = true
+        NodeLogger("miner").info("Starting miner on \(spec.directory) (batchSize=\(batchSize))")
         currentTask = Task { [weak self] in
             await self?.mineLoop()
         }
@@ -57,6 +58,8 @@ public actor MinerLoop {
     }
 
     private func mineLoop() async {
+        let log = NodeLogger("miner")
+        log.info("\(spec.directory): mineLoop entered, starting mining iterations")
         while mining && !Task.isCancelled {
             do {
                 let previousBlock = try await resolveCurrentTip()
@@ -67,6 +70,7 @@ public actor MinerLoop {
 
                 let previousBlockHash = VolumeImpl<Block>(node: previousBlock).rawCID
                 let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
+                log.info("\(spec.directory): mining on tip \(String(previousBlockHash.prefix(16)))… at index \(previousBlock.index), building block \(previousBlock.index + 1)")
 
                 let maxTxCount = Int(spec.maxNumberOfTransactionsPerBlock) - 1 // reserve slot for coinbase
                 async let txAsync = mempool.selectTransactions(maxCount: max(0, maxTxCount))
@@ -142,6 +146,7 @@ public actor MinerLoop {
                 let targetDifficulty = previousBlock.nextDifficulty
                 let batchSize = self.batchSize
                 let workerCount = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
+                log.info("\(spec.directory): nonce search started for block \(previousBlock.index + 1) (difficulty=\(String(targetDifficulty.toHexString().prefix(16)))… workers=\(workerCount) batch=\(batchSize))")
 
                 while mining && !Task.isCancelled {
                     // Lock-free tip check avoids actor hop into ChainState per batch
@@ -173,6 +178,7 @@ public actor MinerLoop {
                         )
 
                         let hash = VolumeImpl<Block>(node: mined).rawCID
+                        log.info("\(spec.directory): found valid nonce \(foundNonce) for block \(mined.index), submitting \(String(hash.prefix(16)))…")
                         await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals)
                         break
                     }
