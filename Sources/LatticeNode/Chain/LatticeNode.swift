@@ -89,6 +89,11 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
                 from: persisted,
                 retentionDepth: config.retentionDepth
             )
+            let initLog = NodeLogger("init")
+            let restoredHeight = await restoredChain.getHighestBlockIndex()
+            let restoredTipHash = await restoredChain.getMainChainTip()
+            let tipBlockPresent = await restoredChain.getMainChainBlockHash(atIndex: restoredHeight) != nil
+            initLog.info("Restored chain: height=\(restoredHeight) tip=\(String(restoredTipHash.prefix(16)))… tipIndexPresent=\(tipBlockPresent)")
             let genesisBlock = try await buildGenesisBlock(nexusNetwork.fetcher)
             let blockHash = VolumeImpl<Block>(node: genesisBlock).rawCID
             genesis = GenesisResult(block: genesisBlock, blockHash: blockHash, chainState: restoredChain)

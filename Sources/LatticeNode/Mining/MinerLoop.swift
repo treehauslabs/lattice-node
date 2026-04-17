@@ -79,13 +79,17 @@ public actor MinerLoop {
                     contexts: currentChildContexts,
                     nexusBlock: previousBlock, timestamp: blockTimestamp
                 )
-                if let coinbase = try? await buildCoinbaseTransaction(
-                    previousBlock: previousBlock,
-                    mempoolTransactions: transactions
-                ) {
-                    // Coinbase goes AFTER user txs so its nonce doesn't
-                    // collide with miner-signed mempool transactions.
-                    transactions.append(coinbase)
+                do {
+                    if let coinbase = try await buildCoinbaseTransaction(
+                        previousBlock: previousBlock,
+                        mempoolTransactions: transactions
+                    ) {
+                        // Coinbase goes AFTER user txs so its nonce doesn't
+                        // collide with miner-signed mempool transactions.
+                        transactions.append(coinbase)
+                    }
+                } catch {
+                    NodeLogger("miner").warn("Coinbase build failed: \(error)")
                 }
                 let childResult = await childResultAsync
                 let blockDifficulty = previousBlock.nextDifficulty
@@ -168,9 +172,8 @@ public actor MinerLoop {
                             }
                         )
 
-                        let delegate = self.delegate
                         let hash = VolumeImpl<Block>(node: mined).rawCID
-                        Task.detached { await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals) }
+                        await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals)
                         break
                     }
 
@@ -178,7 +181,9 @@ public actor MinerLoop {
                     await Task.yield()
                 }
             } catch {
-                NodeLogger("miner").error("\(error)")
+                let log = NodeLogger("miner")
+                let tip = await chainState.getMainChainTip()
+                log.error("mineLoop failed: \(error) (tip=\(String(tip.prefix(16)))…)")
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
@@ -435,7 +440,11 @@ public actor MinerLoop {
     private func resolveCurrentTip() async throws -> Block? {
         let tipHash = await chainState.getMainChainTip()
         let tipData = try await fetcher.fetch(rawCid: tipHash)
-        return Block(data: tipData)
+        guard let block = Block(data: tipData) else {
+            NodeLogger("miner").warn("Tip block decode failed for \(String(tipHash.prefix(16)))… (\(tipData.count) bytes)")
+            return nil
+        }
+        return block
     }
 
     private func withNonce(_ block: Block, startNonce: UInt64) -> Block {

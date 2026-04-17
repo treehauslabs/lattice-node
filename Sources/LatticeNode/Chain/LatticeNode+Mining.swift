@@ -60,6 +60,9 @@ extension LatticeNode {
         let header = VolumeImpl<Block>(node: block)
         guard let blockData = block.toData() else { return }
 
+        let log = NodeLogger("miner")
+        log.info("\(directory): mined block \(String(header.rawCID.prefix(16)))… at index \(block.index) (txs=\(block.transactions.node?.count ?? 0))")
+
         await storeBlockRecursively(block, network: network)
         await network.publishBlock(cid: header.rawCID, data: blockData)
         await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
@@ -75,6 +78,9 @@ extension LatticeNode {
             fetcher: network.ivyFetcher,
             resolvedBlock: block
         )
+        if !accepted {
+            log.warn("\(directory): mined block at index \(block.index) was NOT accepted")
+        }
         if accepted, let removals = pendingRemovals {
             await network.pruneConfirmedTransactions(txCIDs: removals.nexusTxCIDs)
             for childRemoval in removals.childTxRemovals {

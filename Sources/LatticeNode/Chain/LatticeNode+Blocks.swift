@@ -104,7 +104,11 @@ extension LatticeNode {
             validationFetcher = fetcher
         }
         let accepted = await lattice.processBlockHeader(header, fetcher: validationFetcher)
-        guard accepted else { return false }
+        guard accepted else {
+            let log = NodeLogger("blocks")
+            log.warn("\(directory): block \(String(header.rawCID.prefix(16)))… rejected by processBlockHeader")
+            return false
+        }
 
         let block: Block?
         if let r = resolvedBlock {

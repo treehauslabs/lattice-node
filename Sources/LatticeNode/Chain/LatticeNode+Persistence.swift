@@ -135,17 +135,24 @@ extension LatticeNode {
     func backfillBlockIndex(directory: String) async {
         guard let store = stateStores[directory],
               let chainState = await chain(for: directory) else { return }
+        let log = NodeLogger("persistence")
         let height = await chainState.getHighestBlockIndex()
+        let tip = await chainState.getMainChainTip()
         var entries: [(height: UInt64, blockHash: String)] = []
+        var missing: [UInt64] = []
         for i in 0...height {
             if let hash = await chainState.getMainChainBlockHash(atIndex: i) {
                 entries.append((height: i, blockHash: hash))
+            } else {
+                missing.append(i)
             }
+        }
+        if !missing.isEmpty {
+            log.warn("\(directory): chain height=\(height) tip=\(String(tip.prefix(16)))… but \(missing.count) index(es) missing from in-memory state: \(missing.prefix(10))")
         }
         guard !entries.isEmpty else { return }
         await store.backfillBlockIndex(entries)
-        let log = NodeLogger("persistence")
-        log.info("\(directory): backfilled \(entries.count) block index entries")
+        log.info("\(directory): backfilled \(entries.count)/\(height + 1) block index entries")
     }
 
     // MARK: - Account Pin Rebuild
