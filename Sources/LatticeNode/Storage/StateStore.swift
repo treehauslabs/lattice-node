@@ -51,6 +51,13 @@ public actor StateStore {
             )
         """)
         try db.execute("CREATE INDEX IF NOT EXISTS idx_tx_history_addr ON tx_history(address, height DESC)")
+
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS block_index (
+                height INTEGER PRIMARY KEY,
+                blockHash TEXT NOT NULL
+            )
+        """)
     }
 
     // MARK: - Account State (nonisolated reads via readDb)
@@ -281,6 +288,16 @@ public actor StateStore {
         )
     }
 
+    // MARK: - Block Index
+
+    public nonisolated func getBlockHash(atHeight height: UInt64) -> String? {
+        guard let rows = try? readDb.query(
+            "SELECT blockHash FROM block_index WHERE height = ?1",
+            params: [.int(Int64(height))]
+        ), let row = rows.first else { return nil }
+        return row["blockHash"]?.textValue
+    }
+
     // MARK: - Batch Apply (Atomic)
 
     public func applyBlock(_ changes: StateChangeset) {
@@ -348,6 +365,10 @@ public actor StateStore {
             try db.execute(
                 "INSERT OR REPLACE INTO state (path, value, height) VALUES ('meta:state-root', ?1, ?2)",
                 params: [.blob(Data(changes.stateRoot.utf8)), .int(Int64(changes.height))]
+            )
+            try db.execute(
+                "INSERT OR REPLACE INTO block_index (height, blockHash) VALUES (?1, ?2)",
+                params: [.int(Int64(changes.height)), .text(changes.blockHash)]
             )
 
             try db.commit()

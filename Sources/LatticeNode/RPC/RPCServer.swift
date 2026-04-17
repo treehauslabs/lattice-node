@@ -231,7 +231,11 @@ enum RPCRoutes {
                 ? await node.lattice.nexus.chain
                 : await node.lattice.nexus.children[dir]?.chain
             guard let chain else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
-            guard let found = await chain.getMainChainBlockHash(atIndex: i) else { return jsonError("Block not found at index \(i)", status: .notFound) }
+            var found = await chain.getMainChainBlockHash(atIndex: i)
+            if found == nil {
+                found = await node.stateStore(for: dir)?.getBlockHash(atHeight: i)
+            }
+            guard let found else { return jsonError("Block not found at index \(i)", status: .notFound) }
             h = found
         }
         let header = VolumeImpl<Block>(rawCID: h)

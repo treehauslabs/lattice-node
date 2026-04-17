@@ -72,8 +72,11 @@ extension LatticeNode {
 
     public func getBlockHash(atIndex index: UInt64, directory: String? = nil) async -> String? {
         let dir = directory ?? genesisConfig.spec.directory
-        guard let chainState = await chain(for: dir) else { return nil }
-        return await chainState.getMainChainBlockHash(atIndex: index)
+        if let chainState = await chain(for: dir),
+           let hash = await chainState.getMainChainBlockHash(atIndex: index) {
+            return hash
+        }
+        return stateStores[dir]?.getBlockHash(atHeight: index)
     }
 
     public func getDeposit(demander: String, amountDemanded: UInt64, nonce: UInt128, directory: String) async throws -> UInt64? {
