@@ -459,7 +459,7 @@ final class LifecycleTests: XCTestCase {
         let genesis = testGenesis()
         let storagePath = tmpDir.appendingPathComponent("node1")
 
-        // First run
+        // First run: mine 2 blocks
         let config1 = LatticeNodeConfig(
             publicKey: kp.publicKey, privateKey: kp.privateKey,
             listenPort: p1, storagePath: storagePath,
@@ -472,7 +472,7 @@ final class LifecycleTests: XCTestCase {
         XCTAssertGreaterThan(heightAfterFirstRun, 0)
         await node1.stop()
 
-        // Second run — verify restart preserves state
+        // Second run: verify state preserved AND mine more blocks
         let p2 = nextTestPort()
         let config2 = LatticeNodeConfig(
             publicKey: kp.publicKey, privateKey: kp.privateKey,
@@ -485,14 +485,66 @@ final class LifecycleTests: XCTestCase {
         let heightOnBoot = await node2.lattice.nexus.chain.getHighestBlockIndex()
         XCTAssertEqual(heightOnBoot, heightAfterFirstRun)
 
-        // Verify the tip block is resolvable from CAS — this is the core of the notFound bug.
-        // If the tip can't be fetched, the miner would fail with notFound.
-        let tipCID = await node2.lattice.nexus.chain.getMainChainTip()
-        let network2 = await node2.network(for: "Nexus")!
-        let tipData = try await network2.fetcher.fetch(rawCid: tipCID)
-        XCTAssertNotNil(tipData, "Tip block must be fetchable from CAS after restart — miner depends on this")
-        let tipBlock = Block(data: tipData)
-        XCTAssertNotNil(tipBlock, "Tip data should deserialize into a Block")
+        // Mine 1 more block after restart — proves miner can resolve the tip and build on it
+        try await mineBlocks(1, on: node2)
+        let heightAfterSecondRun = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        XCTAssertEqual(heightAfterSecondRun, heightAfterFirstRun + 1, "Should mine on top of restored chain")
+
+        await node2.stop()
+    }
+
+    /// Simulate an ungraceful shutdown (skip stop()) and verify CAS-based recovery.
+    /// The chain state JSON may be stale, but SQLite + CAS have the real tip.
+    func testRecoveryAfterUngracefulShutdown() async throws {
+        let p1 = nextTestPort()
+        let kp = CryptoUtils.generateKeyPair()
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let genesis = testGenesis()
+        let storagePath = tmpDir.appendingPathComponent("node1")
+
+        // First run: persist at block 1, then mine 2 more without persisting chain state
+        let config1 = LatticeNodeConfig(
+            publicKey: kp.publicKey, privateKey: kp.privateKey,
+            listenPort: p1, storagePath: storagePath,
+            enableLocalDiscovery: false, persistInterval: 100  // won't auto-persist after just 3 blocks
+        )
+        let node1 = try await LatticeNode(config: config1, genesisConfig: genesis)
+        try await node1.start()
+
+        // Mine 1 block and force-persist so we have a baseline
+        try await mineBlocks(1, on: node1)
+        await node1.persistChainState(directory: "Nexus")
+        let persistedHeight = await node1.lattice.nexus.chain.getHighestBlockIndex()
+
+        // Mine 2 more blocks — these WON'T be in chain_state.json
+        try await mineBlocks(2, on: node1)
+        let actualHeight = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        XCTAssertEqual(actualHeight, persistedHeight + 2)
+
+        // Simulate ungraceful shutdown: do NOT call stop().
+        // CAS files are already on disk (DiskCASWorker writes immediately).
+        // chain_state.json is stale (persisted at height 1, now at height 3).
+        // SQLite state.db is crash-safe and has the real tip.
+
+        // Second run: node should recover from CAS
+        let p2 = nextTestPort()
+        let config2 = LatticeNodeConfig(
+            publicKey: kp.publicKey, privateKey: kp.privateKey,
+            listenPort: p2, storagePath: storagePath,
+            enableLocalDiscovery: false, persistInterval: 1
+        )
+        let node2 = try await LatticeNode(config: config2, genesisConfig: genesis)
+        try await node2.start()
+
+        let recoveredHeight = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        XCTAssertEqual(recoveredHeight, actualHeight, "Should recover all blocks from CAS after ungraceful shutdown")
+
+        // Verify can mine on top of recovered chain
+        try await mineBlocks(1, on: node2)
+        let finalHeight = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        XCTAssertEqual(finalHeight, actualHeight + 1, "Should mine on top of recovered chain")
 
         await node2.stop()
     }

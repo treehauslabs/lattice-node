@@ -308,6 +308,7 @@ struct NodeCommand: AsyncParsableCommand {
         let health = HealthCheck(dataDir: dataDirURL)
         await health.start()
 
+        var rpcServer: RPCServer? = nil
         var rpcTask: Task<Void, any Error>? = nil
         if !effectiveDiscoveryOnly, let rpcPort = effectiveRpcPort {
             var cookieAuth: CookieAuth? = nil
@@ -317,6 +318,7 @@ struct NodeCommand: AsyncParsableCommand {
                 print("  RPC auth:    cookie (\(cookiePath.path))")
             }
             let server = RPCServer(node: node, port: rpcPort, bindAddress: effectiveRpcBind, allowedOrigin: effectiveRpcAllowedOrigin, auth: cookieAuth)
+            rpcServer = server
             rpcTask = Task { try await server.run() }
             print("  RPC server:  http://localhost:\(rpcPort)/api/chain/info")
         }
@@ -390,6 +392,7 @@ struct NodeCommand: AsyncParsableCommand {
         print("\n  Shutting down...")
         healthTask.cancel()
         peerRefreshTask.cancel()
+        await rpcServer?.shutdown()
         rpcTask?.cancel()
         for task in backgroundTasks { task.cancel() }
         await health.stop()

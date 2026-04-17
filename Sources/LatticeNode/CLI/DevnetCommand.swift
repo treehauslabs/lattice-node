@@ -80,9 +80,11 @@ struct DevnetCommand: AsyncParsableCommand {
         try await node.start()
         printSuccess("Node started on port \(port)")
 
+        var rpcServer: RPCServer? = nil
         var rpcTask: Task<Void, any Error>? = nil
         if let rpcPort = rpcPort {
             let server = RPCServer(node: node, port: rpcPort, bindAddress: "0.0.0.0", allowedOrigin: "*")
+            rpcServer = server
             rpcTask = Task { try await server.run() }
             printSuccess("RPC server on http://localhost:\(rpcPort)/api/chain/info")
         }
@@ -118,6 +120,7 @@ struct DevnetCommand: AsyncParsableCommand {
         for chain in miningChains {
             await node.stopMining(directory: chain)
         }
+        await rpcServer?.shutdown()
         rpcTask?.cancel()
         await node.stop()
         printSuccess("Devnet stopped")

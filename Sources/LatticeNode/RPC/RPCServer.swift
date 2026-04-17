@@ -5,9 +5,12 @@ import HTTPTypes
 import cashew
 import UInt256
 import Logging
+import Synchronization
+import ServiceLifecycle
 
-public struct RPCServer: Sendable {
+public final class RPCServer: Sendable {
     private let app: Application<RouterResponder<BasicRequestContext>>
+    private let _serviceGroup: Mutex<ServiceGroup?>
 
     public init(node: LatticeNode, port: UInt16 = 8080, bindAddress: String = "127.0.0.1", allowedOrigin: String = "http://127.0.0.1", auth: CookieAuth? = nil) {
         let router = RPCRoutes.build(node: node)
@@ -16,10 +19,20 @@ public struct RPCServer: Sendable {
             router.add(middleware: RPCAuthMiddleware<BasicRequestContext>(auth: auth))
         }
         self.app = Application(router: router, configuration: .init(address: .hostname(bindAddress, port: Int(port))))
+        self._serviceGroup = Mutex(nil)
     }
 
     public func run() async throws {
-        try await app.run()
+        let group = ServiceGroup(
+            configuration: .init(services: [app], logger: .init(label: "lattice.rpc"))
+        )
+        _serviceGroup.withLock { $0 = group }
+        try await group.run()
+    }
+
+    public func shutdown() async {
+        let group = _serviceGroup.withLock { $0 }
+        await group?.triggerGracefulShutdown()
     }
 }
 

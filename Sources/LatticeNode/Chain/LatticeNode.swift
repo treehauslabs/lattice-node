@@ -128,7 +128,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         } else {
             self.stateStores = [:]
         }
-        self.tipCaches = [genesisConfig.spec.directory: TipCache(tip: genesis.blockHash)]
+        let restoredTip = await genesis.chainState.getMainChainTip()
+        self.tipCaches = [genesisConfig.spec.directory: TipCache(tip: restoredTip)]
         self.frontierCaches = [genesisConfig.spec.directory: FrontierCache()]
     }
 
@@ -157,6 +158,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             await network.setDelegate(self)
             try await network.start()
             if !config.discoveryOnly {
+                await recoverFromCAS(directory: dir)
                 await restoreMempool(directory: dir, network: network, fetcher: network.ivyFetcher)
             }
         }
