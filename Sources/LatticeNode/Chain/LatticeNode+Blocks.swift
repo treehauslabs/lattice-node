@@ -857,6 +857,17 @@ extension LatticeNode {
         await handleChildChainDiscovery(directory: directory)
     }
 
+    // MARK: - Peer Connection (Chain Tip Exchange)
+
+    nonisolated public func chainNetwork(_ network: ChainNetwork, didConnectPeer peer: PeerID) async {
+        let directory = await network.directory
+        guard let chainState = await chain(for: directory) else { return }
+        let tipCID = await chainState.getMainChainTip()
+        let tipIndex = await chainState.getHighestBlockIndex()
+        let specCID = await genesisResult.block.spec.rawCID
+        await network.sendChainAnnounce(to: peer, tipCID: tipCID, tipIndex: tipIndex, specCID: specCID)
+    }
+
     func handleChildChainDiscovery(directory: String) async {
         guard config.isSubscribed(chainPath: [genesisConfig.spec.directory, directory]) else { return }
         guard networks[directory] == nil else { return }

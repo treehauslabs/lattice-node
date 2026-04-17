@@ -13,6 +13,7 @@ public protocol ChainNetworkDelegate: AnyObject, Sendable {
     func chainNetwork(_ network: ChainNetwork, didReceiveBlock cid: String, data: Data, from peer: PeerID) async
     func chainNetwork(_ network: ChainNetwork, didReceiveBlockAnnouncement cid: String, from peer: PeerID) async
     func chainNetwork(_ network: ChainNetwork, shouldAcceptTransaction transaction: Transaction, bodyCID: String) async -> Bool
+    func chainNetwork(_ network: ChainNetwork, didConnectPeer peer: PeerID) async
 }
 
 public actor ChainNetwork: IvyDelegate {
@@ -325,6 +326,30 @@ public actor ChainNetwork: IvyDelegate {
         await ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)
     }
 
+    // MARK: - Chain Announce (Tip Exchange)
+
+    /// Send our chain tip to a specific peer so they can discover they're behind.
+    public func sendChainAnnounce(to peer: PeerID, tipCID: String, tipIndex: UInt64, specCID: String) async {
+        let announce = ChainAnnounceData(
+            chainDirectory: directory,
+            tipIndex: tipIndex,
+            tipCID: tipCID,
+            specCID: specCID
+        )
+        await ivy.sendMessage(to: peer, topic: "chainAnnounce", payload: announce.serialize())
+    }
+
+    /// Broadcast our chain tip to all connected peers.
+    public func broadcastChainAnnounce(tipCID: String, tipIndex: UInt64, specCID: String) async {
+        let announce = ChainAnnounceData(
+            chainDirectory: directory,
+            tipIndex: tipIndex,
+            tipCID: tipCID,
+            specCID: specCID
+        )
+        await ivy.broadcastMessage(topic: "chainAnnounce", payload: announce.serialize())
+    }
+
     // MARK: - Gossip
 
     /// Gossip a block announcement to all direct peers via peerMessage
@@ -356,7 +381,9 @@ public actor ChainNetwork: IvyDelegate {
 
     // MARK: - IvyDelegate
 
-    nonisolated public func ivy(_ ivy: Ivy, didConnect peer: PeerID) {}
+    nonisolated public func ivy(_ ivy: Ivy, didConnect peer: PeerID) {
+        Task { await delegate?.chainNetwork(self, didConnectPeer: peer) }
+    }
     nonisolated public func ivy(_ ivy: Ivy, didDisconnect peer: PeerID) {}
 
     nonisolated public func ivy(_ ivy: Ivy, didReceiveBlockAnnouncement cid: String, from peer: PeerID) {
@@ -430,6 +457,10 @@ public actor ChainNetwork: IvyDelegate {
                         _ = await nodeMempool.add(transaction: tx)
                     }
                 }
+            }
+        case "chainAnnounce":
+            if let announce = ChainAnnounceData.deserialize(payload) {
+                await delegate?.chainNetwork(self, didReceiveBlockAnnouncement: announce.tipCID, from: peer)
             }
         case "pinRequest":
             if let cid = String(data: payload, encoding: .utf8) {
