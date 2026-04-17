@@ -35,6 +35,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public var stateStores: [String: StateStore]
     var tipCaches: [String: TipCache]
     var frontierCaches: [String: FrontierCache]
+    public let nodeAddress: String
 
     // MARK: - Initialization
 
@@ -131,6 +132,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         let restoredTip = await genesis.chainState.getMainChainTip()
         self.tipCaches = [genesisConfig.spec.directory: TipCache(tip: restoredTip)]
         self.frontierCaches = [genesisConfig.spec.directory: FrontierCache()]
+        self.nodeAddress = HeaderImpl<PublicKey>(node: PublicKey(key: config.publicKey)).rawCID
     }
 
     public func stateStore(for directory: String) -> StateStore? {
@@ -159,6 +161,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             try await network.start()
             if !config.discoveryOnly {
                 await recoverFromCAS(directory: dir)
+                await rebuildAccountPins(directory: dir)
                 await restoreMempool(directory: dir, network: network, fetcher: network.ivyFetcher)
             }
         }

@@ -127,6 +127,30 @@ extension LatticeNode {
         }
     }
 
+    // MARK: - Account Pin Rebuild
+
+    /// Rebuild account pins from tx_history so the node retains and serves
+    /// all data related to its own address across restarts.
+    func rebuildAccountPins(directory: String) async {
+        guard let store = stateStores[directory],
+              let network = networks[directory] else { return }
+
+        let history = store.getAllTransactionCIDs(address: nodeAddress)
+        guard !history.isEmpty else { return }
+
+        var cids: [String] = []
+        cids.reserveCapacity(history.count * 2)
+        for entry in history {
+            cids.append(entry.txCID)
+            cids.append(entry.blockHash)
+        }
+
+        await network.protectionPolicy.pinAccountBatch(cids)
+
+        let log = NodeLogger("persistence")
+        log.info("\(directory): rebuilt \(cids.count) account pin(s) from \(history.count) transaction(s)")
+    }
+
     public func restoreChildChains() async throws {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(

@@ -8,6 +8,11 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
     private var chainTipsByCID: [String: String] = [:]
     private let maxPinnedCount: Int
 
+    /// CIDs related to the node's own account — never subject to FIFO eviction.
+    /// Contains block hashes, transaction CIDs, and body CIDs for transactions
+    /// that involve the node's address (sent, received, or mined).
+    private var accountCIDs: Set<String> = []
+
     public init(maxPinnedCount: Int = 10_000) {
         self.maxPinnedCount = maxPinnedCount
     }
@@ -35,6 +40,20 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
 
     public func isPinned(_ cid: String) -> Bool {
         pinnedCIDs.contains(cid)
+    }
+
+    // MARK: - Account pinning (permanent, not evicted)
+
+    public func pinAccount(_ cid: String) {
+        accountCIDs.insert(cid)
+    }
+
+    public func pinAccountBatch(_ cids: [String]) {
+        for cid in cids { accountCIDs.insert(cid) }
+    }
+
+    public func isAccountPinned(_ cid: String) -> Bool {
+        accountCIDs.contains(cid)
     }
 
     // MARK: - Chain tip tracking (subscribed chains)
@@ -65,9 +84,10 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
     // MARK: - EvictionProtectionPolicy
 
     public func isProtected(_ cid: String) async -> Bool {
-        pinnedCIDs.contains(cid) || chainTipCIDs.contains(cid)
+        accountCIDs.contains(cid) || pinnedCIDs.contains(cid) || chainTipCIDs.contains(cid)
     }
 
     public var pinnedCount: Int { pinnedCIDs.count }
     public var chainTipCount: Int { chainTipCIDs.count }
+    public var accountPinnedCount: Int { accountCIDs.count }
 }

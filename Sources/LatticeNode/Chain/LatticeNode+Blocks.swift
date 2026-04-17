@@ -682,6 +682,14 @@ extension LatticeNode {
             await store.batchIndexReceipts(generalEntries: generalEntries, txHistory: txHistoryEntries)
         }
 
+        // Pin CIDs for transactions involving our account
+        await pinAccountData(
+            blockHash: blockHash,
+            txEntries: txEntries,
+            txHistoryEntries: txHistoryEntries,
+            directory: directory
+        )
+
         if !txFees.isEmpty {
             await feeEstimator(for: directory).recordBlock(height: blockHeight, transactionFees: txFees)
         }
@@ -695,6 +703,39 @@ extension LatticeNode {
 
         metrics.increment("lattice_blocks_accepted_total")
         metrics.set("lattice_chain_height", value: Double(blockHeight))
+    }
+
+    /// Pin block, transaction, and body CIDs for transactions that involve our account.
+    /// These pins are permanent (not subject to FIFO eviction) so the node always
+    /// retains and can serve data related to its own address.
+    private func pinAccountData(
+        blockHash: String,
+        txEntries: [String: VolumeImpl<Transaction>],
+        txHistoryEntries: [(address: String, txCID: String, blockHash: String, height: UInt64)],
+        directory: String
+    ) async {
+        // Collect txCIDs that involve our address
+        let myTxCIDs = Set(txHistoryEntries.filter { $0.address == nodeAddress }.map(\.txCID))
+        guard !myTxCIDs.isEmpty, let network = networks[directory] else { return }
+
+        var cidsToPin: [String] = [blockHash]
+        for (_, txHeader) in txEntries {
+            let txCID = txHeader.rawCID
+            guard myTxCIDs.contains(txCID) else { continue }
+            cidsToPin.append(txCID)
+            if let bodyCID = txHeader.node?.body.rawCID, !bodyCID.isEmpty {
+                cidsToPin.append(bodyCID)
+            }
+        }
+
+        await network.protectionPolicy.pinAccountBatch(cidsToPin)
+
+        // Announce so peers can discover us as a provider of our own tx data
+        let fee = await network.ivy.config.relayFee * 2
+        let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+        for cid in cidsToPin {
+            await network.ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+        }
     }
 
     func extractStateChangeset(

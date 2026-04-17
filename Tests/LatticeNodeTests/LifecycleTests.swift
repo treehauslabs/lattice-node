@@ -549,6 +549,71 @@ final class LifecycleTests: XCTestCase {
         await node2.stop()
     }
 
+    // MARK: - Account Data Pinning
+
+    /// Verify that after mining, CIDs for blocks containing the miner's coinbase
+    /// are pinned as account data, and that these pins are rebuilt on restart.
+    func testAccountDataPinnedAndSurvivesRestart() async throws {
+        let p1 = nextTestPort()
+        let kp = CryptoUtils.generateKeyPair()
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let genesis = testGenesis()
+        let storagePath = tmpDir.appendingPathComponent("node1")
+        let nodeAddress = addr(kp.publicKey)
+
+        // First run: mine 2 blocks — coinbase credits our address
+        let config1 = LatticeNodeConfig(
+            publicKey: kp.publicKey, privateKey: kp.privateKey,
+            listenPort: p1, storagePath: storagePath,
+            enableLocalDiscovery: false, persistInterval: 1
+        )
+        let node1 = try await LatticeNode(config: config1, genesisConfig: genesis)
+        try await node1.start()
+        try await mineBlocks(2, on: node1)
+
+        // Verify account pins exist
+        let network1 = await node1.network(for: "Nexus")!
+        let accountPinCount1 = await network1.protectionPolicy.accountPinnedCount
+        XCTAssertGreaterThan(accountPinCount1, 0, "Should have account pins after mining")
+
+        // Verify tx_history has entries for our address
+        let store1 = await node1.stateStore(for: "Nexus")!
+        let history = store1.getAllTransactionCIDs(address: nodeAddress)
+        XCTAssertGreaterThan(history.count, 0, "tx_history should contain our coinbase transactions")
+        guard !history.isEmpty else { return }
+
+        // Verify the block hash from tx_history is account-pinned
+        let firstEntry = history[0]
+        let isPinned = await network1.protectionPolicy.isAccountPinned(firstEntry.blockHash)
+        XCTAssertTrue(isPinned, "Block containing our tx should be account-pinned")
+        let isTxPinned = await network1.protectionPolicy.isAccountPinned(firstEntry.txCID)
+        XCTAssertTrue(isTxPinned, "Our transaction CID should be account-pinned")
+
+        await node1.stop()
+
+        // Second run: account pins should be rebuilt from tx_history
+        let p2 = nextTestPort()
+        let config2 = LatticeNodeConfig(
+            publicKey: kp.publicKey, privateKey: kp.privateKey,
+            listenPort: p2, storagePath: storagePath,
+            enableLocalDiscovery: false, persistInterval: 1
+        )
+        let node2 = try await LatticeNode(config: config2, genesisConfig: genesis)
+        try await node2.start()
+
+        let network2 = await node2.network(for: "Nexus")!
+        let accountPinCount2 = await network2.protectionPolicy.accountPinnedCount
+        XCTAssertGreaterThanOrEqual(accountPinCount2, history.count * 2, "Should rebuild account pins from tx_history (txCID + blockHash per entry)")
+
+        // Verify specific CIDs are pinned after restart
+        let isPinnedAfterRestart = await network2.protectionPolicy.isAccountPinned(firstEntry.blockHash)
+        XCTAssertTrue(isPinnedAfterRestart, "Account pin should survive restart")
+
+        await node2.stop()
+    }
+
     // MARK: - Chain Info, Spec, Health, Metrics
 
     /// Verify chain info, chain spec, health, and metrics endpoints return expected data

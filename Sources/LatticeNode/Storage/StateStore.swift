@@ -195,6 +195,20 @@ public actor StateStore {
         }
     }
 
+    /// Return all (txCID, blockHash) pairs for the given address.
+    /// Used at startup to rebuild account pin sets from persisted history.
+    public nonisolated func getAllTransactionCIDs(address: String) -> [(txCID: String, blockHash: String)] {
+        guard let rows = try? readDb.query(
+            "SELECT txCID, blockHash FROM tx_history WHERE address = ?1",
+            params: [.text(address)]
+        ) else { return [] }
+        return rows.compactMap { row in
+            guard let cid = row["txCID"]?.textValue,
+                  let hash = row["blockHash"]?.textValue else { return nil }
+            return (txCID: cid, blockHash: hash)
+        }
+    }
+
     public func deleteAccount(address: String) {
         let path = "account:\(address)"
         try? db.execute("DELETE FROM state WHERE path = ?1", params: [.text(path)])
