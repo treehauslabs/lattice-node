@@ -127,6 +127,27 @@ extension LatticeNode {
         }
     }
 
+    // MARK: - Block Index Backfill
+
+    /// Backfill the SQLite block_index table from the in-memory chain state.
+    /// This ensures blocks persisted before the block_index table existed
+    /// become queryable by height after restart.
+    func backfillBlockIndex(directory: String) async {
+        guard let store = stateStores[directory],
+              let chainState = await chain(for: directory) else { return }
+        let height = await chainState.getHighestBlockIndex()
+        var entries: [(height: UInt64, blockHash: String)] = []
+        for i in 0...height {
+            if let hash = await chainState.getMainChainBlockHash(atIndex: i) {
+                entries.append((height: i, blockHash: hash))
+            }
+        }
+        guard !entries.isEmpty else { return }
+        await store.backfillBlockIndex(entries)
+        let log = NodeLogger("persistence")
+        log.info("\(directory): backfilled \(entries.count) block index entries")
+    }
+
     // MARK: - Account Pin Rebuild
 
     /// Rebuild account pins from tx_history so the node retains and serves

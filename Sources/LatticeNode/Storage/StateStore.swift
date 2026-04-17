@@ -298,6 +298,18 @@ public actor StateStore {
         return row["blockHash"]?.textValue
     }
 
+    public func backfillBlockIndex(_ entries: [(height: UInt64, blockHash: String)]) {
+        guard !entries.isEmpty else { return }
+        try? db.beginTransaction()
+        for entry in entries {
+            try? db.execute(
+                "INSERT OR IGNORE INTO block_index (height, blockHash) VALUES (?1, ?2)",
+                params: [.int(Int64(entry.height)), .text(entry.blockHash)]
+            )
+        }
+        try? db.commit()
+    }
+
     // MARK: - Batch Apply (Atomic)
 
     public func applyBlock(_ changes: StateChangeset) {

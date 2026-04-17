@@ -161,6 +161,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             try await network.start()
             if !config.discoveryOnly {
                 await recoverFromCAS(directory: dir)
+                await backfillBlockIndex(directory: dir)
                 await rebuildAccountPins(directory: dir)
                 await restoreMempool(directory: dir, network: network, fetcher: network.ivyFetcher)
             }
