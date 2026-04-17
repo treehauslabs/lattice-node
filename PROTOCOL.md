@@ -219,6 +219,7 @@ Nodes communicate via the Ivy protocol, which provides:
 - **k-bucket routing** for peer management
 - **Block announcement**: broadcast block CID to peers
 - **Block fetch**: retrieve block data by CID
+- **Chain announce on connect**: when a new peer connects, the node announces its current chain tip for each subscribed chain, triggering synchronization if the peer is behind
 - **mDNS**: local network peer discovery (optional)
 
 ### 5.2 Peer Discovery
@@ -257,7 +258,20 @@ Per-peer: max 20 blocks per 10-second window. Peer reputation managed by the Tal
 
 ### 6.1 Sync Trigger
 
-Sync is triggered when a peer announces a block with height gap > `retentionDepth` from local chain tip.
+Sync is triggered when a peer announces a block with height gap > `retentionDepth` from local chain tip. This can happen via normal block gossip or via the chain announce exchanged on peer connect — so a restarted node that is behind will begin syncing as soon as it connects to an up-to-date peer, without waiting for the next mined block.
+
+### 6.5 Crash Recovery (CAS-Based)
+
+If the node shuts down ungracefully (crash, SIGKILL, power loss), `chain_state.json` may be stale by up to `persistInterval` blocks. The SQLite state store is crash-safe (WAL mode) and tracks the authoritative chain tip and height. CAS files are written to disk immediately on block acceptance.
+
+On restart, the node detects any gap between the chain state (from `chain_state.json`) and SQLite, then recovers:
+
+1. Read chain tip CID and height from SQLite (`meta:chain-tip`, `meta:height`)
+2. If SQLite height > chain state height, walk backwards through CAS from SQLite tip to chain state tip, collecting blocks
+3. Replay collected blocks forward via `processBlockHeader`
+4. Persist the recovered chain state
+
+This is a local-only operation — no peers are needed. Recovery is O(gap) where gap is the number of blocks between the last persist and the crash.
 
 ### 6.2 Strategies
 

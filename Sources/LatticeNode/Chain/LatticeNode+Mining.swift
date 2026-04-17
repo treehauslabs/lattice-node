@@ -6,7 +6,7 @@ import cashew
 
 extension LatticeNode {
 
-    public func startMining(directory: String) async {
+    public func startMining(directory: String, identity: MinerIdentity? = nil) async {
         guard let network = networks[directory] else { return }
         guard miners[directory] == nil else { return }
 
@@ -21,7 +21,7 @@ extension LatticeNode {
         } else {
             return
         }
-        let identity = MinerIdentity(
+        let identity = identity ?? MinerIdentity(
             publicKeyHex: config.publicKey,
             privateKeyHex: config.privateKey
         )

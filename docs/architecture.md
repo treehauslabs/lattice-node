@@ -92,3 +92,17 @@ New tip diverges from old tip
 4. **Dual mempool**: NodeMempool (fee-ordered, for mining) alongside Ivy Mempool (for network compatibility). Both kept in sync.
 
 5. **PBSS as cache**: SQLite provides O(1) reads; CAS is authoritative. PBSS rebuilt from CAS after sync.
+
+### Crash Recovery
+```
+Node starts with existing data directory
+  → Restore chain state from chain_state.json (may be stale)
+  → Read authoritative tip from SQLite (crash-safe via WAL)
+  → If SQLite tip > chain state tip:
+      Walk backwards through CAS from SQLite tip to chain state tip
+      Replay missing blocks forward via processBlockHeader
+      Persist recovered chain state
+  → Resume normal operation at full height
+```
+
+CAS files are written to disk immediately by DiskCASWorker, and SQLite updates on every block acceptance. Only `chain_state.json` can be stale (written every `persistInterval` blocks). This means any blocks confirmed between the last persist and an ungraceful shutdown are recoverable from CAS without peers.

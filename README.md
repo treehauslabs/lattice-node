@@ -66,7 +66,9 @@ LatticeNode boots from a hardcoded Nexus genesis block and connects to the netwo
 
 4. **Synchronization.** When a peer is more than 2,000 blocks ahead, the node triggers a sync. Two strategies are available: full sync (download every block) and snapshot sync (download recent state only). Strategy selection is automatic based on how far behind the node is.
 
-5. **Persistence.** Chain state is serialized to `<data-dir>/<chain>/chain_state.json` every 100 blocks and on graceful shutdown. On restart, the node walks the data directory and restores all chains — including children discovered in prior sessions.
+5. **Persistence.** Chain state is serialized to `<data-dir>/<chain>/chain_state.json` every 100 blocks and on graceful shutdown. The SQLite state store (`state.db`) is updated on every block and is crash-safe via WAL. CAS files are written to disk immediately. On restart, the node walks the data directory and restores all chains — including children discovered in prior sessions. If the node crashed, CAS-based recovery detects any gap between the stale `chain_state.json` and the authoritative SQLite tip, then replays the missing blocks from CAS to bring the chain state current.
+
+6. **Peer sync on connect.** When a new peer connects, the node announces its chain tip for each subscribed chain. If the peer is behind, this triggers synchronization without waiting for the next mined block.
 
 ## Architecture
 

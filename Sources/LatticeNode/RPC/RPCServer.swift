@@ -456,11 +456,24 @@ enum RPCRoutes {
     // MARK: - Mining Control
 
     static func startMining(node: LatticeNode, request: Request) async throws -> Response {
-        struct Body: Decodable { let chain: String }
-        guard let body = try? await jsonDecoder.decode(Body.self, from: request.body.collect(upTo: 65536)) else {
-            return jsonError("Expected: {chain: \"Nexus\"}")
+        struct Body: Decodable {
+            let chain: String
+            let publicKey: String?
+            let privateKey: String?
         }
-        await node.startMining(directory: body.chain)
+        guard let body = try? await jsonDecoder.decode(Body.self, from: request.body.collect(upTo: 65536)) else {
+            return jsonError("Expected: {chain: \"Nexus\", publicKey?: hex, privateKey?: hex}")
+        }
+        let identity: MinerIdentity?
+        switch (body.publicKey, body.privateKey) {
+        case let (pk?, sk?):
+            identity = MinerIdentity(publicKeyHex: pk, privateKeyHex: sk)
+        case (nil, nil):
+            identity = nil
+        default:
+            return jsonError("publicKey and privateKey must be provided together")
+        }
+        await node.startMining(directory: body.chain, identity: identity)
         struct R: Encodable { let started: Bool; let chain: String }
         return json(R(started: true, chain: body.chain))
     }
