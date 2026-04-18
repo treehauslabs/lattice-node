@@ -269,6 +269,14 @@ extension LatticeNode {
                 if newChainTxCIDs.contains(cid) { continue }
                 let result = await validator.validate(tx)
                 if case .success = result, let network {
+                    // Sync mempool confirmedNonce to post-reorg state. Without
+                    // this, a sender's confirmedNonce could still reflect the
+                    // orphaned chain's (higher) nonce, stranding the re-added
+                    // tx forever since its nonce would be < confirmedNonce.
+                    if let sender = tx.body.node?.signers.first,
+                       let storeNonce = stateStores[dir]?.getNonce(address: sender) {
+                        await network.nodeMempool.updateConfirmedNonce(sender: sender, nonce: storeNonce)
+                    }
                     let _ = await network.nodeMempool.add(transaction: tx)
                     recovered += 1
                 }
@@ -352,6 +360,10 @@ extension LatticeNode {
                         if await childNetwork.nodeMempool.contains(txCID: cid) { continue }
                         let result = await validator.validate(tx)
                         if case .success = result {
+                            if let sender = tx.body.node?.signers.first,
+                               let storeNonce = stateStores[childDir]?.getNonce(address: sender) {
+                                await childNetwork.nodeMempool.updateConfirmedNonce(sender: sender, nonce: storeNonce)
+                            }
                             let _ = await childNetwork.nodeMempool.add(transaction: tx)
                         }
                     }

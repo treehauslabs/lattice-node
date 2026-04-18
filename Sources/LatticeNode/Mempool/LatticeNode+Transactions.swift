@@ -34,6 +34,10 @@ extension LatticeNode {
                 break
             }
         }
+        if let sender = transaction.body.node?.signers.first,
+           let storeNonce = stateStores[directory]?.getNonce(address: sender) {
+            await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: storeNonce)
+        }
         let added = await network.submitTransaction(transaction)
         if added {
             let bodyData = transaction.body.node?.toData()
@@ -116,8 +120,12 @@ extension LatticeNode {
             isNexus: isNexus
         )
         let result = await validator.validate(transaction)
-        if case .success = result { return true }
-        return false
+        guard case .success = result else { return false }
+        if let sender = transaction.body.node?.signers.first,
+           let storeNonce = stateStores[directory]?.getNonce(address: sender) {
+            await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: storeNonce)
+        }
+        return true
     }
 
     public func broadcastTransaction(directory: String, transaction: Transaction) async {

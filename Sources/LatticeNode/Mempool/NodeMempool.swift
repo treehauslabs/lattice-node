@@ -106,6 +106,9 @@ public actor NodeMempool {
         }
 
         let accountQueue = byAccount[sender] ?? AccountTxQueue()
+        if nonce < accountQueue.confirmedNonce {
+            return .rejected(reason: "Nonce already confirmed: \(nonce) < \(accountQueue.confirmedNonce)")
+        }
         if let existing = accountQueue.txsByNonce[nonce] {
             return tryReplace(existing: existing, transaction: transaction, cid: cid, fee: fee, sender: sender, nonce: nonce, stateKeys: stateKeys)
         }
@@ -143,15 +146,26 @@ public actor NodeMempool {
         var claimedKeys = StateKeySet()
         for entry in sortedEntries {
             if selected.count >= maxCount { break }
-            let account = byAccount[entry.sender]
-            let confirmedNonce = account?.confirmedNonce ?? 0
-            let nextExpected = selectedNonces[entry.sender] ?? confirmedNonce
-            if entry.nonce == nextExpected {
-                guard claimedKeys.isDisjoint(with: entry.stateKeys) else { continue }
-                selected.append(entry.transaction)
-                claimedKeys.formUnion(entry.stateKeys)
-                selectedNonces[entry.sender] = nextExpected + 1
+            guard let account = byAccount[entry.sender] else { continue }
+            let nextExpected = selectedNonces[entry.sender] ?? account.confirmedNonce
+            guard entry.nonce == nextExpected else { continue }
+            guard claimedKeys.isDisjoint(with: entry.stateKeys) else { continue }
+            selected.append(entry.transaction)
+            claimedKeys.formUnion(entry.stateKeys)
+            // Opportunistically include consecutive higher-nonce txs from the
+            // same sender. sortedEntries is fee-descending, so a sender's
+            // higher-nonce tx with a higher fee would be iterated BEFORE its
+            // lower-nonce tx and skipped (nonce mismatch) — without this, it
+            // would stay stuck until the next block even though it's now valid.
+            var next = nextExpected + 1
+            while selected.count < maxCount,
+                  let nextEntry = account.txsByNonce[next],
+                  claimedKeys.isDisjoint(with: nextEntry.stateKeys) {
+                selected.append(nextEntry.transaction)
+                claimedKeys.formUnion(nextEntry.stateKeys)
+                next += 1
             }
+            selectedNonces[entry.sender] = next
         }
         return selected
     }
@@ -180,6 +194,21 @@ public actor NodeMempool {
 
     public func updateConfirmedNonce(sender: String, nonce: UInt64) {
         batchUpdateConfirmedNonces(updates: [(sender: sender, nonce: nonce)])
+    }
+
+    /// Seed the mempool's confirmedNonce for a sender from persisted state if
+    /// it hasn't been set this session. Without this, a sender whose most
+    /// recent tx predates the current node session has confirmedNonce=0 (the
+    /// default) but submits body.nonce=N>0, so selectTransactions' equality
+    /// check never matches and the tx sits invisible until the expiry pruner
+    /// evicts it. batchUpdateConfirmedNonces is only fired on block-apply, so
+    /// it never covers the first-submit-after-restart case.
+    public func seedConfirmedNonceIfUnset(sender: String, nonce: UInt64) {
+        guard !sender.isEmpty, nonce > 0 else { return }
+        var queue = byAccount[sender] ?? AccountTxQueue()
+        guard queue.confirmedNonce == 0 else { return }
+        queue.confirmedNonce = nonce
+        byAccount[sender] = queue
     }
 
     public func remove(txCID: String) {

@@ -48,6 +48,10 @@ extension LatticeNode {
             let bodyHeader = HeaderImpl<TransactionBody>(rawCID: stx.bodyCID)
             guard let body = try? await bodyHeader.resolve(fetcher: fetcher).node else { continue }
             let tx = Transaction(signatures: stx.signatures, body: bodyHeader)
+            if let sender = body.signers.first,
+               let storeNonce = stateStores[directory]?.getNonce(address: sender) {
+                await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: storeNonce)
+            }
             if await network.submitTransaction(tx) {
                 restored += 1
             }
