@@ -61,7 +61,6 @@ public actor MinerLoop {
         let log = NodeLogger("miner")
         log.info("\(spec.directory): mineLoop entered, starting mining iterations")
         while mining && !Task.isCancelled {
-            var transactions: [Transaction] = []
             do {
                 let previousBlock = try await resolveCurrentTip()
                 guard let previousBlock = previousBlock else {
@@ -77,7 +76,7 @@ public actor MinerLoop {
                 async let txAsync = mempool.selectTransactions(maxCount: max(0, maxTxCount))
                 let currentChildContexts = await childContextProvider?() ?? []
 
-                transactions = await txAsync
+                var transactions = await txAsync
 
                 // Build child blocks in parallel, coinbase sequentially (depends on transactions)
                 async let childResultAsync = buildChildBlocks(
@@ -124,16 +123,34 @@ public actor MinerLoop {
                 } else {
                     blockFetcher = fetcher
                 }
-                let template = try await BlockBuilder.buildBlock(
-                    previous: previousBlock,
-                    transactions: transactions,
-                    childBlocks: childResult.blocks,
-                    timestamp: blockTimestamp,
-                    difficulty: blockDifficulty,
-                    nextDifficulty: computedNextDifficulty,
-                    nonce: 0,
-                    fetcher: blockFetcher
-                )
+                let template: Block
+                do {
+                    template = try await BlockBuilder.buildBlock(
+                        previous: previousBlock,
+                        transactions: transactions,
+                        childBlocks: childResult.blocks,
+                        timestamp: blockTimestamp,
+                        difficulty: blockDifficulty,
+                        nextDifficulty: computedNextDifficulty,
+                        nonce: 0,
+                        fetcher: blockFetcher
+                    )
+                } catch StateErrors.nonceGap {
+                    log.warn("\(spec.directory): nonceGap building block \(nextBlockIndex), falling back to empty block")
+                    let staleCIDs = Set(transactions.map { $0.body.rawCID })
+                    if !staleCIDs.isEmpty { await mempool.removeAll(txCIDs: staleCIDs) }
+                    transactions = []
+                    template = try await BlockBuilder.buildBlock(
+                        previous: previousBlock,
+                        transactions: [],
+                        childBlocks: childResult.blocks,
+                        timestamp: blockTimestamp,
+                        difficulty: blockDifficulty,
+                        nextDifficulty: computedNextDifficulty,
+                        nonce: 0,
+                        fetcher: blockFetcher
+                    )
+                }
 
                 let prefixBytes = difficultyHashPrefixBytes(template)
                 // Precompute SHA256 midstate for the fixed prefix — each nonce attempt
@@ -187,14 +204,6 @@ public actor MinerLoop {
                     nonceOffset &+= batchSize
                     await Task.yield()
                 }
-            } catch StateErrors.nonceGap {
-                // Stale mempool txs with nonces already consumed on-chain.
-                // Prune them and let the next iteration build a clean block.
-                let staleCIDs = Set(transactions.map { $0.body.rawCID })
-                if !staleCIDs.isEmpty {
-                    await mempool.removeAll(txCIDs: staleCIDs)
-                }
-                log.warn("\(spec.directory): nonceGap — pruned \(staleCIDs.count) stale mempool txs")
             } catch {
                 let log = NodeLogger("miner")
                 let tip = await chainState.getMainChainTip()
