@@ -61,6 +61,7 @@ public actor MinerLoop {
         let log = NodeLogger("miner")
         log.info("\(spec.directory): mineLoop entered, starting mining iterations")
         while mining && !Task.isCancelled {
+            var transactions: [Transaction] = []
             do {
                 let previousBlock = try await resolveCurrentTip()
                 guard let previousBlock = previousBlock else {
@@ -76,7 +77,7 @@ public actor MinerLoop {
                 async let txAsync = mempool.selectTransactions(maxCount: max(0, maxTxCount))
                 let currentChildContexts = await childContextProvider?() ?? []
 
-                var transactions = await txAsync
+                transactions = await txAsync
 
                 // Build child blocks in parallel, coinbase sequentially (depends on transactions)
                 async let childResultAsync = buildChildBlocks(
@@ -96,7 +97,7 @@ public actor MinerLoop {
                     NodeLogger("miner").warn("Coinbase build failed: \(error)")
                 }
                 let childResult = await childResultAsync
-                let blockDifficulty = previousBlock.nextDifficulty
+                let blockDifficulty = max(previousBlock.nextDifficulty, ChainSpec.minimumDifficulty)
                 let nextBlockIndex = previousBlock.index + 1
                 let computedNextDifficulty: UInt256
                 if spec.isEpochBoundary(blockIndex: nextBlockIndex) {
@@ -143,7 +144,7 @@ public actor MinerLoop {
                     h.update(bufferPointer: UnsafeRawBufferPointer(ptr))
                     return h
                 }
-                let targetDifficulty = previousBlock.nextDifficulty
+                let targetDifficulty = max(previousBlock.nextDifficulty, ChainSpec.minimumDifficulty)
                 let batchSize = self.batchSize
                 let workerCount = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
                 log.info("\(spec.directory): nonce search started for block \(previousBlock.index + 1) (difficulty=\(String(targetDifficulty.toHexString().prefix(16)))… workers=\(workerCount) batch=\(batchSize))")
@@ -186,6 +187,14 @@ public actor MinerLoop {
                     nonceOffset &+= batchSize
                     await Task.yield()
                 }
+            } catch StateErrors.nonceGap {
+                // Stale mempool txs with nonces already consumed on-chain.
+                // Prune them and let the next iteration build a clean block.
+                let staleCIDs = Set(transactions.map { $0.body.rawCID })
+                if !staleCIDs.isEmpty {
+                    await mempool.removeAll(txCIDs: staleCIDs)
+                }
+                log.warn("\(spec.directory): nonceGap — pruned \(staleCIDs.count) stale mempool txs")
             } catch {
                 let log = NodeLogger("miner")
                 let tip = await chainState.getMainChainTip()
@@ -381,7 +390,7 @@ public actor MinerLoop {
                             maxCount: max(0, Int(ctx.spec.maxNumberOfTransactionsPerBlock) - 1)
                         )
 
-                        let childDifficulty = childTip.nextDifficulty
+                        let childDifficulty = max(childTip.nextDifficulty, ChainSpec.minimumDifficulty)
                         let childAncestorTs = await Self.collectAncestorTimestamps(
                             from: childTip, count: ctx.spec.difficultyAdjustmentWindow, fetcher: ctx.fetcher
                         )
