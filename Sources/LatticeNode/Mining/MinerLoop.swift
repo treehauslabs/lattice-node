@@ -327,12 +327,15 @@ public actor MinerLoop {
         let minerTxsInBlock = mempoolTransactions.filter { tx in
             tx.body.node?.signers.contains(identity.address) == true
         }.count
+        // TransactionState.proveAndUpdateState requires the first-ever nonce for
+        // a signer to be 0, regardless of the current block index. Using
+        // previousBlock.index here meant a fresh miner joining a non-genesis
+        // chain always hit nonceGap and the block fell back to empty (no reward).
         let coinbaseNonce: UInt64
         if let latest = latestNonce {
             coinbaseNonce = latest + 1 + UInt64(minerTxsInBlock)
         } else {
-            // Genesis or first block — no prior nonce
-            coinbaseNonce = (previousBlock.index == 0 ? 0 : previousBlock.index) + UInt64(minerTxsInBlock)
+            coinbaseNonce = UInt64(minerTxsInBlock)
         }
 
         let accountAction = AccountAction(
