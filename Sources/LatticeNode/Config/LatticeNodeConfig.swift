@@ -62,4 +62,25 @@ public struct LatticeNodeConfig: Sendable {
     public func isSubscribed(chainPath: [String]) -> Bool {
         subscribedChains.get(chainPath) == true
     }
+
+    public func addingSubscription(chainPath: [String]) -> LatticeNodeConfig {
+        var subs = subscribedChains
+        subs.set(chainPath, value: true)
+        return LatticeNodeConfig(
+            publicKey: publicKey,
+            privateKey: privateKey,
+            listenPort: listenPort,
+            bootstrapPeers: bootstrapPeers,
+            storagePath: storagePath,
+            enableLocalDiscovery: enableLocalDiscovery,
+            persistInterval: persistInterval,
+            subscribedChains: subs,
+            syncStrategy: syncStrategy,
+            retentionDepth: retentionDepth,
+            resources: resources,
+            finality: finality,
+            maxPeerConnections: maxPeerConnections,
+            discoveryOnly: discoveryOnly
+        )
+    }
 }

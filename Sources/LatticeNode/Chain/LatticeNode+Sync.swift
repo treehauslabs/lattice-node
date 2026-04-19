@@ -32,11 +32,12 @@ extension LatticeNode {
     static let syncTimeout: Duration = .seconds(600)
 
     func startSync(peerTipCID: String, network: ChainNetwork) {
+        let strategy = self.config.syncStrategy
         syncTask = Task { [weak self] in
             guard let self = self else { return }
             await withTaskGroup(of: Void.self) { group in
                 group.addTask {
-                    switch self.config.syncStrategy {
+                    switch strategy {
                     case .headersFirst:
                         await self.performHeadersFirstSync(peerTipCID: peerTipCID, network: network)
                     case .full, .snapshot:

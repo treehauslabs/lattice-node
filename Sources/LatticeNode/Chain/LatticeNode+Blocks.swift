@@ -594,6 +594,25 @@ extension LatticeNode {
         )
     }
 
+    /// Register and activate a new child chain with its genesis block.
+    /// Orders the steps so the lattice subscription isn't created until the
+    /// network is live (avoiding orphan entries on failure), seeds the tip
+    /// cache with the genesis hash so the miner's lock-free tip check works,
+    /// and persists chain state so the chain survives a restart before any
+    /// blocks are mined.
+    public func deployChildChain(directory: String, genesisBlock: Block) async throws {
+        try await registerChainNetworkUsingNodeConfig(directory: directory)
+        await lattice.nexus.subscribe(to: directory, genesisBlock: genesisBlock, retentionDepth: config.retentionDepth)
+        config = config.addingSubscription(chainPath: [genesisConfig.spec.directory, directory])
+        if let tip = await chain(for: directory)?.getMainChainTip() {
+            tipCaches[directory]?.update(tip)
+        }
+        guard let network = networks[directory] else { return }
+        await storeBlockRecursively(genesisBlock, network: network)
+        await applyGenesisBlock(directory: directory, block: genesisBlock)
+        await persistChainState(directory: directory)
+    }
+
     /// Apply child block state changes for each child block embedded in a nexus block.
     /// Stores the child block in the child CAS, applies state changes (StateStore,
     /// mempool nonces, receipts), and prunes confirmed transactions from the child mempool.
@@ -928,13 +947,7 @@ extension LatticeNode {
     func handleChildChainDiscovery(directory: String) async {
         guard config.isSubscribed(chainPath: [genesisConfig.spec.directory, directory]) else { return }
         guard networks[directory] == nil else { return }
-        let ivyConfig = IvyConfig(
-            publicKey: config.publicKey,
-            listenPort: config.listenPort,
-            bootstrapPeers: config.bootstrapPeers,
-            enableLocalDiscovery: config.enableLocalDiscovery
-        )
-        try? await registerChainNetwork(directory: directory, config: ivyConfig)
+        try? await registerChainNetworkUsingNodeConfig(directory: directory)
 
         // Restore any persisted mempool transactions for this child chain
         if let childNetwork = networks[directory], !config.discoveryOnly {

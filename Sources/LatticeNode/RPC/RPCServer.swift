@@ -110,6 +110,8 @@ enum RPCRoutes {
         api.post("mining/start") { req, _ in try await startMining(node: node, request: req) }
         api.post("mining/stop") { req, _ in try await stopMining(node: node, request: req) }
 
+        api.post("chain/deploy") { req, _ in try await deployChain(node: node, request: req) }
+
         // State explorer
         api.get("state/account/{address}") { req, ctx in try await getAccountState(node: node, address: ctx.parameters.require("address"), request: req) }
         api.get("state/summary") { req, _ in try await getStateSummary(node: node, request: req) }
@@ -492,6 +494,140 @@ enum RPCRoutes {
         return json(R(stopped: true, chain: body.chain))
     }
 
+    // MARK: - Chain Deployment
+
+    static func deployChain(node: LatticeNode, request: Request) async throws -> Response {
+        struct Body: Decodable {
+            let directory: String
+            let parentDirectory: String
+            let targetBlockTime: UInt64
+            let initialReward: UInt64
+            let halvingInterval: UInt64
+            let premine: UInt64
+            let maxTransactionsPerBlock: UInt64
+            let maxStateGrowth: Int
+            let maxBlockSize: Int
+            let difficultyAdjustmentWindow: UInt64
+            let transactionFilters: [String]?
+            let actionFilters: [String]?
+            let premineRecipient: String?
+            let startMining: Bool?
+            let minerPublicKey: String?
+            let minerPrivateKey: String?
+        }
+        guard let body = try? await jsonDecoder.decode(Body.self, from: request.body.collect(upTo: 131_072)) else {
+            return jsonError("Invalid deploy request body")
+        }
+
+        let dir = body.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if dir.isEmpty { return jsonError("Directory cannot be empty") }
+        if dir.contains(where: { $0.isWhitespace || $0 == "/" }) {
+            return jsonError("Directory cannot contain whitespace or '/'")
+        }
+        if dir == node.genesisConfig.spec.directory {
+            return jsonError("Directory '\(dir)' conflicts with nexus")
+        }
+        if await node.network(for: dir) != nil {
+            return jsonError("Chain '\(dir)' already exists")
+        }
+        let storageDir = await node.config.storagePath.appendingPathComponent(dir)
+        if FileManager.default.fileExists(atPath: storageDir.path) {
+            return jsonError("Chain directory '\(dir)' already has data on disk from a prior deploy. Remove \(storageDir.path) before redeploying.", status: .conflict)
+        }
+        if body.parentDirectory != node.genesisConfig.spec.directory {
+            return jsonError("Only '\(node.genesisConfig.spec.directory)' is supported as parent; nested child chains are not yet supported")
+        }
+        guard let parentNetwork = await node.network(for: body.parentDirectory) else {
+            return jsonError("Parent chain not found: \(body.parentDirectory)", status: .notFound)
+        }
+
+        let spec = ChainSpec(
+            directory: dir,
+            maxNumberOfTransactionsPerBlock: body.maxTransactionsPerBlock,
+            maxStateGrowth: body.maxStateGrowth,
+            maxBlockSize: body.maxBlockSize,
+            premine: body.premine,
+            targetBlockTime: body.targetBlockTime,
+            initialReward: body.initialReward,
+            halvingInterval: body.halvingInterval,
+            difficultyAdjustmentWindow: body.difficultyAdjustmentWindow,
+            transactionFilters: body.transactionFilters ?? [],
+            actionFilters: body.actionFilters ?? []
+        )
+        guard spec.isValid else { return jsonError("Invalid chain spec (check premine < halvingInterval, non-zero fields)") }
+
+        var genesisTransactions: [Transaction] = []
+        if spec.premineAmount() > 0 {
+            guard let recipient = body.premineRecipient, !recipient.isEmpty else {
+                return jsonError("premineRecipient is required when premine > 0")
+            }
+            let dummy = CryptoUtils.generateKeyPair()
+            let dummyAddress = CryptoUtils.createAddress(from: dummy.publicKey)
+            let premineBody = TransactionBody(
+                accountActions: [AccountAction(owner: recipient, delta: Int64(spec.premineAmount()))],
+                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                receiptActions: [], withdrawalActions: [],
+                signers: [dummyAddress], fee: 0, nonce: 0
+            )
+            let bodyHeader = HeaderImpl<TransactionBody>(node: premineBody)
+            genesisTransactions.append(Transaction(
+                signatures: [dummy.publicKey: "genesis"],
+                body: bodyHeader
+            ))
+        }
+
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let genesisBlock: Block
+        do {
+            genesisBlock = try await BlockBuilder.buildGenesis(
+                spec: spec,
+                transactions: genesisTransactions,
+                timestamp: timestamp,
+                difficulty: UInt256.max,
+                fetcher: parentNetwork.ivyFetcher
+            )
+        } catch {
+            log.error("deployChain: buildGenesis failed: \(error)")
+            return jsonError("Failed to build genesis block: \(error.localizedDescription)", status: .internalServerError)
+        }
+
+        do {
+            try await node.deployChildChain(directory: dir, genesisBlock: genesisBlock)
+        } catch {
+            log.error("deployChain: deployChildChain failed: \(error)")
+            return jsonError("Failed to deploy chain: \(error.localizedDescription)", status: .internalServerError)
+        }
+
+        var mining = false
+        if body.startMining == true {
+            let identity: MinerIdentity?
+            switch (body.minerPublicKey, body.minerPrivateKey) {
+            case let (pk?, sk?):
+                identity = MinerIdentity(publicKeyHex: pk, privateKeyHex: sk)
+            case (nil, nil):
+                identity = nil
+            default:
+                return jsonError("minerPublicKey and minerPrivateKey must be provided together")
+            }
+            await node.startMining(directory: dir, identity: identity)
+            mining = await node.isMining(directory: dir)
+        }
+
+        let genesisHash = VolumeImpl<Block>(node: genesisBlock).rawCID
+        struct R: Encodable {
+            let directory: String
+            let parentDirectory: String
+            let genesisHash: String
+            let mining: Bool
+        }
+        return json(R(
+            directory: dir,
+            parentDirectory: body.parentDirectory,
+            genesisHash: genesisHash,
+            mining: mining
+        ))
+    }
+
     // MARK: - Mempool, Proof, Peers
 
     static func mempool(node: LatticeNode, request: Request) async throws -> Response {
@@ -741,7 +877,7 @@ enum RPCRoutes {
             return jsonError("Chain not found: \(dir)", status: .notFound)
         }
         let currentHeight = await chainState.getHighestBlockIndex()
-        let finality = node.config.finality
+        let finality = await node.config.finality
         let isFinal = finality.isFinal(chain: dir, blockHeight: blockHeight, currentHeight: currentHeight)
         let confirmations = currentHeight >= blockHeight ? currentHeight - blockHeight : 0
         let required = finality.confirmations(for: dir)
@@ -759,7 +895,7 @@ enum RPCRoutes {
     }
 
     static func getFinalityConfig(node: LatticeNode) async throws -> Response {
-        let finality = node.config.finality
+        let finality = await node.config.finality
         let chains = await node.chainStatus()
         struct ChainFinality: Encodable {
             let chain: String; let confirmations: UInt64; let currentHeight: UInt64

@@ -11,7 +11,7 @@ import Crypto
 import OrderedCollections
 
 public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
-    public let config: LatticeNodeConfig
+    public var config: LatticeNodeConfig
     public let lattice: Lattice
     public let genesisConfig: GenesisConfig
     public let genesisResult: GenesisResult
@@ -244,12 +244,23 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             }
         }
         if tipCaches[directory] == nil {
-            tipCaches[directory] = TipCache(tip: "")
+            let tip = await chain(for: directory)?.getMainChainTip() ?? ""
+            tipCaches[directory] = TipCache(tip: tip)
         }
         if frontierCaches[directory] == nil {
             frontierCaches[directory] = FrontierCache()
         }
         try await network.start()
+    }
+
+    public func registerChainNetworkUsingNodeConfig(directory: String) async throws {
+        let port = deterministicPort(basePort: self.config.listenPort, directory: directory)
+        let ivyConfig = IvyConfig(
+            publicKey: self.config.publicKey,
+            listenPort: port,
+            enableLocalDiscovery: self.config.enableLocalDiscovery
+        )
+        try await registerChainNetwork(directory: directory, config: ivyConfig)
     }
 
     // MARK: - Chain Lookup

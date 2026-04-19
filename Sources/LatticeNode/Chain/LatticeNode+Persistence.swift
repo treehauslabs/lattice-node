@@ -206,6 +206,7 @@ extension LatticeNode {
             let childLevel = ChainLevel(chain: childChain, children: [:])
             await lattice.nexus.restoreChildChain(directory: dirName, level: childLevel)
             persisters[dirName] = persister
+            config = config.addingSubscription(chainPath: [nexusDir, dirName])
 
             // Register network so child chain is operational immediately
             if networks[dirName] == nil {
