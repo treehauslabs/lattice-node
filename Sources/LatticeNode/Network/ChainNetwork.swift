@@ -359,24 +359,23 @@ public actor ChainNetwork: IvyDelegate {
         }
     }
 
-    /// Gossip a transaction to all direct peers with full transaction data.
-    /// Includes the complete signed transaction so receivers can add it to their mempool.
-    public func gossipTransaction(cid: String, transactionData: Data? = nil) async {
-        if let txData = transactionData {
-            // Send body CID + full transaction: [2-byte cid length][cid bytes][tx bytes]
-            var payload = Data()
-            let cidBytes = Data(cid.utf8)
-            var cidLen = UInt16(cidBytes.count)
-            payload.append(Data(bytes: &cidLen, count: 2))
-            payload.append(cidBytes)
-            payload.append(txData)
-            await ivy.broadcastMessage(topic: "mempool-full", payload: payload)
-        } else {
-            // Fallback: CID-only gossip (receiver must fetch)
-            if let payload = cid.data(using: .utf8) {
-                await ivy.broadcastMessage(topic: "mempool", payload: payload)
-            }
-        }
+    /// Gossip a transaction to all direct peers with body data inline.
+    /// `HeaderImpl`'s Codable only emits rawCID, so a gossiped Transaction decodes
+    /// with `body.node == nil` — which trips `TransactionValidator.validate`'s
+    /// missingBody guard and drops the tx. We include body bytes in the payload
+    /// so receivers can reconstruct the Transaction with body.node populated.
+    /// Wire format: [cidLen: UInt16 LE][cid][bodyLen: UInt32 LE][body][tx]
+    public func gossipTransaction(cid: String, bodyData: Data, transactionData: Data) async {
+        var payload = Data()
+        let cidBytes = Data(cid.utf8)
+        var cidLen = UInt16(cidBytes.count)
+        payload.append(Data(bytes: &cidLen, count: 2))
+        payload.append(cidBytes)
+        var bodyLen = UInt32(bodyData.count)
+        payload.append(Data(bytes: &bodyLen, count: 4))
+        payload.append(bodyData)
+        payload.append(transactionData)
+        await ivy.broadcastMessage(topic: "mempool-full", payload: payload)
     }
 
     // MARK: - IvyDelegate
@@ -412,51 +411,46 @@ public actor ChainNetwork: IvyDelegate {
                 await delegate?.chainNetwork(self, didReceiveBlockAnnouncement: cid, from: peer)
             }
         case "mempool-full":
-            // Full transaction gossip: [2-byte cid length][cid bytes][transaction bytes]
-            guard payload.count > 2 else { break }
+            // Wire format: [cidLen: UInt16 LE][cid][bodyLen: UInt32 LE][body][tx]
+            // Body is inline because HeaderImpl's Codable only emits rawCID —
+            // without it, the decoded Transaction has body.node == nil and
+            // TransactionValidator fails with .missingBody.
+            guard payload.count >= 6 else { break }
             let cidLen = Int(payload.withUnsafeBytes { $0.load(as: UInt16.self) })
-            guard payload.count >= 2 + cidLen else { break }
-            let cidStr = String(data: payload[2..<2+cidLen], encoding: .utf8) ?? ""
+            guard cidLen > 0, payload.count >= 2 + cidLen + 4 else { break }
+            guard let cidStr = String(data: payload[2..<2+cidLen], encoding: .utf8) else { break }
+            let bodyLenOffset = 2 + cidLen
+            let bodyLen = Int(payload.withUnsafeBytes {
+                $0.loadUnaligned(fromByteOffset: bodyLenOffset, as: UInt32.self)
+            })
+            let bodyStart = bodyLenOffset + 4
+            guard bodyLen > 0, payload.count > bodyStart + bodyLen else { break }
+            let bodyData = Data(payload[bodyStart..<bodyStart+bodyLen])
+            let txData = Data(payload[(bodyStart+bodyLen)...])
             // Dedup: skip if we've seen this tx CID recently
             let now = ContinuousClock.Instant.now
             if let lastSeen = recentTxCIDs[cidStr], now - lastSeen < Self.txDeduplicationWindow {
                 break
             }
-            recentTxCIDs.removeValue(forKey: cidStr)
-            recentTxCIDs[cidStr] = now
-            while recentTxCIDs.count > Self.maxRecentTxCIDs {
-                recentTxCIDs.removeFirst()
+            guard let body = TransactionBody(data: bodyData),
+                  let wireTx = Transaction(data: txData),
+                  wireTx.body.rawCID == cidStr,
+                  HeaderImpl<TransactionBody>(node: body).rawCID == cidStr else { break }
+            let resolvedTx = Transaction(
+                signatures: wireTx.signatures,
+                body: HeaderImpl(rawCID: cidStr, node: body, encryptionInfo: nil)
+            )
+            if let del = delegate, !(await del.chainNetwork(self, shouldAcceptTransaction: resolvedTx, bodyCID: cidStr)) {
+                break
             }
-            let txData = Data(payload[(2+cidLen)...])
-            if let tx = Transaction(data: txData) {
-                if tx.body.rawCID == cidStr {
-                    // Validate before mempool admission
-                    if let del = delegate, !(await del.chainNetwork(self, shouldAcceptTransaction: tx, bodyCID: cidStr)) {
-                        break
-                    }
-                    if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
-                        await storeLocally(cid: cidStr, data: bodyData)
-                    }
-                    let accepted = await nodeMempool.add(transaction: tx)
-                    if accepted {
-                        await ivy.broadcastMessage(topic: "mempool-full", payload: payload)
-                    }
+            await storeLocally(cid: cidStr, data: bodyData)
+            let accepted = await nodeMempool.add(transaction: resolvedTx)
+            if accepted {
+                recentTxCIDs[cidStr] = now
+                while recentTxCIDs.count > Self.maxRecentTxCIDs {
+                    recentTxCIDs.removeFirst()
                 }
-            }
-        case "mempool":
-            // Legacy CID-only gossip (fallback)
-            if let txCID = String(data: payload, encoding: .utf8) {
-                let mNow = ContinuousClock.Instant.now
-                if let lastSeen = recentTxCIDs[txCID], mNow - lastSeen < Self.txDeduplicationWindow {
-                    break
-                }
-                recentTxCIDs.removeValue(forKey: txCID)
-                recentTxCIDs[txCID] = mNow
-                if let txData = try? await ivyFetcher.fetch(rawCid: txCID) {
-                    if let tx = Transaction(data: txData) {
-                        _ = await nodeMempool.add(transaction: tx)
-                    }
-                }
+                await ivy.broadcastMessage(topic: "mempool-full", payload: payload)
             }
         case "chainAnnounce":
             if let announce = ChainAnnounceData.deserialize(payload) {

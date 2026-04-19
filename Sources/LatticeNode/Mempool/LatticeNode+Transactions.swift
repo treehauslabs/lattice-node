@@ -40,15 +40,15 @@ extension LatticeNode {
         }
         let added = await network.submitTransaction(transaction)
         if added {
-            let bodyData = transaction.body.node?.toData()
-            // Store body to CAS so we can serve it to others
-            if let bodyData {
-                await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
-            }
             metrics.increment("lattice_transactions_submitted_total")
-            // Gossip with full signed transaction — receivers can validate and add to mempool
-            let txData = transaction.toData()
-            await network.gossipTransaction(cid: transaction.body.rawCID, transactionData: txData)
+            // Gossip with body inline so receivers can reconstruct body.node — HeaderImpl's
+            // Codable only emits rawCID, so without inline body the receiver's validator
+            // trips its missingBody guard and drops the tx.
+            if let bodyData = transaction.body.node?.toData(),
+               let txData = transaction.toData() {
+                await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
+                await network.gossipTransaction(cid: transaction.body.rawCID, bodyData: bodyData, transactionData: txData)
+            }
             let fee = transaction.body.node?.fee ?? 0
             let sender = transaction.body.node?.signers.first ?? ""
             await subscriptions.emit(.newTransaction(
@@ -128,10 +128,4 @@ extension LatticeNode {
         return true
     }
 
-    public func broadcastTransaction(directory: String, transaction: Transaction) async {
-        guard let network = networks[directory] else { return }
-        guard let bodyData = transaction.body.node?.toData() else { return }
-        await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
-        await network.gossipTransaction(cid: transaction.body.rawCID)
-    }
 }
