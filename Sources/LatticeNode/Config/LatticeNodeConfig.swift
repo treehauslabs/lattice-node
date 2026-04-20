@@ -83,4 +83,26 @@ public struct LatticeNodeConfig: Sendable {
             discoveryOnly: discoveryOnly
         )
     }
+
+    public func removingSubscription(chainPath: [String]) -> LatticeNodeConfig {
+        guard chainPath != ["Nexus"] else { return self }
+        var subs = subscribedChains
+        subs.set(chainPath, value: false)
+        return LatticeNodeConfig(
+            publicKey: publicKey,
+            privateKey: privateKey,
+            listenPort: listenPort,
+            bootstrapPeers: bootstrapPeers,
+            storagePath: storagePath,
+            enableLocalDiscovery: enableLocalDiscovery,
+            persistInterval: persistInterval,
+            subscribedChains: subs,
+            syncStrategy: syncStrategy,
+            retentionDepth: retentionDepth,
+            resources: resources,
+            finality: finality,
+            maxPeerConnections: maxPeerConnections,
+            discoveryOnly: discoveryOnly
+        )
+    }
 }

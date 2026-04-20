@@ -430,15 +430,17 @@ final class MempoolEndToEndTests: XCTestCase {
     }
 
     func testMempoolSelectsHighestFeeFirst() async {
-        let kp = CryptoUtils.generateKeyPair()
-        let kpAddr = addr(kp.publicKey)
         let mempool = NodeMempool(maxSize: 100)
 
+        // Distinct senders — otherwise nonce-ordering within a single account
+        // forces ascending-nonce selection, which can conflict with fee order.
         for i: UInt64 in 0..<5 {
+            let kp = CryptoUtils.generateKeyPair()
+            let kpAddr = addr(kp.publicKey)
             let body = TransactionBody(
                 accountActions: [], actions: [], depositActions: [], genesisActions: [],
                 peerActions: [], receiptActions: [], withdrawalActions: [],
-                signers: [kpAddr], fee: i * 10, nonce: i
+                signers: [kpAddr], fee: i * 10, nonce: 0
             )
             let _ = await mempool.add(transaction: sign(body, kp))
         }

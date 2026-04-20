@@ -7,33 +7,35 @@ import cashew
 extension LatticeNode {
 
     public func startMining(directory: String, identity: MinerIdentity? = nil) async {
-        guard let network = networks[directory] else { return }
-        guard miners[directory] == nil else { return }
-
-        guard let chainState = await chain(for: directory) else { return }
-        let isNexus = directory == genesisConfig.spec.directory
-        let spec: ChainSpec
-        if isNexus {
-            spec = genesisConfig.spec
-        } else if let snapshot = await chainState.tipSnapshot,
-                  let resolved = try? await HeaderImpl<ChainSpec>(rawCID: snapshot.specCID).resolve(fetcher: network.ivyFetcher).node {
-            spec = resolved
-        } else {
+        let nexusDir = genesisConfig.spec.directory
+        if directory != nexusDir {
+            guard networks[directory] != nil else { return }
+            let chainPath = [nexusDir, directory]
+            if !config.isSubscribed(chainPath: chainPath) {
+                config = config.addingSubscription(chainPath: chainPath)
+            }
+            if miners[nexusDir] == nil {
+                await startMining(directory: nexusDir, identity: identity)
+            }
             return
         }
+
+        guard let network = networks[directory] else { return }
+        guard miners[directory] == nil else { return }
+        guard let chainState = await chain(for: directory) else { return }
         let identity = identity ?? MinerIdentity(
             publicKeyHex: config.publicKey,
             privateKeyHex: config.privateKey
         )
         let tipCache = tipCaches[directory]
-        let childProvider: (@Sendable () async -> [ChildMiningContext])? = isNexus
-            ? { @Sendable [weak self] in await self?.buildChildMiningContexts() ?? [] }
-            : nil
+        let childProvider: (@Sendable () async -> [ChildMiningContext])? = { @Sendable [weak self] in
+            await self?.buildChildMiningContexts() ?? []
+        }
         let miner = MinerLoop(
             chainState: chainState,
             mempool: network.nodeMempool,
             fetcher: network.ivyFetcher,
-            spec: spec,
+            spec: genesisConfig.spec,
             identity: identity,
             childContextProvider: childProvider,
             batchSize: config.resources.miningBatchSize,
@@ -45,6 +47,14 @@ extension LatticeNode {
     }
 
     public func stopMining(directory: String) async {
+        let nexusDir = genesisConfig.spec.directory
+        if directory != nexusDir {
+            let chainPath = [nexusDir, directory]
+            if config.isSubscribed(chainPath: chainPath) {
+                config = config.removingSubscription(chainPath: chainPath)
+            }
+            return
+        }
         guard let miner = miners[directory] else { return }
         await miner.stop()
         miners.removeValue(forKey: directory)
@@ -65,7 +75,7 @@ extension LatticeNode {
 
         await storeBlockRecursively(block, network: network)
         await network.publishBlock(cid: header.rawCID, data: blockData)
-        await network.setChainTip(tipCID: header.rawCID, referencedCIDs: [])
+        await network.setChainTip(tipCID: header.rawCID, stateRoots: Self.stateRoots(of: block))
 
         // Settlement: submit mining work to Ivy creditors
         // The block hash serves as proof of work — creditors verify it meets difficulty

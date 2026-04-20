@@ -21,14 +21,11 @@ public actor ChainNetwork: IvyDelegate {
     public let ivy: Ivy
     public let ivyFetcher: IvyFetcher
     public let nodeMempool: NodeMempool
-    public let verifiedStore: ProfitWeightedStore
+    /// Shared node-level content-addressed store (one LRU across all chains).
+    /// Owned by LatticeNode; every ChainNetwork references the same instance.
+    public let sharedStore: ProfitWeightedStore
     public let protectionPolicy: BlockchainProtectionPolicy
-    private let localCAS: any AcornCASWorker
-    /// Raw disk worker reference for persisting state on shutdown.
-    private let diskStore: DiskCASWorker<DefaultFileSystem>
-    /// Separate store for earning pins — LFU eviction keeps profitable data.
-    /// Not distance-based; stores whatever peers request us to pin.
-    private let pinStore: DiskCASWorker<DefaultFileSystem>
+    let localCAS: any AcornCASWorker
     private let resources: NodeResourceConfig
     public weak var delegate: ChainNetworkDelegate?
     private var subscribedChains: Set<String>
@@ -39,14 +36,17 @@ public actor ChainNetwork: IvyDelegate {
     public init(
         directory: String,
         config: IvyConfig,
-        storagePath: URL,
         resources: NodeResourceConfig = .default,
         chainCount: Int = 1,
-        maxPeerConnections: Int = BootstrapPeers.maxPeerConnections
+        maxPeerConnections: Int = BootstrapPeers.maxPeerConnections,
+        sharedStore: ProfitWeightedStore,
+        protectionPolicy: BlockchainProtectionPolicy
     ) async throws {
         self.directory = directory
         self.subscribedChains = Set([directory])
         self.resources = resources
+        self.sharedStore = sharedStore
+        self.protectionPolicy = protectionPolicy
         let mempoolSize = resources.mempoolSizePerChain(chainCount: chainCount)
         self.nodeMempool = NodeMempool(maxSize: mempoolSize)
 
@@ -57,37 +57,13 @@ public actor ChainNetwork: IvyDelegate {
             maxBytes: memoryBytes
         )
 
-        let diskBytes = resources.diskBytesPerChain(chainCount: chainCount)
-        let disk = try DiskCASWorker(
-            directory: storagePath.appendingPathComponent(directory),
-            maxBytes: diskBytes
-        )
-
-        let policy = BlockchainProtectionPolicy()
-        self.protectionPolicy = policy
-        let verified = ProfitWeightedStore(
-            inner: disk,
-            nodePublicKey: config.publicKey,
-            maxEntries: max(diskBytes / 4096, 1000),
-            protectionPolicy: policy
-        )
-        self.verifiedStore = verified
-        self.diskStore = disk
-
-        // Earning pin store: LFU eviction keeps frequently-requested (profitable) data.
-        // Separate from blockchain data — stores whatever maximizes serving revenue.
-        let pinDiskBytes = diskBytes / 4
-        let pinDisk = try DiskCASWorker(
-            directory: storagePath.appendingPathComponent(directory).appendingPathComponent("pins"),
-            maxBytes: pinDiskBytes
-        )
-        self.pinStore = pinDisk
-
-        // Local CAS: memory + blockchain disk + pin disk
-        // Reads check all three; Ivy can serve from any.
+        // Local CAS: per-chain memory cache in front of the shared node-level store.
+        // Reads consult memory first, then the shared LRU-backed disk. Ivy can serve
+        // from either — every subscribed chain's protection policy contributes to
+        // what stays resident in the shared store.
         let local = await CompositeCASWorker(
-            workers: ["mem": memory, "disk": verified, "pins": pinDisk],
-            order: ["mem", "disk", "pins"]
+            workers: ["mem": memory, "shared": sharedStore],
+            order: ["mem", "shared"]
         )
         self.localCAS = local
 
@@ -129,11 +105,6 @@ public actor ChainNetwork: IvyDelegate {
         await ivy.stop()
     }
 
-    public func persistDiskState() async {
-        try? await diskStore.persistState()
-        try? await pinStore.persistState()
-    }
-
     // MARK: - Fetcher (unified read path)
 
     /// Volume-aware fetcher for all Cashew resolution: state, blocks, proofs.
@@ -145,7 +116,7 @@ public actor ChainNetwork: IvyDelegate {
     /// Store data locally and publish to the network via Ivy.
     public func storeAndPublish(cid: String, data: Data) async {
         await protectionPolicy.pin(cid)
-        await verifiedStore.storeVerified(cid: ContentIdentifier(rawValue: cid), data: data)
+        await sharedStore.storeVerified(cid: ContentIdentifier(rawValue: cid), data: data)
         await ivy.save(cid: cid, data: data, pin: true)
     }
 
@@ -241,8 +212,14 @@ public actor ChainNetwork: IvyDelegate {
 
     // MARK: - Chain Tip Management
 
-    public func setChainTip(tipCID: String, referencedCIDs: [String]) async {
-        await protectionPolicy.setChainTip(chain: directory, tipCID: tipCID, referencedCIDs: referencedCIDs)
+    /// Register the tip of this chain for eviction protection.
+    /// `stateRoots` should contain the Volume boundaries that must remain resolvable
+    /// to answer queries at this tip (frontier, homestead, tx, childBlocks).
+    /// The tip block itself is added to both the state-root set (permanent while
+    /// subscribed) and the recent-blocks set (TTL-protected for reorg safety).
+    public func setChainTip(tipCID: String, stateRoots: [String]) async {
+        await protectionPolicy.setStateRoots(chain: directory, roots: stateRoots + [tipCID])
+        await protectionPolicy.addRecentBlock(tipCID)
     }
 
     // MARK: - Chain Subscription
@@ -283,12 +260,13 @@ public actor ChainNetwork: IvyDelegate {
 
     // MARK: - Storage Advertising
 
-    /// Available pin storage capacity based on the earning pin store's disk budget.
+    /// Available storage capacity: unused headroom in the shared node-level disk budget.
+    /// Per-chain protection pins occupy space; evictable LRU entries count as free.
     public var availableStorageCapacity: Int {
         get async {
-            let diskBytes = resources.diskBytesPerChain(chainCount: 1) / 4
-            let usedBytes = await pinStore.totalBytes
-            return Swift.max(diskBytes - usedBytes, 0)
+            let total = resources.totalDiskBytes()
+            let used = await sharedStore.entryCount * 4096  // ~4KB avg entry size
+            return Swift.max(total - used, 0)
         }
     }
 
@@ -302,10 +280,11 @@ public actor ChainNetwork: IvyDelegate {
         await ivy.broadcastMessage(topic: "storage", payload: payload)
     }
 
-    /// Accept a remote pin request: fetch the CID, store it in the earning pin store, announce it.
-    /// The pin store uses LFU eviction — unprofitable data gets replaced by profitable data naturally.
+    /// Accept a remote pin request: fetch the CID, store it in the shared store,
+    /// pin it via this chain's protection policy, and announce.
+    /// Earning pins ride on the same LRU as blockchain data — they compete on merit;
+    /// unpinned / unprofitable entries age out naturally.
     private func handlePinRequest(cid: String, from peer: PeerID) async {
-        // Already have it locally? Just announce.
         let cidObj = ContentIdentifier(rawValue: cid)
         if await localCAS.has(cid: cidObj) {
             let fee = await ivy.config.relayFee * 2
@@ -314,13 +293,11 @@ public actor ChainNetwork: IvyDelegate {
             return
         }
 
-        // Fetch from the requesting peer (targeted, one hop)
         guard let data = await ivy.get(cid: cid, target: peer) else { return }
 
-        // Store in the earning pin store (LFU eviction, not distance-based)
-        await pinStore.storeLocal(cid: cidObj, data: data)
+        await protectionPolicy.pin(cid)
+        await sharedStore.storeVerified(cid: cidObj, data: data)
 
-        // Announce so peers discover us
         let fee = await ivy.config.relayFee * 2
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
         await ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)

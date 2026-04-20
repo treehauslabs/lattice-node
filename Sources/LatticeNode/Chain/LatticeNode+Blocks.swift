@@ -22,6 +22,19 @@ extension LatticeNode {
         return true
     }
 
+    // MARK: - State Root Extraction
+
+    /// Volume boundary CIDs that must stay resolvable to answer queries at `block`.
+    /// Pinned in the per-chain protection policy to survive LRU eviction.
+    static func stateRoots(of block: Block) -> [String] {
+        [
+            block.frontier.rawCID,
+            block.homestead.rawCID,
+            block.transactions.rawCID,
+            block.childBlocks.rawCID,
+        ].filter { !$0.isEmpty }
+    }
+
     // MARK: - Recursive Block Storage
 
     func storeBlockRecursively(_ block: Block, network: ChainNetwork) async {
@@ -455,7 +468,7 @@ extension LatticeNode {
         )
         if accepted {
             tally.recordSuccess(peer: peer)
-            await network.setChainTip(tipCID: cid, referencedCIDs: [])
+            await network.setChainTip(tipCID: cid, stateRoots: Self.stateRoots(of: block))
             // Announce accepted block so we earn from serving it
             await network.announceStoredBlock(cid: cid, data: data)
         } else {
@@ -630,25 +643,8 @@ extension LatticeNode {
                 guard let resolved = try? await childBlockHeader.resolve(fetcher: fetcher).node else { continue }
                 childBlock = resolved
             }
-            // Store the child block and its frontier state in the child CAS.
-            // The block data is needed so the miner can fetch the previous block.
-            // The frontier state tree (deposits, accounts, etc.) is needed for
-            // RPC queries that resolve state from the child chain's CAS.
-            // The miner stores everything in the nexus CAS, but the child CAS
-            // only has what we explicitly copy here.
             if let childNet = networks[childDir] {
                 await storeBlockRecursively(childBlock, network: childNet)
-                // The frontier/homestead state trees are content-addressed tries
-                // that only exist in the nexus CAS after mining. Resolve them from
-                // the nexus fetcher and store in the child CAS so queries work.
-                let storer = BufferedStorer()
-                if let frontier = try? await childBlock.frontier.resolveRecursive(fetcher: fetcher) {
-                    try? frontier.storeRecursively(storer: storer)
-                }
-                if let homestead = try? await childBlock.homestead.resolveRecursive(fetcher: fetcher) {
-                    try? homestead.storeRecursively(storer: storer)
-                }
-                await storer.flush(to: childNet)
             }
             // Use the child network's fetcher for resolving child transactions
             // since child tx data lives in the child CAS

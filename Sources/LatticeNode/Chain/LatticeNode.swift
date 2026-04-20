@@ -36,6 +36,15 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var tipCaches: [String: TipCache]
     var frontierCaches: [String: FrontierCache]
     public let nodeAddress: String
+    /// Shared node-level content-addressed store — one LRU budget for all chains.
+    /// Per-chain protection policies (registered in `unionProtection`) decide what
+    /// survives eviction; nothing else is retention-obligated.
+    public let sharedStore: ProfitWeightedStore
+    /// Raw disk worker behind `sharedStore`, referenced only for `persistState` on shutdown.
+    private let sharedDisk: DiskCASWorker<DefaultFileSystem>
+    /// Aggregates every subscribed chain's BlockchainProtectionPolicy into one
+    /// EvictionProtectionPolicy that the shared store consults on eviction.
+    public let unionProtection: UnionProtectionPolicy
 
     // MARK: - Initialization
 
@@ -51,6 +60,28 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
         let resourcesWithIdentity = config.resources.withIdentity(publicKey: config.publicKey)
         let chainCount = max(config.subscribedChains.allValues().count, 1)
+
+        // Shared node-level content store. One disk budget, one LRU, consulted by every chain.
+        // Per-chain BlockchainProtectionPolicy registers its pins in `unionProtection`;
+        // eviction asks whether any chain protects a CID before dropping it.
+        let totalDiskBytes = resourcesWithIdentity.totalDiskBytes()
+        let sharedDisk = try DiskCASWorker(
+            directory: config.storagePath.appendingPathComponent("shared-cas"),
+            maxBytes: totalDiskBytes
+        )
+        let unionProtection = UnionProtectionPolicy()
+        let sharedStore = ProfitWeightedStore(
+            inner: sharedDisk,
+            nodePublicKey: config.publicKey,
+            maxEntries: resourcesWithIdentity.maxStorageEntries,
+            protectionPolicy: unionProtection
+        )
+        self.sharedDisk = sharedDisk
+        self.sharedStore = sharedStore
+        self.unionProtection = unionProtection
+
+        let nexusProtection = BlockchainProtectionPolicy()
+        await unionProtection.register(chain: genesisConfig.spec.directory, policy: nexusProtection)
         let nexusNetwork = try await ChainNetwork(
             directory: genesisConfig.spec.directory,
             config: IvyConfig(
@@ -59,10 +90,11 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
                 bootstrapPeers: config.bootstrapPeers,
                 enableLocalDiscovery: config.enableLocalDiscovery
             ),
-            storagePath: config.storagePath,
             resources: resourcesWithIdentity,
             chainCount: chainCount,
-            maxPeerConnections: config.maxPeerConnections
+            maxPeerConnections: config.maxPeerConnections,
+            sharedStore: sharedStore,
+            protectionPolicy: nexusProtection
         )
 
         let persister = ChainStatePersister(
@@ -195,8 +227,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         for (dir, network) in networks {
             await persistChainState(directory: dir)
             await persistMempool(directory: dir, network: network)
-            await network.persistDiskState()
         }
+        try? await sharedDisk.persistState()
         let currentPeers = await connectedPeerEndpoints()
         await anchorPeers.update(peers: currentPeers)
         for (_, network) in networks {
@@ -215,7 +247,11 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     }
 
     public func isMining(directory: String) -> Bool {
-        miners[directory] != nil
+        let nexusDir = genesisConfig.spec.directory
+        if directory == nexusDir {
+            return miners[nexusDir] != nil
+        }
+        return miners[nexusDir] != nil && config.isSubscribed(chainPath: [nexusDir, directory])
     }
 
     public func registerChainNetwork(
@@ -225,12 +261,15 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         guard networks[directory] == nil else { return }
         let resourcesWithIdentity = self.config.resources.withIdentity(publicKey: self.config.publicKey)
         let chainCount = max(networks.count + 1, 1)
+        let chainProtection = BlockchainProtectionPolicy()
+        await unionProtection.register(chain: directory, policy: chainProtection)
         let network = try await ChainNetwork(
             directory: directory,
             config: config,
-            storagePath: self.config.storagePath,
             resources: resourcesWithIdentity,
-            chainCount: chainCount
+            chainCount: chainCount,
+            sharedStore: sharedStore,
+            protectionPolicy: chainProtection
         )
         await network.setDelegate(self)
         networks[directory] = network

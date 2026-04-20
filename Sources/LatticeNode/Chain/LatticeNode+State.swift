@@ -33,7 +33,7 @@ extension LatticeNode {
                 let mc = await networks[dir]?.nodeMempool.count ?? 0
                 result.append(ChainInfo(
                     directory: dir, height: h, tip: t,
-                    mining: miners[dir] != nil, mempoolCount: mc,
+                    mining: isMining(directory: dir), mempoolCount: mc,
                     syncing: isChildChainSyncing(directory: dir)
                 ))
             }

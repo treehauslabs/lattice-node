@@ -49,6 +49,12 @@ public struct NodeResourceConfig: Sendable {
         return max(total / max(chainCount, 1), 1_048_576)
     }
 
+    /// Total disk budget for the node's shared content-addressed store.
+    /// All chains share this budget; per-chain protection pins decide what survives LRU.
+    public func totalDiskBytes() -> Int {
+        max(Int(diskBudgetGB * 1_073_741_824), 1_048_576)
+    }
+
     public func mempoolSizePerChain(chainCount: Int) -> Int {
         let totalBytes = Int(mempoolBudgetMB * 1_048_576)
         let estimatedTxSize = 512

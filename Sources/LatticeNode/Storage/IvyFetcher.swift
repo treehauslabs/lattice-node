@@ -48,7 +48,8 @@ public actor IvyFetcher: VolumeAwareFetcher {
     // MARK: - Fetcher
 
     public func fetch(rawCid: String) async throws -> Data {
-        // 1. Check local storage
+        // 1. Check local storage (memory + node-level shared CAS; merged-mining child
+        //    state written by the nexus miner lives in the same store).
         let cid = ContentIdentifier(rawValue: rawCid)
         if let data = await localWorker.get(cid: cid) {
             return data
