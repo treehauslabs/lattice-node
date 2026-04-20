@@ -548,21 +548,18 @@ final class CASIntegrityTests: XCTestCase {
         let cid = ContentIdentifier(for: Data("test".utf8))
         let data = Data("test".utf8)
 
-        // Store in disk only
         await disk.storeLocal(cid: cid, data: data)
 
-        // Memory should NOT have it
-        let memResult = await memory.getLocal(cid: cid)
-        XCTAssertNil(memResult)
+        let memBefore = await memory.getLocal(cid: cid)
+        XCTAssertNil(memBefore)
 
-        // Composite get should find it in disk and backfill to memory
         let result = await composite.get(cid: cid)
         XCTAssertNotNil(result, "Composite should find data in disk")
         XCTAssertEqual(result, data)
 
-        // Now memory should have it (backfilled)
+        // Upward warming: a hit in disk populates memory.
         let memAfter = await memory.getLocal(cid: cid)
-        XCTAssertNotNil(memAfter, "Memory should have been backfilled")
+        XCTAssertNotNil(memAfter, "Memory should be warmed from disk")
     }
 
     func testDiskCASShardingUniform() {

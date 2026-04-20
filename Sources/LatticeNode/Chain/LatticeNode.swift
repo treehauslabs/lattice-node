@@ -21,6 +21,14 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var blocksSinceLastPersist: [String: UInt64]
     var recentPeerBlocks: OrderedDictionary<String, ContinuousClock.Instant>
     var peerBlockCounts: OrderedDictionary<PeerID, (count: Int, windowStart: ContinuousClock.Instant)>
+    /// CIDs currently being validated by `processBlockAndRecoverReorg`. The actor
+    /// suspends during `lattice.processBlockHeader`, so a gossip echo of a block
+    /// we just submitted (or just received) can re-enter while the first call is
+    /// still in flight — `chain.contains` can't see it until validation finishes.
+    /// Tracking in-flight CIDs here lets the re-entrant call short-circuit
+    /// instead of burning ~1.5s re-validating a block that will be rejected as a
+    /// duplicate anyway.
+    var inFlightBlockCIDs: Set<String> = []
     static let maxBlocksPerPeerPerWindow = 20
     static let peerRateWindow: Duration = .seconds(10)
     var syncTask: Task<Void, Never>?
@@ -65,8 +73,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         // Per-chain BlockchainProtectionPolicy registers its pins in `unionProtection`;
         // eviction asks whether any chain protects a CID before dropping it.
         let totalDiskBytes = resourcesWithIdentity.totalDiskBytes()
+        let sharedCASPath = config.storagePath.appendingPathComponent("shared-cas")
         let sharedDisk = try DiskCASWorker(
-            directory: config.storagePath.appendingPathComponent("shared-cas"),
+            directory: sharedCASPath,
             maxBytes: totalDiskBytes
         )
         let unionProtection = UnionProtectionPolicy()
@@ -144,7 +153,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             let log = NodeLogger("genesis")
             log.error("Failed to store genesis block recursively: \(error)")
         }
-        await storer.flush(to: nexusNetwork)
+        await nexusNetwork.storeBlockBatch(rootCID: genesisHeader.rawCID, entries: storer.entryList)
 
         self.genesisResult = genesis
         let nexusLevel = ChainLevel(chain: genesis.chainState, children: [:])

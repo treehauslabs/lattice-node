@@ -15,6 +15,19 @@ extension LatticeNode {
     static let peerBlockCountWindow: Duration = .seconds(30)
     static let maxReorgDepth: Int = 100
 
+    nonisolated static func diagLog(_ msg: String) {
+        let line = "[\(Date().timeIntervalSince1970)] \(msg)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        let path = "/tmp/lattice-diag.log"
+        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) {
+            try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            try? handle.close()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
     nonisolated func isBlockTimestampValid(_ block: Block) -> Bool {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         if block.timestamp > nowMs + Self.maxTimestampDriftMs { return false }
@@ -46,7 +59,7 @@ extension LatticeNode {
             let log = NodeLogger("blocks")
             log.error("Failed to store block recursively: \(error)")
         }
-        await storer.flush(to: network)
+        await network.storeBlockBatch(rootCID: header.rawCID, entries: storer.entryList)
     }
 
     static let maxCopyDepth = 64
@@ -87,18 +100,39 @@ extension LatticeNode {
             let log = NodeLogger("blocks")
             log.error("Failed to store received block \(cid) recursively: \(error)")
         }
-        await storer.flush(to: network)
+        await network.storeBlockBatch(rootCID: cid, entries: storer.entryList)
     }
 
     // MARK: - Block Processing with Reorg Recovery
+
+    enum BlockProcessOutcome {
+        case accepted
+        case duplicate
+        case rejected
+    }
 
     func processBlockAndRecoverReorg(
         header: BlockHeader,
         directory: String,
         fetcher: Fetcher,
         resolvedBlock: Block? = nil
-    ) async -> Bool {
-        guard let chain = await chain(for: directory) else { return false }
+    ) async -> BlockProcessOutcome {
+        guard let chain = await chain(for: directory) else { return .rejected }
+
+        // Peers echo our own block announcements back via gossip. Detect the
+        // duplicate here so the caller can record peer success without
+        // warning or re-announcing.
+        if await chain.contains(blockHash: header.rawCID) { return .duplicate }
+
+        // A gossip echo can arrive ~60ms after we submit/receive a block, while
+        // the first call is still suspended inside `lattice.processBlockHeader`.
+        // The chain hasn't recorded the block yet, so `chain.contains` above
+        // misses it. Guard with an in-flight set so the echo short-circuits
+        // instead of re-validating.
+        if inFlightBlockCIDs.contains(header.rawCID) { return .duplicate }
+        inFlightBlockCIDs.insert(header.rawCID)
+        defer { inFlightBlockCIDs.remove(header.rawCID) }
+
         let tipBefore = await chain.getMainChainTip()
 
         // When processing nexus blocks, child block validation needs access to
@@ -116,11 +150,16 @@ extension LatticeNode {
         } else {
             validationFetcher = fetcher
         }
+        let phLog = NodeLogger("blocks")
+        let phStart = ContinuousClock.now
+        let phShort = String(header.rawCID.prefix(16))
+        Self.diagLog("processBlockHeader enter \(directory) \(phShort)…")
         let accepted = await lattice.processBlockHeader(header, fetcher: validationFetcher)
+        let phElapsed = ContinuousClock.now - phStart
+        Self.diagLog("processBlockHeader exit  \(directory) \(phShort)… accepted=\(accepted) elapsed=\(phElapsed)")
         guard accepted else {
-            let log = NodeLogger("blocks")
-            log.warn("\(directory): block \(String(header.rawCID.prefix(16)))… rejected by processBlockHeader")
-            return false
+            phLog.warn("\(directory): block \(phShort)… rejected by processBlockHeader")
+            return .rejected
         }
 
         let block: Block?
@@ -159,7 +198,7 @@ extension LatticeNode {
             }
         }
 
-        return true
+        return .accepted
     }
 
     private func recoverOrphanedTransactions(
@@ -462,16 +501,19 @@ extension LatticeNode {
 
         let directory = await network.directory
         let header = VolumeImpl<Block>(rawCID: cid)
-        let accepted = await processBlockAndRecoverReorg(
+        let outcome = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: await network.ivyFetcher,
             resolvedBlock: block
         )
-        if accepted {
+        switch outcome {
+        case .accepted:
             tally.recordSuccess(peer: peer)
             await network.setChainTip(tipCID: cid, stateRoots: Self.stateRoots(of: block))
             // Announce accepted block so we earn from serving it
             await network.announceStoredBlock(cid: cid, data: data)
-        } else {
+        case .duplicate:
+            tally.recordSuccess(peer: peer)
+        case .rejected:
             tally.recordFailure(peer: peer)
         }
         await maybePersist(directory: directory)
@@ -519,17 +561,20 @@ extension LatticeNode {
         }
 
         let directory = await network.directory
-        let accepted = await processBlockAndRecoverReorg(
+        let outcome = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: resolveFetcher,
             resolvedBlock: block
         )
-        if accepted {
+        switch outcome {
+        case .accepted:
             tally.recordSuccess(peer: peer)
             if let blockData = try? await resolveFetcher.fetch(rawCid: cid) {
                 await network.announceStoredBlock(cid: cid, data: blockData)
             }
             await maybePersist(directory: directory)
-        } else {
+        case .duplicate:
+            tally.recordSuccess(peer: peer)
+        case .rejected:
             tally.recordFailure(peer: peer)
         }
     }

@@ -82,13 +82,16 @@ extension LatticeNode {
         let blockHash = Data(header.rawCID.utf8)
         await settleWithCreditors(network: network, nonce: block.nonce, blockHash: blockHash)
 
-        let accepted = await processBlockAndRecoverReorg(
+        Self.diagLog("submitMinedBlock \(directory) index=\(block.index) cid=\(String(header.rawCID.prefix(16)))…")
+        let outcome = await processBlockAndRecoverReorg(
             header: header,
             directory: directory,
             fetcher: network.ivyFetcher,
             resolvedBlock: block
         )
-        if !accepted {
+        Self.diagLog("submitMinedBlock done \(directory) index=\(block.index) outcome=\(outcome)")
+        let accepted = outcome == .accepted
+        if outcome == .rejected {
             log.warn("\(directory): mined block at index \(block.index) was NOT accepted")
         }
         if accepted, let removals = pendingRemovals {

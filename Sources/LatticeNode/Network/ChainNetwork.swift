@@ -127,10 +127,21 @@ public actor ChainNetwork: IvyDelegate {
     }
 
     public func storeBatch(_ entries: [(String, Data)]) async {
-        for (cid, data) in entries {
-            let contentId = ContentIdentifier(rawValue: cid)
-            await localCAS.store(cid: contentId, data: data)
+        guard !entries.isEmpty else { return }
+        let mapped: [(ContentIdentifier, Data)] = entries.map {
+            (ContentIdentifier(rawValue: $0.0), $0.1)
         }
+        await localCAS.storeLocalBatch(mapped)
+    }
+
+    /// Store a batch that comprises a single Volume's merkle subtree and
+    /// register its members with the shared store so volume-granularity
+    /// eviction can pick the whole group as a unit.
+    public func storeBlockBatch(rootCID: String, entries: [(String, Data)]) async {
+        await storeBatch(entries)
+        guard !rootCID.isEmpty else { return }
+        let memberCIDs = entries.map(\.0)
+        await sharedStore.registerVolume(rootCID: rootCID, childCIDs: memberCIDs)
     }
 
     // MARK: - Block Operations (backward compat aliases)

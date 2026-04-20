@@ -1,13 +1,13 @@
 {
-  "originHash" : "4ab61831fd61e4adc840b312f6354bd72ff1450145d3ffa74c35eeb5382a0246",
+  "originHash" : "64e0af9e48f477a1980a0f744ce05d3f82cb914b06fe1be0de3bda982375deb2",
   "pins" : [
     {
       "identity" : "acorn",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Acorn.git",
       "state" : {
-        "revision" : "8f2911ff78e9a0dd14d7cc7bf79276e4b326359e",
-        "version" : "2.0.0"
+        "revision" : "a685a022b88dfb7be479e89d91c61f65c6478520",
+        "version" : "2.1.0"
       }
     },
     {
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/AcornDiskWorker.git",
       "state" : {
-        "revision" : "5cc8dc7f37ed89b2f1b2a65ecee0ffabd03129f3",
-        "version" : "2.1.0"
+        "revision" : "2519f6fb41f29f898bef9e5818bd1014c9cb02ac",
+        "version" : "2.2.0"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/AcornMemoryWorker.git",
       "state" : {
-        "revision" : "da833b11cbbbe878ef94713e75cb4e5bf0cc3f09",
-        "version" : "2.0.0"
+        "revision" : "7c68da94a2491167c1f7dd1eac4449af4d63c129",
+        "version" : "2.1.0"
       }
     },
     {
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Ivy.git",
       "state" : {
-        "revision" : "f1db58d1ae1ebb540f1e7882b5226bf0bf26483f",
-        "version" : "3.2.0"
+        "revision" : "342080a65eb2dc5c5dee782325b13f62ac4ff5b6",
+        "version" : "3.3.0"
       }
     },
     {

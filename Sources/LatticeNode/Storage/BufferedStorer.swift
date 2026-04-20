@@ -1,18 +1,25 @@
 import Foundation
 import cashew
+import OrderedCollections
 
 final class BufferedStorer: Storer {
-    private(set) var entries: [(String, Data)] = []
+    private(set) var entries: OrderedDictionary<String, Data> = [:]
+
+    var entryList: [(String, Data)] {
+        entries.map { ($0.key, $0.value) }
+    }
 
     func store(rawCid: String, data: Data) throws {
-        entries.append((rawCid, data))
+        // Merkle subtrees are heavily shared across adjacent blocks — only
+        // buffer the first occurrence of each CID.
+        if entries[rawCid] == nil { entries[rawCid] = data }
     }
 
     func flush(to network: ChainNetwork) async {
-        await network.storeBatch(entries)
+        await network.storeBatch(entryList)
     }
 
     func flush(to fetcher: AcornFetcher) async {
-        await fetcher.storeBatch(entries)
+        await fetcher.storeBatch(entryList)
     }
 }

@@ -24,10 +24,11 @@ public actor AcornFetcher: Fetcher {
     }
 
     public func storeBatch(_ entries: [(String, Data)]) async {
-        for (cid, data) in entries {
-            let contentId = ContentIdentifier(rawValue: cid)
-            await worker.store(cid: contentId, data: data)
+        guard !entries.isEmpty else { return }
+        let mapped: [(ContentIdentifier, Data)] = entries.map {
+            (ContentIdentifier(rawValue: $0.0), $0.1)
         }
+        await worker.storeLocalBatch(mapped)
     }
 }
 

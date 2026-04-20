@@ -188,7 +188,7 @@ extension LatticeNode {
 
             let storer = BufferedStorer()
             try? header.storeRecursively(storer: storer)
-            await storer.flush(to: network)
+            await network.storeBlockBatch(rootCID: header.rawCID, entries: storer.entryList)
 
             let _ = await lattice.processBlockHeader(header, fetcher: fetcher)
         }
