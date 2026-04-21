@@ -20,6 +20,16 @@ public actor MinerLoop {
     private var isSubmitting: Bool = false
     private var submitStartedAt: ContinuousClock.Instant = .now
     private var nonceOffset: UInt64 = 0
+    // Cache of the last-mined block with its frontier LatticeState still
+    // resolved in memory. When the next iteration's tip matches this CID, we
+    // reuse the cached block instead of re-fetching + re-resolving the entire
+    // frontier, which is O(state_size). Without this cache, every iteration
+    // re-resolves the full state (minutes per iteration on large chains) and
+    // any other actor touching the same ChainNetwork/CAS (e.g. a dashboard
+    // RPC) competes for the same actor time and stalls mining visibly.
+    private var cachedTipBlock: Block?
+    private var cachedTipCID: String?
+    private var cachedChildTips: [String: (cid: String, block: Block)] = [:]
     public weak var delegate: MinerDelegate?
 
     // Stall watchdog guards against nonce-search hangs only; it must not
@@ -72,6 +82,9 @@ public actor MinerLoop {
         currentTask = nil
         watchdogTask?.cancel()
         watchdogTask = nil
+        cachedTipBlock = nil
+        cachedTipCID = nil
+        cachedChildTips.removeAll()
     }
 
     private func spawnMineTask() {
@@ -294,6 +307,17 @@ public actor MinerLoop {
                         await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals)
                         endSubmit()
                         recordBlockProduced()
+                        // Cache the fully-resolved mined block (frontier.node is
+                        // populated from BlockBuilder) so the next iteration's
+                        // resolveCurrentTip returns it directly and BlockBuilder
+                        // can skip the homestead resolve. Child blocks cached
+                        // analogously for their respective chains.
+                        cachedTipBlock = mined
+                        cachedTipCID = hash
+                        for (dir, childBlock) in childResult.blocks {
+                            let childCID = VolumeImpl<Block>(node: childBlock).rawCID
+                            cachedChildTips[dir] = (cid: childCID, block: childBlock)
+                        }
                         let dSubmit = ContinuousClock.now - tSubmit
                         let dIterTotal = ContinuousClock.now - tIter
                         let hashesAttempted = UInt64(batchCount) * batchSize
@@ -481,22 +505,36 @@ public actor MinerLoop {
             return ChildBlockResult(blocks: [:], pendingChildTxRemovals: [])
         }
 
+        // Snapshot cached child tips; pass into the task group so closures
+        // don't capture `self` (actor-isolated) across a sending boundary.
+        let cachedChildSnapshot = cachedChildTips
+
         // Build all child blocks in parallel — they're independent
         return await withTaskGroup(of: (String, Block, NodeMempool, Set<String>)?.self) { group in
             for ctx in contexts {
+                let cachedForThisChild = cachedChildSnapshot[ctx.directory]
                 group.addTask {
                     do {
                         let childTipHash = await ctx.chainState.getMainChainTip()
-                        let childTipData = try await ctx.fetcher.fetch(rawCid: childTipHash)
-                        guard let childTipRaw = Block(data: childTipData) else { return nil }
-                        // Resolve properties inherited by the new child block so they
-                        // get stored in the nexus CAS via storeRecursively. Without
-                        // this, CID-only references from the child CAS are skipped and
-                        // nexus-side child block validation can't resolve them.
-                        let childTip = childTipRaw.set(properties: [
-                            "spec": try await childTipRaw.spec.resolve(fetcher: ctx.fetcher),
-                            "frontier": try await childTipRaw.frontier.resolve(fetcher: ctx.fetcher),
-                        ])
+                        let childTip: Block
+                        if let cached = cachedForThisChild, cached.cid == childTipHash {
+                            // Fast path: use the already-resolved child block
+                            // we cached from the previous iteration. Its
+                            // frontier.node and spec.node are populated so the
+                            // BlockBuilder call below skips resolves.
+                            childTip = cached.block
+                        } else {
+                            let childTipData = try await ctx.fetcher.fetch(rawCid: childTipHash)
+                            guard let childTipRaw = Block(data: childTipData) else { return nil }
+                            // Resolve properties inherited by the new child block so they
+                            // get stored in the nexus CAS via storeRecursively. Without
+                            // this, CID-only references from the child CAS are skipped and
+                            // nexus-side child block validation can't resolve them.
+                            childTip = childTipRaw.set(properties: [
+                                "spec": try await childTipRaw.spec.resolve(fetcher: ctx.fetcher),
+                                "frontier": try await childTipRaw.frontier.resolve(fetcher: ctx.fetcher),
+                            ])
+                        }
 
                         let childTxs = await ctx.mempool.selectTransactions(
                             maxCount: max(0, Int(ctx.spec.maxNumberOfTransactionsPerBlock) - 1)
@@ -572,6 +610,12 @@ public actor MinerLoop {
 
     private func resolveCurrentTip() async throws -> Block? {
         let tipHash = await chainState.getMainChainTip()
+        if let cachedCID = cachedTipCID, let cachedBlock = cachedTipBlock, cachedCID == tipHash {
+            return cachedBlock
+        }
+        // Tip changed (reorg or gossip advance) — drop stale cache
+        cachedTipBlock = nil
+        cachedTipCID = nil
         let tipData = try await fetcher.fetch(rawCid: tipHash)
         guard let block = Block(data: tipData) else {
             NodeLogger("miner").warn("Tip block decode failed for \(String(tipHash.prefix(16)))… (\(tipData.count) bytes)")
