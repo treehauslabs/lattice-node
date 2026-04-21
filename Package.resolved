@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Ivy.git",
       "state" : {
-        "revision" : "342080a65eb2dc5c5dee782325b13f62ac4ff5b6",
-        "version" : "3.3.0"
+        "revision" : "368aa68c30d905af2b855b7d2003cde4bdd3b8c9",
+        "version" : "3.3.1"
       }
     },
     {
