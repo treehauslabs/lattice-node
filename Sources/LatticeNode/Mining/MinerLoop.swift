@@ -412,18 +412,14 @@ public actor MinerLoop {
     /// Returns nil when the state can't be read or no nonce exists yet.
     private func resolveLatestMinerNonce(previousBlock: Block) async -> UInt64? {
         guard let identity = identity else { return nil }
-        // Step 1: resolve frontier to get LatticeState
         guard let frontierNode = try? await previousBlock.frontier.resolve(fetcher: fetcher).node else { return nil }
-        // Step 2: resolve nonce key in the transaction state
-        let nonceKey = "_nonce_" + identity.address
-        let txState = frontierNode.transactionState
-        guard let resolvedTx = try? await txState.resolve(
+        let nonceKey = AccountStateHeader.nonceTrackingKey(identity.address)
+        guard let resolvedAccounts = try? await frontierNode.accountState.resolve(
             paths: [[nonceKey]: .targeted],
             fetcher: fetcher
         ) else { return nil }
-        guard let txNode = resolvedTx.node,
-              let nonceStr: String = try? txNode.get(key: nonceKey),
-              let nonce = UInt64(nonceStr) else { return nil }
+        guard let accountsNode = resolvedAccounts.node,
+              let nonce: UInt64 = try? accountsNode.get(key: nonceKey) else { return nil }
         return nonce
     }
 

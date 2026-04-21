@@ -969,7 +969,6 @@ enum RPCRoutes {
                 StateSection(name: "receiptState", cid: state.receiptState.rawCID),
                 StateSection(name: "peerState", cid: state.peerState.rawCID),
                 StateSection(name: "genesisState", cid: state.genesisState.rawCID),
-                StateSection(name: "transactionState", cid: state.transactionState.rawCID),
                 StateSection(name: "generalState", cid: state.generalState.rawCID),
             ]
         }

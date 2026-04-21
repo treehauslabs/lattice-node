@@ -53,7 +53,8 @@ extension LatticeNode {
     func storeBlockRecursively(_ block: Block, network: ChainNetwork) async {
         let tTotal = ContinuousClock.now
         let header = VolumeImpl<Block>(node: block)
-        let storer = BufferedStorer()
+        let skipSet = await network.snapshotLastStoredCIDs()
+        let storer = BufferedStorer(skipSet: skipSet)
         let tWalk = ContinuousClock.now
         do {
             try header.storeRecursively(storer: storer)
@@ -65,10 +66,11 @@ extension LatticeNode {
         let entryCount = storer.entryList.count
         let tBatch = ContinuousClock.now
         await network.storeBlockBatch(rootCID: header.rawCID, entries: storer.entryList)
+        await network.updateLastStoredCIDs(storer.touchedCIDs)
         let dBatch = ContinuousClock.now - tBatch
         let dTotal = ContinuousClock.now - tTotal
         let dir = await network.directory
-        print("[TIMING] storeBlock mined \(dir) #\(block.index) entries=\(entryCount) total=\(dTotal) walk=\(dWalk) storeBatch=\(dBatch)")
+        print("[TIMING] storeBlock mined \(dir) #\(block.index) entries=\(entryCount) skip=\(skipSet.count) total=\(dTotal) walk=\(dWalk) storeBatch=\(dBatch)")
     }
 
     static let maxCopyDepth = 64
@@ -104,7 +106,8 @@ extension LatticeNode {
         await network.storeLocally(cid: cid, data: data)
         let dLocal = ContinuousClock.now - tLocal
         guard let block = Block(data: data) else { return }
-        let storer = BufferedStorer()
+        let skipSet = await network.snapshotLastStoredCIDs()
+        let storer = BufferedStorer(skipSet: skipSet)
         let header = VolumeImpl<Block>(node: block)
         let tWalk = ContinuousClock.now
         do {
@@ -117,10 +120,11 @@ extension LatticeNode {
         let entryCount = storer.entryList.count
         let tBatch = ContinuousClock.now
         await network.storeBlockBatch(rootCID: cid, entries: storer.entryList)
+        await network.updateLastStoredCIDs(storer.touchedCIDs)
         let dBatch = ContinuousClock.now - tBatch
         let dTotal = ContinuousClock.now - tTotal
         let dir = await network.directory
-        print("[TIMING] storeBlock recv \(dir) #\(block.index) entries=\(entryCount) total=\(dTotal) local=\(dLocal) walk=\(dWalk) storeBatch=\(dBatch)")
+        print("[TIMING] storeBlock recv \(dir) #\(block.index) entries=\(entryCount) skip=\(skipSet.count) total=\(dTotal) local=\(dLocal) walk=\(dWalk) storeBatch=\(dBatch)")
     }
 
     // MARK: - Block Processing with Reorg Recovery

@@ -33,6 +33,13 @@ public actor ChainNetwork: IvyDelegate {
     private static let maxRecentTxCIDs = 8192
     private static let txDeduplicationWindow: Duration = .seconds(60)
 
+    /// CIDs known to be in CAS from the most recent block stores on this chain.
+    /// Used as a skipSet for BufferedStorer so structurally-shared merkle nodes
+    /// don't get re-serialized and re-batched on every block. Bounded so it
+    /// can't grow without limit across a long mining session.
+    private var lastStoredCIDs: Set<String> = []
+    private static let maxLastStoredCIDs = 200_000
+
     public init(
         directory: String,
         config: IvyConfig,
@@ -142,6 +149,26 @@ public actor ChainNetwork: IvyDelegate {
         guard !rootCID.isEmpty else { return }
         let memberCIDs = entries.map(\.0)
         await sharedStore.registerVolume(rootCID: rootCID, childCIDs: memberCIDs)
+    }
+
+    /// Snapshot the set of CIDs known to be resident in CAS from recent stores.
+    /// Callers pass this into BufferedStorer so the merkle walk short-circuits
+    /// on already-written subtrees instead of re-serializing them.
+    public func snapshotLastStoredCIDs() -> Set<String> {
+        lastStoredCIDs
+    }
+
+    /// Update the last-stored set after a successful block walk + batch store.
+    /// Capped so a long-running miner can't grow this set without bound.
+    public func updateLastStoredCIDs(_ cids: Set<String>) {
+        if cids.count >= Self.maxLastStoredCIDs {
+            // The new walk alone exceeds the cap — keep only the new set,
+            // trimmed. We don't care which subset we keep since the next block
+            // will refill it from its own walk.
+            lastStoredCIDs = Set(cids.prefix(Self.maxLastStoredCIDs))
+            return
+        }
+        lastStoredCIDs = cids
     }
 
     // MARK: - Block Operations (backward compat aliases)
