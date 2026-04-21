@@ -17,11 +17,19 @@ public actor MinerLoop {
     private var currentTask: Task<Void, Never>?
     private var watchdogTask: Task<Void, Never>?
     private var lastBlockAt: ContinuousClock.Instant = .now
+    private var isSubmitting: Bool = false
+    private var submitStartedAt: ContinuousClock.Instant = .now
     private var nonceOffset: UInt64 = 0
     public weak var delegate: MinerDelegate?
 
-    private static let stallThreshold: Duration = .seconds(120)
-    private static let watchdogInterval: Duration = .seconds(20)
+    // Stall watchdog guards against nonce-search hangs only; it must not
+    // interrupt the miner while it's awaiting minerDidProduceBlock. Slow
+    // block submits (large child merkle subtree writes under swap pressure)
+    // can legitimately take several minutes, and force-respawning mineLoop
+    // during that window spawns concurrent iterations that each retain a
+    // resolved frontier/child state, amplifying memory pressure.
+    private static let stallThreshold: Duration = .seconds(300)
+    private static let watchdogInterval: Duration = .seconds(30)
 
     public init(
         chainState: ChainState,
@@ -86,15 +94,33 @@ public actor MinerLoop {
         while !Task.isCancelled {
             try? await Task.sleep(for: Self.watchdogInterval)
             guard mining, !Task.isCancelled else { return }
+            // Skip restart if the miner is inside block submission. Canceling
+            // the task doesn't cancel the in-flight actor await — it only
+            // lets a NEW mineLoop start, which then does its own resolves
+            // and retains memory concurrently with the stalled submit.
+            if isSubmitting {
+                let submitElapsed = Int((ContinuousClock.now - submitStartedAt) / .seconds(1))
+                NodeLogger("miner").info("\(spec.directory): watchdog tick — submit in flight for \(submitElapsed)s, skipping restart")
+                continue
+            }
             let elapsed = ContinuousClock.now - lastBlockAt
             if elapsed > Self.stallThreshold {
                 let secs = Int(elapsed / .seconds(1))
-                NodeLogger("miner").warn("\(spec.directory): stall watchdog — no block produced in \(secs)s, force-restarting mineLoop")
+                NodeLogger("miner").warn("\(spec.directory): stall watchdog — no block produced in \(secs)s and not submitting, force-restarting mineLoop")
                 currentTask?.cancel()
                 lastBlockAt = .now
                 spawnMineTask()
             }
         }
+    }
+
+    private func beginSubmit() {
+        isSubmitting = true
+        submitStartedAt = .now
+    }
+
+    private func endSubmit() {
+        isSubmitting = false
     }
 
     private func recordBlockProduced() {
@@ -264,7 +290,9 @@ public actor MinerLoop {
 
                         let hash = VolumeImpl<Block>(node: mined).rawCID
                         log.info("\(spec.directory): found valid nonce \(foundNonce) for block \(mined.index), submitting \(String(hash.prefix(16)))…")
+                        beginSubmit()
                         await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals)
+                        endSubmit()
                         recordBlockProduced()
                         let dSubmit = ContinuousClock.now - tSubmit
                         let dIterTotal = ContinuousClock.now - tIter
