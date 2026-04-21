@@ -534,6 +534,16 @@ extension LatticeNode {
             return
         }
 
+        let directory = await network.directory
+        // Skip CAS store + processing for blocks we've already accepted.
+        // hashToBlock contains only blocks we've fully processed, so presence
+        // implies the block and its state are already resident in CAS.
+        if let chainState = await chain(for: directory),
+           await chainState.contains(blockHash: cid) {
+            tally.recordSuccess(peer: peer)
+            return
+        }
+
         // Basic checks passed — store to CAS
         let tStore = ContinuousClock.now
         await storeReceivedBlockRecursively(cid: cid, data: data, network: network)
@@ -550,7 +560,6 @@ extension LatticeNode {
             return
         }
 
-        let directory = await network.directory
         let header = VolumeImpl<Block>(rawCID: cid)
         let tProcess = ContinuousClock.now
         let outcome = await processBlockAndRecoverReorg(
@@ -595,6 +604,17 @@ extension LatticeNode {
 
         guard !(await isSyncing) else { return }
 
+        let directory = await network.directory
+        // Short-circuit known blocks before the expensive CAS resolve.
+        // hashToBlock is an in-memory O(1) index of BlockMeta; resolving
+        // would otherwise pull the full radix-trie state from CAS on every
+        // duplicate announcement and pin it in RAM.
+        if let chainState = await chain(for: directory),
+           await chainState.contains(blockHash: cid) {
+            tally.recordSuccess(peer: peer)
+            return
+        }
+
         let resolveFetcher: any Fetcher = await network.ivyFetcher
 
         let header = VolumeImpl<Block>(rawCID: cid)
@@ -623,7 +643,6 @@ extension LatticeNode {
             return
         }
 
-        let directory = await network.directory
         let tProcess = ContinuousClock.now
         let outcome = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: resolveFetcher,
