@@ -15,8 +15,13 @@ public actor MinerLoop {
     private let tipCache: TipCache?
     private var mining: Bool
     private var currentTask: Task<Void, Never>?
+    private var watchdogTask: Task<Void, Never>?
+    private var lastBlockAt: ContinuousClock.Instant = .now
     private var nonceOffset: UInt64 = 0
     public weak var delegate: MinerDelegate?
+
+    private static let stallThreshold: Duration = .seconds(120)
+    private static let watchdogInterval: Duration = .seconds(20)
 
     public init(
         chainState: ChainState,
@@ -45,9 +50,11 @@ public actor MinerLoop {
     public func start() {
         guard !mining else { return }
         mining = true
+        lastBlockAt = .now
         NodeLogger("miner").info("Starting miner on \(spec.directory) (batchSize=\(batchSize))")
-        currentTask = Task { [weak self] in
-            await self?.mineLoop()
+        spawnMineTask()
+        watchdogTask = Task { [weak self] in
+            await self?.watchdogLoop()
         }
     }
 
@@ -55,6 +62,43 @@ public actor MinerLoop {
         mining = false
         currentTask?.cancel()
         currentTask = nil
+        watchdogTask?.cancel()
+        watchdogTask = nil
+    }
+
+    private func spawnMineTask() {
+        currentTask = Task { [weak self] in
+            await self?.runMineLoopWithRespawn()
+        }
+    }
+
+    private func runMineLoopWithRespawn() async {
+        while mining && !Task.isCancelled {
+            await mineLoop()
+            if mining && !Task.isCancelled {
+                NodeLogger("miner").warn("\(spec.directory): mineLoop exited unexpectedly; respawning in 1s")
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func watchdogLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: Self.watchdogInterval)
+            guard mining, !Task.isCancelled else { return }
+            let elapsed = ContinuousClock.now - lastBlockAt
+            if elapsed > Self.stallThreshold {
+                let secs = Int(elapsed / .seconds(1))
+                NodeLogger("miner").warn("\(spec.directory): stall watchdog — no block produced in \(secs)s, force-restarting mineLoop")
+                currentTask?.cancel()
+                lastBlockAt = .now
+                spawnMineTask()
+            }
+        }
+    }
+
+    private func recordBlockProduced() {
+        lastBlockAt = .now
     }
 
     private func mineLoop() async {
@@ -221,6 +265,7 @@ public actor MinerLoop {
                         let hash = VolumeImpl<Block>(node: mined).rawCID
                         log.info("\(spec.directory): found valid nonce \(foundNonce) for block \(mined.index), submitting \(String(hash.prefix(16)))…")
                         await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals)
+                        recordBlockProduced()
                         let dSubmit = ContinuousClock.now - tSubmit
                         let dIterTotal = ContinuousClock.now - tIter
                         let hashesAttempted = UInt64(batchCount) * batchSize
