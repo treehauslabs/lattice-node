@@ -51,15 +51,24 @@ extension LatticeNode {
     // MARK: - Recursive Block Storage
 
     func storeBlockRecursively(_ block: Block, network: ChainNetwork) async {
+        let tTotal = ContinuousClock.now
         let header = VolumeImpl<Block>(node: block)
         let storer = BufferedStorer()
+        let tWalk = ContinuousClock.now
         do {
             try header.storeRecursively(storer: storer)
         } catch {
             let log = NodeLogger("blocks")
             log.error("Failed to store block recursively: \(error)")
         }
+        let dWalk = ContinuousClock.now - tWalk
+        let entryCount = storer.entryList.count
+        let tBatch = ContinuousClock.now
         await network.storeBlockBatch(rootCID: header.rawCID, entries: storer.entryList)
+        let dBatch = ContinuousClock.now - tBatch
+        let dTotal = ContinuousClock.now - tTotal
+        let dir = await network.directory
+        print("[TIMING] storeBlock mined \(dir) #\(block.index) entries=\(entryCount) total=\(dTotal) walk=\(dWalk) storeBatch=\(dBatch)")
     }
 
     static let maxCopyDepth = 64
@@ -90,17 +99,28 @@ extension LatticeNode {
     }
 
     func storeReceivedBlockRecursively(cid: String, data: Data, network: ChainNetwork) async {
+        let tTotal = ContinuousClock.now
+        let tLocal = ContinuousClock.now
         await network.storeLocally(cid: cid, data: data)
+        let dLocal = ContinuousClock.now - tLocal
         guard let block = Block(data: data) else { return }
         let storer = BufferedStorer()
         let header = VolumeImpl<Block>(node: block)
+        let tWalk = ContinuousClock.now
         do {
             try header.storeRecursively(storer: storer)
         } catch {
             let log = NodeLogger("blocks")
             log.error("Failed to store received block \(cid) recursively: \(error)")
         }
+        let dWalk = ContinuousClock.now - tWalk
+        let entryCount = storer.entryList.count
+        let tBatch = ContinuousClock.now
         await network.storeBlockBatch(rootCID: cid, entries: storer.entryList)
+        let dBatch = ContinuousClock.now - tBatch
+        let dTotal = ContinuousClock.now - tTotal
+        let dir = await network.directory
+        print("[TIMING] storeBlock recv \(dir) #\(block.index) entries=\(entryCount) total=\(dTotal) local=\(dLocal) walk=\(dWalk) storeBatch=\(dBatch)")
     }
 
     // MARK: - Block Processing with Reorg Recovery
@@ -133,6 +153,7 @@ extension LatticeNode {
         inFlightBlockCIDs.insert(header.rawCID)
         defer { inFlightBlockCIDs.remove(header.rawCID) }
 
+        let tProcess = ContinuousClock.now
         let tipBefore = await chain.getMainChainTip()
 
         // When processing nexus blocks, child block validation needs access to
@@ -155,39 +176,57 @@ extension LatticeNode {
         let phShort = String(header.rawCID.prefix(16))
         Self.diagLog("processBlockHeader enter \(directory) \(phShort)…")
         let accepted = await lattice.processBlockHeader(header, fetcher: validationFetcher)
-        let phElapsed = ContinuousClock.now - phStart
-        Self.diagLog("processBlockHeader exit  \(directory) \(phShort)… accepted=\(accepted) elapsed=\(phElapsed)")
+        let dHeader = ContinuousClock.now - phStart
+        Self.diagLog("processBlockHeader exit  \(directory) \(phShort)… accepted=\(accepted) elapsed=\(dHeader)")
         guard accepted else {
             phLog.warn("\(directory): block \(phShort)… rejected by processBlockHeader")
             return .rejected
         }
 
+        let tResolve = ContinuousClock.now
         let block: Block?
         if let r = resolvedBlock {
             block = r
         } else {
             block = try? await header.resolve(fetcher: fetcher).node
         }
+        let dResolve = ContinuousClock.now - tResolve
+        var dResolveTxs: Duration = .zero
+        var dApplyAccepted: Duration = .zero
+        var dApplyChildStates: Duration = .zero
+        var txCount = 0
+        var blockIndex: UInt64 = 0
         if let block {
+            blockIndex = block.index
+            let tResolveTxs = ContinuousClock.now
             let txFetcher = await buildMempoolAwareFetcher(directory: directory, baseFetcher: fetcher)
             let txEntries = await resolveBlockTransactions(block: block, fetcher: txFetcher)
+            dResolveTxs = ContinuousClock.now - tResolveTxs
+            txCount = txEntries.count
+            let tApplyAccepted = ContinuousClock.now
             await applyAcceptedBlock(
                 block: block, blockHash: header.rawCID,
                 txEntries: txEntries, directory: directory
             )
+            dApplyAccepted = ContinuousClock.now - tApplyAccepted
             // Apply child block state changes (StateStore, mempool, receipts).
             // The Lattice library processes child blocks into ChainState, but
             // LatticeNode-level state (deposits, balances, etc.) must be applied here.
             if directory == genesisConfig.spec.directory {
+                let tApplyChildStates = ContinuousClock.now
                 await applyChildBlockStates(nexusBlock: block, fetcher: fetcher)
+                dApplyChildStates = ContinuousClock.now - tApplyChildStates
             }
         }
 
+        let tTipUpdate = ContinuousClock.now
         let tipAfter = await chain.getMainChainTip()
         tipCaches[directory]?.update(tipAfter)
+        var dReorg: Duration = .zero
         if tipBefore != tipAfter {
             let parentOfNewTip = await chain.getConsensusBlock(hash: tipAfter)?.previousBlockHash
             if parentOfNewTip != tipBefore {
+                let tReorg = ContinuousClock.now
                 await recoverOrphanedTransactions(
                     oldTip: tipBefore,
                     newTip: tipAfter,
@@ -195,8 +234,13 @@ extension LatticeNode {
                     chain: chain,
                     fetcher: fetcher
                 )
+                dReorg = ContinuousClock.now - tReorg
             }
         }
+        let dTipUpdate = ContinuousClock.now - tTipUpdate
+
+        let dProcess = ContinuousClock.now - tProcess
+        print("[TIMING] processBlock \(directory) #\(blockIndex) \(phShort)… txs=\(txCount) total=\(dProcess) header=\(dHeader) resolve=\(dResolve) resolveTxs=\(dResolveTxs) applyAccepted=\(dApplyAccepted) applyChildStates=\(dApplyChildStates) tipUpdate=\(dTipUpdate) reorg=\(dReorg)")
 
         return .accepted
     }
@@ -450,6 +494,8 @@ extension LatticeNode {
         data: Data,
         from peer: PeerID
     ) async {
+        let tGossip = ContinuousClock.now
+        let short = String(cid.prefix(16))
         let tally = await network.ivy.tally
         guard tally.shouldAllow(peer: peer) else { return }
         if await isPeerBlockRateLimited(peer) { return }
@@ -488,7 +534,9 @@ extension LatticeNode {
         }
 
         // Basic checks passed — store to CAS
+        let tStore = ContinuousClock.now
         await storeReceivedBlockRecursively(cid: cid, data: data, network: network)
+        let dStore = ContinuousClock.now - tStore
 
         if await checkSyncNeeded(
             peerBlock: block,
@@ -496,15 +544,20 @@ extension LatticeNode {
             network: network
         ) {
             tally.recordSuccess(peer: peer)
+            let dTotal = ContinuousClock.now - tGossip
+            print("[TIMING] gossipRecv block syncNeeded \(short)… #\(block.index) total=\(dTotal) store=\(dStore)")
             return
         }
 
         let directory = await network.directory
         let header = VolumeImpl<Block>(rawCID: cid)
+        let tProcess = ContinuousClock.now
         let outcome = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: await network.ivyFetcher,
             resolvedBlock: block
         )
+        let dProcess = ContinuousClock.now - tProcess
+        let tTail = ContinuousClock.now
         switch outcome {
         case .accepted:
             tally.recordSuccess(peer: peer)
@@ -517,6 +570,9 @@ extension LatticeNode {
             tally.recordFailure(peer: peer)
         }
         await maybePersist(directory: directory)
+        let dTail = ContinuousClock.now - tTail
+        let dTotal = ContinuousClock.now - tGossip
+        print("[TIMING] gossipRecv block \(directory) #\(block.index) \(short)… outcome=\(outcome) total=\(dTotal) store=\(dStore) process=\(dProcess) tail=\(dTail)")
     }
 
     nonisolated public func chainNetwork(
@@ -524,6 +580,8 @@ extension LatticeNode {
         didReceiveBlockAnnouncement cid: String,
         from peer: PeerID
     ) async {
+        let tGossip = ContinuousClock.now
+        let short = String(cid.prefix(16))
         let tally = await network.ivy.tally
         guard tally.shouldAllow(peer: peer) else { return }
         if await isPeerBlockRateLimited(peer) { return }
@@ -542,9 +600,11 @@ extension LatticeNode {
 
         // Resolve the full block before processing — don't update chain tip
         // unless the block data is locally available for the miner to read.
+        let tResolve = ContinuousClock.now
         guard let block = try? await header.resolve(fetcher: resolveFetcher).node else {
             return
         }
+        let dResolve = ContinuousClock.now - tResolve
 
         if !isBlockTimestampValid(block) {
             tally.recordFailure(peer: peer)
@@ -557,14 +617,19 @@ extension LatticeNode {
             network: network
         ) {
             tally.recordSuccess(peer: peer)
+            let dTotal = ContinuousClock.now - tGossip
+            print("[TIMING] gossipRecv announce syncNeeded \(short)… #\(block.index) total=\(dTotal) resolve=\(dResolve)")
             return
         }
 
         let directory = await network.directory
+        let tProcess = ContinuousClock.now
         let outcome = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: resolveFetcher,
             resolvedBlock: block
         )
+        let dProcess = ContinuousClock.now - tProcess
+        let tTail = ContinuousClock.now
         switch outcome {
         case .accepted:
             tally.recordSuccess(peer: peer)
@@ -577,6 +642,9 @@ extension LatticeNode {
         case .rejected:
             tally.recordFailure(peer: peer)
         }
+        let dTail = ContinuousClock.now - tTail
+        let dTotal = ContinuousClock.now - tGossip
+        print("[TIMING] gossipRecv announce \(directory) #\(block.index) \(short)… outcome=\(outcome) total=\(dTotal) resolve=\(dResolve) process=\(dProcess) tail=\(dTail)")
     }
 
     func isPeerBlockRateLimited(_ peer: PeerID) -> Bool {
@@ -675,12 +743,17 @@ extension LatticeNode {
     /// Stores the child block in the child CAS, applies state changes (StateStore,
     /// mempool nonces, receipts), and prunes confirmed transactions from the child mempool.
     private func applyChildBlockStates(nexusBlock: Block, fetcher: Fetcher) async {
+        let tTotal = ContinuousClock.now
+        let tResolve = ContinuousClock.now
         guard let childBlocksNode = try? await nexusBlock.childBlocks.resolve(
             paths: [[""]: .list], fetcher: fetcher
         ).node,
               let childDirs = try? childBlocksNode.allKeys() else { return }
+        let dResolve = ContinuousClock.now - tResolve
         for childDir in childDirs {
+            let tChild = ContinuousClock.now
             guard let childBlockHeader: VolumeImpl<Block> = try? childBlocksNode.get(key: childDir) else { continue }
+            let tHeader = ContinuousClock.now
             let childBlock: Block
             if let n = childBlockHeader.node {
                 childBlock = n
@@ -688,9 +761,15 @@ extension LatticeNode {
                 guard let resolved = try? await childBlockHeader.resolve(fetcher: fetcher).node else { continue }
                 childBlock = resolved
             }
+            let dHeader = ContinuousClock.now - tHeader
+
+            let tStore = ContinuousClock.now
             if let childNet = networks[childDir] {
                 await storeBlockRecursively(childBlock, network: childNet)
             }
+            let dStore = ContinuousClock.now - tStore
+
+            let tFetcher = ContinuousClock.now
             // Use the child network's fetcher for resolving child transactions
             // since child tx data lives in the child CAS
             let childFetcher: Fetcher
@@ -699,17 +778,32 @@ extension LatticeNode {
             } else {
                 childFetcher = fetcher
             }
+            let dFetcher = ContinuousClock.now - tFetcher
+
+            let tTx = ContinuousClock.now
             let txEntries = await resolveBlockTransactions(block: childBlock, fetcher: childFetcher)
+            let dTx = ContinuousClock.now - tTx
+
+            let tApply = ContinuousClock.now
             await applyAcceptedBlock(
                 block: childBlock, blockHash: childBlockHeader.rawCID,
                 txEntries: txEntries, directory: childDir
             )
+            let dApply = ContinuousClock.now - tApply
+
+            let tPrune = ContinuousClock.now
             // Prune confirmed child transactions from the child mempool
             if let childNet = networks[childDir] {
                 let confirmedCIDs = Set(txEntries.keys)
                 await childNet.nodeMempool.removeAll(txCIDs: confirmedCIDs)
             }
+            let dPrune = ContinuousClock.now - tPrune
+
+            let dChild = ContinuousClock.now - tChild
+            print("[TIMING] applyChildBlockStates child=\(childDir) #\(childBlock.index) txs=\(txEntries.count) total=\(dChild) header=\(dHeader) store=\(dStore) fetcher=\(dFetcher) txResolve=\(dTx) apply=\(dApply) prune=\(dPrune)")
         }
+        let dTotal = ContinuousClock.now - tTotal
+        print("[TIMING] applyChildBlockStates parent=#\(nexusBlock.index) childCount=\(childDirs.count) total=\(dTotal) resolveChildBlocks=\(dResolve)")
     }
 
     /// Apply an accepted block's state changes, receipts, fees, events, and metrics.
@@ -719,6 +813,7 @@ extension LatticeNode {
         txEntries: [String: VolumeImpl<Transaction>],
         directory: String
     ) async {
+        let tAccepted = ContinuousClock.now
         let store = stateStores[directory]
         let network = networks[directory]
         let blockHeight = block.index
@@ -729,10 +824,12 @@ extension LatticeNode {
             blockHeight: blockHeight, blockTimestamp: blockTimestamp
         )
 
+        let tChangeset = ContinuousClock.now
         let changeset = extractStateChangeset(
             block: block, blockHash: blockHash,
             txEntries: txEntries, store: store
         )
+        let dChangeset = ContinuousClock.now - tChangeset
 
         var txFees: [UInt64] = []
         for (_, txHeader) in txEntries {
@@ -741,44 +838,61 @@ extension LatticeNode {
             }
         }
 
+        let tReceiptsWait = ContinuousClock.now
         let (generalEntries, txHistoryEntries) = await receiptTask
+        let dReceiptsWait = ContinuousClock.now - tReceiptsWait
 
+        let tStoreApply = ContinuousClock.now
         if let store {
             await store.applyBlock(changeset)
         }
+        let dStoreApply = ContinuousClock.now - tStoreApply
 
+        let tMempoolNonces = ContinuousClock.now
         if let network {
             let nonceUpdates = changeset.accountUpdates.map {
                 (sender: $0.address, nonce: $0.nonce)
             }
             await network.nodeMempool.batchUpdateConfirmedNonces(updates: nonceUpdates)
         }
+        let dMempoolNonces = ContinuousClock.now - tMempoolNonces
 
+        let tBatchReceipts = ContinuousClock.now
         if let store {
             await store.batchIndexReceipts(generalEntries: generalEntries, txHistory: txHistoryEntries)
         }
+        let dBatchReceipts = ContinuousClock.now - tBatchReceipts
 
         // Pin CIDs for transactions involving our account
+        let tPin = ContinuousClock.now
         await pinAccountData(
             blockHash: blockHash,
             txEntries: txEntries,
             txHistoryEntries: txHistoryEntries,
             directory: directory
         )
+        let dPin = ContinuousClock.now - tPin
 
+        let tFee = ContinuousClock.now
         if !txFees.isEmpty {
             await feeEstimator(for: directory).recordBlock(height: blockHeight, transactionFees: txFees)
         }
+        let dFee = ContinuousClock.now - tFee
 
+        let tEmit = ContinuousClock.now
         await subscriptions.emit(.newBlock(
             hash: blockHash,
             height: blockHeight,
             directory: directory,
             timestamp: blockTimestamp
         ))
+        let dEmit = ContinuousClock.now - tEmit
 
         metrics.increment("lattice_blocks_accepted_total")
         metrics.set("lattice_chain_height", value: Double(blockHeight))
+
+        let dAccepted = ContinuousClock.now - tAccepted
+        print("[TIMING] applyAccepted \(directory) #\(blockHeight) txs=\(txEntries.count) total=\(dAccepted) changeset=\(dChangeset) receiptsWait=\(dReceiptsWait) storeApply=\(dStoreApply) mempoolNonces=\(dMempoolNonces) batchReceipts=\(dBatchReceipts) pin=\(dPin) fee=\(dFee) emit=\(dEmit)")
     }
 
     /// Pin block, transaction, and body CIDs for transactions that involve our account.

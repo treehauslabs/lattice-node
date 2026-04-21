@@ -313,8 +313,15 @@ public actor StateStore {
     // MARK: - Batch Apply (Atomic)
 
     public func applyBlock(_ changes: StateChangeset) {
+        let tTotal = ContinuousClock.now
+        let tPrep = ContinuousClock.now
         let (encodedAccounts, oldValues) = prepareBlockChanges(changes)
+        let dPrep = ContinuousClock.now - tPrep
+        let tTxn = ContinuousClock.now
         executeBlockTransaction(changes, encodedAccounts: encodedAccounts, oldValues: oldValues)
+        let dTxn = ContinuousClock.now - tTxn
+        let dTotal = ContinuousClock.now - tTotal
+        print("[TIMING] storeApplyBlock \(chain) #\(changes.height) accts=\(changes.accountUpdates.count) general=\(changes.generalUpdates.count) total=\(dTotal) prep=\(dPrep) txn=\(dTxn)")
     }
 
     private func prepareBlockChanges(_ changes: StateChangeset) -> (

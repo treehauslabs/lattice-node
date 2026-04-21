@@ -15,14 +15,18 @@ final class CompositeFetcher: Fetcher, @unchecked Sendable {
     }
 
     func fetch(rawCid: String) async throws -> Data {
+        let shortCid = String(rawCid.prefix(16))
         do {
             return try await primary.fetch(rawCid: rawCid)
         } catch {
-            for fallback in fallbacks {
+            let fallbackStart = ContinuousClock.now
+            for (idx, fallback) in fallbacks.enumerated() {
                 if let data = try? await fallback.fetch(rawCid: rawCid) {
+                    LatticeNode.diagLog("CompositeFetcher fallback-hit[\(idx)] \(shortCid)… fallbackElapsed=\(ContinuousClock.now - fallbackStart)")
                     return data
                 }
             }
+            LatticeNode.diagLog("CompositeFetcher all-failed \(shortCid)… fallbacks=\(fallbacks.count) fallbackElapsed=\(ContinuousClock.now - fallbackStart)")
             throw error
         }
     }

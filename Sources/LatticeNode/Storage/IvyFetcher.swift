@@ -48,6 +48,9 @@ public actor IvyFetcher: VolumeAwareFetcher {
     // MARK: - Fetcher
 
     public func fetch(rawCid: String) async throws -> Data {
+        let start = ContinuousClock.now
+        let shortCid = String(rawCid.prefix(16))
+
         // 1. Check local storage (memory + node-level shared CAS; merged-mining child
         //    state written by the nexus miner lives in the same store).
         let cid = ContentIdentifier(rawValue: rawCid)
@@ -55,21 +58,31 @@ public actor IvyFetcher: VolumeAwareFetcher {
             return data
         }
 
+        let volHint = activeVolumeRoot.map { String($0.prefix(12)) + "…" } ?? "nil"
+        let hasPinner = activeVolumeRoot.flatMap { volumePinners[$0] } != nil
+        LatticeNode.diagLog("IvyFetcher local-miss \(shortCid)… volume=\(volHint) hasPinner=\(hasPinner)")
+
         // 2. If we have a pinner for the active Volume, go directly to them (one hop)
         if let root = activeVolumeRoot, let pinner = volumePinners[root] {
             touchPinnerCache(root)
+            let pStart = ContinuousClock.now
             if let data = await ivy.get(cid: rawCid, target: pinner) {
+                LatticeNode.diagLog("IvyFetcher pinner-hit  \(shortCid)… elapsed=\(ContinuousClock.now - pStart)")
                 await localWorker.store(cid: cid, data: data)
                 return data
             }
+            LatticeNode.diagLog("IvyFetcher pinner-miss \(shortCid)… elapsed=\(ContinuousClock.now - pStart)")
         }
 
         // 3. Fall back to untargeted DHT walk
+        let dStart = ContinuousClock.now
         if let data = await ivy.get(cid: rawCid) {
+            LatticeNode.diagLog("IvyFetcher dht-hit     \(shortCid)… elapsed=\(ContinuousClock.now - dStart)")
             await localWorker.store(cid: cid, data: data)
             return data
         }
 
+        LatticeNode.diagLog("IvyFetcher notfound    \(shortCid)… totalElapsed=\(ContinuousClock.now - start)")
         throw FetcherError.notFound(rawCid)
     }
 
