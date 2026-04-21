@@ -87,7 +87,8 @@ extension LatticeNode {
             header: header,
             directory: directory,
             fetcher: network.ivyFetcher,
-            resolvedBlock: block
+            resolvedBlock: block,
+            skipValidation: true
         )
         Self.diagLog("submitMinedBlock done \(directory) index=\(block.index) outcome=\(outcome)")
         let accepted = outcome == .accepted

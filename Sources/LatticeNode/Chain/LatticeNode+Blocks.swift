@@ -135,7 +135,8 @@ extension LatticeNode {
         header: BlockHeader,
         directory: String,
         fetcher: Fetcher,
-        resolvedBlock: Block? = nil
+        resolvedBlock: Block? = nil,
+        skipValidation: Bool = false
     ) async -> BlockProcessOutcome {
         guard let chain = await chain(for: directory) else { return .rejected }
 
@@ -175,7 +176,7 @@ extension LatticeNode {
         let phStart = ContinuousClock.now
         let phShort = String(header.rawCID.prefix(16))
         Self.diagLog("processBlockHeader enter \(directory) \(phShort)…")
-        let accepted = await lattice.processBlockHeader(header, fetcher: validationFetcher)
+        let accepted = await lattice.processBlockHeader(header, fetcher: validationFetcher, skipValidation: skipValidation)
         let dHeader = ContinuousClock.now - phStart
         Self.diagLog("processBlockHeader exit  \(directory) \(phShort)… accepted=\(accepted) elapsed=\(dHeader)")
         guard accepted else {
