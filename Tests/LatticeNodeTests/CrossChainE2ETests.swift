@@ -582,6 +582,9 @@ final class CrossChainBlockBuildingTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: fetcher
         )
+        let gs = BufferedStorer()
+        try VolumeImpl<Block>(node: genesis).storeRecursively(storer: gs)
+        await gs.flush(to: fetcher)
 
         // Build a nexus block containing a deposit transaction
         let body = TransactionBody(
@@ -596,6 +599,9 @@ final class CrossChainBlockBuildingTests: XCTestCase {
             previous: genesis, transactions: [sign(body, kp)],
             timestamp: t + 1000, difficulty: UInt256(1000), fetcher: fetcher
         )
+        let bs = BufferedStorer()
+        try VolumeImpl<Block>(node: block).storeRecursively(storer: bs)
+        await bs.flush(to: fetcher)
 
         // Nexus validation should reject the block because it contains deposit actions
         let valid = try await block.validateNexus(fetcher: fetcher)

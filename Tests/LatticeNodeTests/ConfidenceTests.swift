@@ -128,7 +128,8 @@ final class StateRootVerificationTests: XCTestCase {
         let entries = try accts.node!.allKeysAndValues()
 
         var totalBalance: UInt64 = 0
-        for (_, balance) in entries {
+        for (key, balance) in entries {
+            if key.hasPrefix("_nonce_") { continue }
             totalBalance += UInt64(balance) ?? 0
         }
 

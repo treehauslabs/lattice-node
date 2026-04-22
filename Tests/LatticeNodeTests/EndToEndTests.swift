@@ -737,6 +737,12 @@ final class MultiChainReceptionTests: XCTestCase {
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, timestamp: t, difficulty: UInt256(1000), fetcher: f
         )
+        let gs1 = BufferedStorer()
+        try VolumeImpl<Block>(node: nexusGenesis).storeRecursively(storer: gs1)
+        await gs1.flush(to: f)
+        let gs2 = BufferedStorer()
+        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: gs2)
+        await gs2.flush(to: f)
 
         let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let childChain = ChainState.fromGenesis(block: childGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
@@ -752,6 +758,12 @@ final class MultiChainReceptionTests: XCTestCase {
             childBlocks: ["Payments": childBlock1],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
+        let bs1 = BufferedStorer()
+        try VolumeImpl<Block>(node: childBlock1).storeRecursively(storer: bs1)
+        await bs1.flush(to: f)
+        let bs2 = BufferedStorer()
+        try VolumeImpl<Block>(node: nexusBlock1).storeRecursively(storer: bs2)
+        await bs2.flush(to: f)
         let header1 = VolumeImpl<Block>(node: nexusBlock1)
 
         let result = await nexusChain.submitBlock(
