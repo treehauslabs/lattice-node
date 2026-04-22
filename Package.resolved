@@ -1,5 +1,5 @@
 {
-  "originHash" : "24f97d9fde7a073694171bfd73ced43059fcf157cffa1ffa8caf5aed983664f4",
+  "originHash" : "1bcec3191b77c5b7328acf151276dd350b1bf224dc72a2d551917b9c7eb1e461",
   "pins" : [
     {
       "identity" : "acorn",
@@ -105,8 +105,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
-        "revision" : "439ed17a69f52082db85c165728d3c11443e438f",
-        "version" : "7.8.3"
+        "revision" : "750a330d1dc10cb38e241c3df150f4a8d2075faa",
+        "version" : "7.9.0"
       }
     },
     {
@@ -249,8 +249,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-metrics.git",
       "state" : {
-        "revision" : "c6593dac9d65f2517280d88c430dadffdf259737",
-        "version" : "2.10.0"
+        "revision" : "d51c8d13fa366eec807eedb4e37daa60ff5bfdd5",
+        "version" : "2.10.1"
       }
     },
     {

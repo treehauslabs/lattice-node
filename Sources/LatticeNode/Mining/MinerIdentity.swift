@@ -19,13 +19,22 @@ public struct ChildMiningContext: Sendable {
     public let mempool: NodeMempool
     public let fetcher: Fetcher
     public let spec: ChainSpec
+    public let children: [ChildMiningContext]
 
-    public init(directory: String, chainState: ChainState, mempool: NodeMempool, fetcher: Fetcher, spec: ChainSpec) {
+    public init(
+        directory: String,
+        chainState: ChainState,
+        mempool: NodeMempool,
+        fetcher: Fetcher,
+        spec: ChainSpec,
+        children: [ChildMiningContext] = []
+    ) {
         self.directory = directory
         self.chainState = chainState
         self.mempool = mempool
         self.fetcher = fetcher
         self.spec = spec
+        self.children = children
     }
 }
 

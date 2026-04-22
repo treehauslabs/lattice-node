@@ -125,23 +125,31 @@ extension LatticeNode {
     }
 
     func buildChildMiningContexts() async -> [ChildMiningContext] {
-        var contexts: [ChildMiningContext] = []
         let nexusDir = genesisConfig.spec.directory
-        let childDirs = await lattice.nexus.childDirectories()
+        return await buildChildMiningContexts(level: lattice.nexus, chainPath: [nexusDir])
+    }
+
+    private func buildChildMiningContexts(level: ChainLevel, chainPath: [String]) async -> [ChildMiningContext] {
+        var contexts: [ChildMiningContext] = []
+        let childDirs = await level.childDirectories()
         for dir in childDirs {
-            guard config.isSubscribed(chainPath: [nexusDir, dir]) else { continue }
+            let childPath = chainPath + [dir]
+            guard config.isSubscribed(chainPath: childPath) else { continue }
+            guard let childChainState = await level.children[dir]?.chain else { continue }
+            guard let childLevel = await level.children[dir] else { continue }
             guard let network = networks[dir] else { continue }
-            guard let childChainState = await lattice.nexus.children[dir]?.chain else { continue }
             let tipSnapshot = await childChainState.tipSnapshot
             guard let specCID = tipSnapshot?.specCID else { continue }
             let specHeader = HeaderImpl<ChainSpec>(rawCID: specCID)
             guard let childSpec = try? await specHeader.resolve(fetcher: network.ivyFetcher).node else { continue }
+            let grandchildren = await buildChildMiningContexts(level: childLevel, chainPath: childPath)
             contexts.append(ChildMiningContext(
                 directory: dir,
                 chainState: childChainState,
                 mempool: network.nodeMempool,
                 fetcher: network.ivyFetcher,
-                spec: childSpec
+                spec: childSpec,
+                children: grandchildren
             ))
         }
         return contexts

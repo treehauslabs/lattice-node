@@ -212,7 +212,7 @@ public actor MinerLoop {
                 if !currentChildContexts.isEmpty {
                     blockFetcher = CompositeFetcher(
                         primary: fetcher,
-                        fallbacks: currentChildContexts.map { $0.fetcher }
+                        fallbacks: Self.flattenFetchers(currentChildContexts)
                     )
                 } else {
                     blockFetcher = fetcher
@@ -259,7 +259,15 @@ public actor MinerLoop {
                     return h
                 }
                 let dMidstate = ContinuousClock.now - tMidstate
-                let targetDifficulty = max(previousBlock.nextDifficulty, ChainSpec.minimumDifficulty)
+                // Merged-mining target: search with the EASIEST target across
+                // the entire registered chain tree (nexus + all descendants).
+                // The first nonce that satisfies this max target might only
+                // pass a child/grandchild's PoW — the lattice acceptance path
+                // handles that by validating difficulty per level.
+                let targetDifficulty = max(
+                    max(previousBlock.nextDifficulty, ChainSpec.minimumDifficulty),
+                    childResult.maxSubtreeDifficulty
+                )
                 let batchSize = self.batchSize
                 let workerCount = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
                 log.info("\(spec.directory): nonce search started for block \(previousBlock.index + 1) (difficulty=\(String(targetDifficulty.toHexString().prefix(16)))… workers=\(workerCount) batch=\(batchSize))")
@@ -314,7 +322,7 @@ public actor MinerLoop {
                         // analogously for their respective chains.
                         cachedTipBlock = mined
                         cachedTipCID = hash
-                        for (dir, childBlock) in childResult.blocks {
+                        for (dir, childBlock) in childResult.allBlocksByDirectory {
                             let childCID = VolumeImpl<Block>(node: childBlock).rawCID
                             cachedChildTips[dir] = (cid: childCID, block: childBlock)
                         }
@@ -492,106 +500,224 @@ public actor MinerLoop {
     // MARK: - Child Block Building (Merged Mining)
 
     private struct ChildBlockResult {
+        /// Direct children of the nexus, keyed by directory. Grandchildren
+        /// live inside each direct child's own `childBlocks`.
         let blocks: [String: Block]
         let pendingChildTxRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)]
+        /// The easiest (largest) target difficulty across every built block
+        /// in the subtree. Callers combine this with the nexus target so the
+        /// nonce search stops on whichever level's PoW passes first.
+        let maxSubtreeDifficulty: UInt256
+        /// Every built block across the entire subtree, keyed by directory
+        /// (directory names are globally unique). Used to populate tip caches.
+        let allBlocksByDirectory: [String: Block]
+    }
+
+    private struct BuiltSubtree {
+        let directory: String
+        let block: Block
+        let difficulty: UInt256
+        let removals: [(mempool: NodeMempool, txCIDs: Set<String>)]
+        let maxSubtreeDifficulty: UInt256
+        let allBlocksByDirectory: [String: Block]
     }
 
     private func buildChildBlocks(contexts: [ChildMiningContext], nexusBlock: Block, timestamp: Int64) async -> ChildBlockResult {
         guard !contexts.isEmpty else {
-            return ChildBlockResult(blocks: [:], pendingChildTxRemovals: [])
+            return ChildBlockResult(
+                blocks: [:],
+                pendingChildTxRemovals: [],
+                maxSubtreeDifficulty: UInt256.zero,
+                allBlocksByDirectory: [:]
+            )
         }
 
-        // Snapshot cached child tips; pass into the task group so closures
-        // don't capture `self` (actor-isolated) across a sending boundary.
-        let cachedChildSnapshot = cachedChildTips
+        let cachedSnapshot = cachedChildTips
 
-        // Build all child blocks in parallel — they're independent
-        return await withTaskGroup(of: (String, Block, NodeMempool, Set<String>)?.self) { group in
+        let subtrees = await withTaskGroup(of: BuiltSubtree?.self, returning: [BuiltSubtree].self) { group in
             for ctx in contexts {
-                let cachedForThisChild = cachedChildSnapshot[ctx.directory]
                 group.addTask {
-                    do {
-                        let childTipHash = await ctx.chainState.getMainChainTip()
-                        let childTip: Block
-                        if let cached = cachedForThisChild, cached.cid == childTipHash {
-                            // Fast path: use the already-resolved child block
-                            // we cached from the previous iteration. Its
-                            // frontier.node and spec.node are populated so the
-                            // BlockBuilder call below skips resolves.
-                            childTip = cached.block
-                        } else {
-                            let childTipData = try await ctx.fetcher.fetch(rawCid: childTipHash)
-                            guard let childTipRaw = Block(data: childTipData) else { return nil }
-                            // Resolve properties inherited by the new child block so they
-                            // get stored in the nexus CAS via storeRecursively. Without
-                            // this, CID-only references from the child CAS are skipped and
-                            // nexus-side child block validation can't resolve them.
-                            childTip = childTipRaw.set(properties: [
-                                "spec": try await childTipRaw.spec.resolve(fetcher: ctx.fetcher),
-                                "frontier": try await childTipRaw.frontier.resolve(fetcher: ctx.fetcher),
-                            ])
-                        }
+                    await Self.buildSubtree(
+                        ctx: ctx,
+                        parentBlock: nexusBlock,
+                        timestamp: timestamp,
+                        cachedTips: cachedSnapshot
+                    )
+                }
+            }
+            var results: [BuiltSubtree] = []
+            for await r in group {
+                if let r = r { results.append(r) }
+            }
+            return results
+        }
 
-                        let childTxs = await ctx.mempool.selectTransactions(
-                            maxCount: max(0, Int(ctx.spec.maxNumberOfTransactionsPerBlock) - 1)
-                        )
+        var blocks: [String: Block] = [:]
+        var removals: [(mempool: NodeMempool, txCIDs: Set<String>)] = []
+        var maxDifficulty: UInt256 = .zero
+        var allBlocks: [String: Block] = [:]
+        for subtree in subtrees {
+            blocks[subtree.directory] = subtree.block
+            removals.append(contentsOf: subtree.removals)
+            if subtree.maxSubtreeDifficulty > maxDifficulty {
+                maxDifficulty = subtree.maxSubtreeDifficulty
+            }
+            allBlocks.merge(subtree.allBlocksByDirectory) { _, new in new }
+        }
+        return ChildBlockResult(
+            blocks: blocks,
+            pendingChildTxRemovals: removals,
+            maxSubtreeDifficulty: maxDifficulty,
+            allBlocksByDirectory: allBlocks
+        )
+    }
 
-                        let childDifficulty = max(childTip.nextDifficulty, ChainSpec.minimumDifficulty)
-                        let childNextBlockIndex = childTip.index + 1
-                        let childNextDifficulty: UInt256
-                        if ctx.spec.isEpochBoundary(blockIndex: childNextBlockIndex) {
-                            let childAncestorTs = await Self.collectAncestorTimestamps(
-                                from: childTip, count: ctx.spec.difficultyAdjustmentWindow, fetcher: ctx.fetcher
+    /// Recursively build a child block including its grandchildren. Each
+    /// level is built against its own chain's tip and anchored to its
+    /// parent chain block via `parentChainBlock`. Returns `nil` if this
+    /// subtree's block cannot be built; siblings are unaffected.
+    private static func buildSubtree(
+        ctx: ChildMiningContext,
+        parentBlock: Block,
+        timestamp: Int64,
+        cachedTips: [String: (cid: String, block: Block)]
+    ) async -> BuiltSubtree? {
+        do {
+            let childTipHash = await ctx.chainState.getMainChainTip()
+            let childTip: Block
+            if let cached = cachedTips[ctx.directory], cached.cid == childTipHash {
+                childTip = cached.block
+            } else {
+                let childTipData = try await ctx.fetcher.fetch(rawCid: childTipHash)
+                guard let childTipRaw = Block(data: childTipData) else { return nil }
+                childTip = childTipRaw.set(properties: [
+                    "spec": try await childTipRaw.spec.resolve(fetcher: ctx.fetcher),
+                    "frontier": try await childTipRaw.frontier.resolve(fetcher: ctx.fetcher),
+                ])
+            }
+
+            let childTxs = await ctx.mempool.selectTransactions(
+                maxCount: max(0, Int(ctx.spec.maxNumberOfTransactionsPerBlock) - 1)
+            )
+
+            let childDifficulty = max(childTip.nextDifficulty, ChainSpec.minimumDifficulty)
+            let childNextBlockIndex = childTip.index + 1
+            let childNextDifficulty: UInt256
+            if ctx.spec.isEpochBoundary(blockIndex: childNextBlockIndex) {
+                let ancestorTs = await collectAncestorTimestamps(
+                    from: childTip, count: ctx.spec.difficultyAdjustmentWindow, fetcher: ctx.fetcher
+                )
+                childNextDifficulty = ctx.spec.calculateWindowedDifficulty(
+                    previousDifficulty: childDifficulty,
+                    ancestorTimestamps: [timestamp] + ancestorTs
+                )
+            } else {
+                childNextDifficulty = childDifficulty
+            }
+
+            // Parent's homestead for anchoring is its own frontier from the
+            // block being built at the parent level.
+            let parentForChild = parentBlock.set(properties: [
+                "homestead": parentBlock.frontier
+            ])
+
+            // Two-pass: build this child without grandchildren first to
+            // determine its frontier, then rebuild with grandchildren
+            // embedded (grandchildren's `parentHomestead` comes from this
+            // child's homestead, which BlockBuilder derives from its own
+            // `parentChainBlock.homestead`).
+            var grandchildBlocks: [String: Block] = [:]
+            var descendantRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)] = []
+            var maxDescendantDifficulty: UInt256 = .zero
+            var descendantAllBlocks: [String: Block] = [:]
+            let provisional = try await BlockBuilder.buildBlock(
+                previous: childTip,
+                transactions: childTxs,
+                parentChainBlock: parentForChild,
+                timestamp: timestamp,
+                difficulty: childDifficulty,
+                nextDifficulty: childNextDifficulty,
+                nonce: 0,
+                fetcher: ctx.fetcher
+            )
+
+            if !ctx.children.isEmpty {
+                let grandSubtrees = await withTaskGroup(of: BuiltSubtree?.self, returning: [BuiltSubtree].self) { group in
+                    for grandctx in ctx.children {
+                        group.addTask {
+                            await buildSubtree(
+                                ctx: grandctx,
+                                parentBlock: provisional,
+                                timestamp: timestamp,
+                                cachedTips: cachedTips
                             )
-                            let childWindowTs = [timestamp] + childAncestorTs
-                            childNextDifficulty = ctx.spec.calculateWindowedDifficulty(
-                                previousDifficulty: childDifficulty,
-                                ancestorTimestamps: childWindowTs
-                            )
-                        } else {
-                            childNextDifficulty = childDifficulty
                         }
-
-                        // The child block's parentHomestead must match the
-                        // CURRENT nexus block's homestead (= previous nexus
-                        // block's frontier). BlockBuilder uses
-                        // parentChainBlock.homestead, so adjust accordingly.
-                        let parentForChild = nexusBlock.set(properties: [
-                            "homestead": nexusBlock.frontier
-                        ])
-                        let childBlock = try await BlockBuilder.buildBlock(
-                            previous: childTip,
-                            transactions: childTxs,
-                            parentChainBlock: parentForChild,
-                            timestamp: timestamp,
-                            difficulty: childDifficulty,
-                            nextDifficulty: childNextDifficulty,
-                            nonce: 0,
-                            fetcher: ctx.fetcher
-                        )
-                        let cids = Set(childTxs.map { $0.body.rawCID })
-                        return (ctx.directory, childBlock, ctx.mempool, cids)
-                    } catch {
-                        NodeLogger("child-block-builder").error("Failed to build child block for \(ctx.directory): \(error)")
-                        return nil
                     }
+                    var results: [BuiltSubtree] = []
+                    for await r in group {
+                        if let r = r { results.append(r) }
+                    }
+                    return results
+                }
+                for grand in grandSubtrees {
+                    grandchildBlocks[grand.directory] = grand.block
+                    descendantRemovals.append(contentsOf: grand.removals)
+                    if grand.maxSubtreeDifficulty > maxDescendantDifficulty {
+                        maxDescendantDifficulty = grand.maxSubtreeDifficulty
+                    }
+                    descendantAllBlocks.merge(grand.allBlocksByDirectory) { _, new in new }
                 }
             }
 
-            var blocks: [String: Block] = [:]
-            var pendingRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)] = []
-            for await result in group {
-                guard let (dir, block, mempool, cids) = result else { continue }
-                blocks[dir] = block
-                if !cids.isEmpty {
-                    pendingRemovals.append((mempool: mempool, txCIDs: cids))
-                }
+            let childBlock: Block
+            if grandchildBlocks.isEmpty {
+                childBlock = provisional
+            } else {
+                childBlock = try await BlockBuilder.buildBlock(
+                    previous: childTip,
+                    transactions: childTxs,
+                    childBlocks: grandchildBlocks,
+                    parentChainBlock: parentForChild,
+                    timestamp: timestamp,
+                    difficulty: childDifficulty,
+                    nextDifficulty: childNextDifficulty,
+                    nonce: 0,
+                    fetcher: ctx.fetcher
+                )
             }
-            return ChildBlockResult(blocks: blocks, pendingChildTxRemovals: pendingRemovals)
+
+            let cids = Set(childTxs.map { $0.body.rawCID })
+            var allRemovals = descendantRemovals
+            if !cids.isEmpty {
+                allRemovals.append((mempool: ctx.mempool, txCIDs: cids))
+            }
+            let subtreeMax = max(childDifficulty, maxDescendantDifficulty)
+            var allBlocks = descendantAllBlocks
+            allBlocks[ctx.directory] = childBlock
+            return BuiltSubtree(
+                directory: ctx.directory,
+                block: childBlock,
+                difficulty: childDifficulty,
+                removals: allRemovals,
+                maxSubtreeDifficulty: subtreeMax,
+                allBlocksByDirectory: allBlocks
+            )
+        } catch {
+            NodeLogger("child-block-builder").error("Failed to build subtree for \(ctx.directory): \(error)")
+            return nil
         }
     }
 
     // MARK: - Helpers
+
+    private static func flattenFetchers(_ contexts: [ChildMiningContext]) -> [Fetcher] {
+        var out: [Fetcher] = []
+        for ctx in contexts {
+            out.append(ctx.fetcher)
+            out.append(contentsOf: flattenFetchers(ctx.children))
+        }
+        return out
+    }
 
     private static func collectAncestorTimestamps(from block: Block, count: UInt64, fetcher: Fetcher) async -> [Int64] {
         var timestamps: [Int64] = [block.timestamp]
