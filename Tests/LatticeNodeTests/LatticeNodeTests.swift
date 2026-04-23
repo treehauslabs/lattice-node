@@ -205,7 +205,7 @@ final class LatticeNodeTests: XCTestCase {
         )
         let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let mempool = NodeMempool(maxSize: 100)
-        let miner = MinerLoop(chainState: chain, mempool: mempool, fetcher: fetcher, spec: spec)
+        let miner = MinerLoop(chainState: chain, mempool: mempool, fetcher: fetcher, spec: spec, chainPath: [spec.directory])
 
         let before = await miner.isMining
         XCTAssertFalse(before)

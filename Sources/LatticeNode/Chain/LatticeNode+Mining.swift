@@ -36,6 +36,7 @@ extension LatticeNode {
             mempool: network.nodeMempool,
             fetcher: network.ivyFetcher,
             spec: genesisConfig.spec,
+            chainPath: [nexusDir],
             identity: identity,
             childContextProvider: childProvider,
             batchSize: config.resources.miningBatchSize,
@@ -145,6 +146,7 @@ extension LatticeNode {
             let grandchildren = await buildChildMiningContexts(level: childLevel, chainPath: childPath)
             contexts.append(ChildMiningContext(
                 directory: dir,
+                chainPath: childPath,
                 chainState: childChainState,
                 mempool: network.nodeMempool,
                 fetcher: network.ivyFetcher,

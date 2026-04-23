@@ -64,6 +64,11 @@ public struct CookieAuth: Sendable {
         return header == token
     }
 
+    public func validate(queryToken: String?) -> Bool {
+        guard let queryToken else { return false }
+        return queryToken == token
+    }
+
     public func cleanup() {
         try? FileManager.default.removeItem(at: path)
     }
@@ -78,7 +83,10 @@ struct RPCAuthMiddleware<Context: RequestContext>: RouterMiddleware {
         }
 
         let authHeader = request.headers[.authorization]
-        guard auth.validate(authHeader: authHeader) else {
+        // EventSource cannot set headers; accept ?token= on loopback SSE endpoints as a
+        // fallback. The token itself is still the same high-entropy cookie value.
+        let queryToken = request.uri.queryParameters["token"].map(String.init)
+        guard auth.validate(authHeader: authHeader) || auth.validate(queryToken: queryToken) else {
             var headers = HTTPFields()
             headers.append(HTTPField(name: .contentType, value: "application/json"))
             let body = Data("{\"error\":\"Unauthorized\"}".utf8)

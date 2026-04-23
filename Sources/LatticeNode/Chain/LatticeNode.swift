@@ -34,7 +34,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var syncTask: Task<Void, Never>?
     var peerRefreshTask: Task<Void, Never>?
     private var mempoolPruneTask: Task<Void, Never>?
-    private var gcTask: Task<Void, Never>?
     private var pinReannounceTask: Task<Void, Never>?
     public var feeEstimators: [String: FeeEstimator]
     public let subscriptions: SubscriptionManager
@@ -214,7 +213,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         }
         if !config.discoveryOnly {
             mempoolPruneTask = startMempoolLoop(node: self)
-            gcTask = startGarbageCollectionLoop(node: self, retentionDepth: config.retentionDepth)
             pinReannounceTask = startPinReannounceLoop(node: self)
         }
     }
@@ -222,8 +220,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public func stop() async {
         mempoolPruneTask?.cancel()
         mempoolPruneTask = nil
-        gcTask?.cancel()
-        gcTask = nil
         pinReannounceTask?.cancel()
         pinReannounceTask = nil
         peerRefreshTask?.cancel()

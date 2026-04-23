@@ -43,24 +43,73 @@ extension LatticeNode {
 
     public func getBalance(address: String, directory: String? = nil) async throws -> UInt64 {
         let dir = directory ?? genesisConfig.spec.directory
+        return try await getAccount(address: address, directory: dir).balance
+    }
 
-        if let store = stateStores[dir], let balance = store.getBalance(address: address) {
-            return balance
+    public func getNonce(address: String, directory: String? = nil) async throws -> UInt64 {
+        let dir = directory ?? genesisConfig.spec.directory
+        return try await getAccount(address: address, directory: dir).nonce
+    }
+
+    /// Canonical account read: hits the tip's `accountState` Merkle tree.
+    /// Balance and nonce resolve in one call so both leaves come back on a
+    /// single round trip. FrontierCache memoizes the resolved top-level
+    /// `LatticeState` by CID to avoid redundant Merkle walks during bursts.
+    public func getAccount(address: String, directory: String? = nil) async throws -> (balance: UInt64, nonce: UInt64) {
+        let dir = directory ?? genesisConfig.spec.directory
+        guard let tip = try await resolveTipFrontier(directory: dir) else { return (0, 0) }
+        let nonceKey = AccountStateHeader.nonceTrackingKey(address)
+        let accountResolved = try await tip.state.accountState.resolve(
+            paths: [[address]: .targeted, [nonceKey]: .targeted],
+            fetcher: tip.fetcher
+        )
+        guard let dict = accountResolved.node else { return (0, 0) }
+        let balance: UInt64 = (try? dict.get(key: address)) ?? 0
+        let nonce: UInt64 = (try? dict.get(key: nonceKey)) ?? 0
+        return (balance, nonce)
+    }
+
+    /// Batch variant — resolves all balances and nonces in a single tree walk.
+    /// Used by mining and block-assembly hot paths that need many addresses at once.
+    public func batchGetAccounts(addresses: [String], directory: String? = nil) async throws -> [String: (balance: UInt64, nonce: UInt64)] {
+        guard !addresses.isEmpty else { return [:] }
+        let dir = directory ?? genesisConfig.spec.directory
+        guard let tip = try await resolveTipFrontier(directory: dir) else { return [:] }
+        var paths = [[String]: ResolutionStrategy]()
+        paths.reserveCapacity(addresses.count * 2)
+        for addr in addresses {
+            paths[[addr]] = .targeted
+            paths[[AccountStateHeader.nonceTrackingKey(addr)]] = .targeted
         }
+        let resolved = try await tip.state.accountState.resolve(paths: paths, fetcher: tip.fetcher)
+        guard let dict = resolved.node else { return [:] }
+        var out: [String: (balance: UInt64, nonce: UInt64)] = [:]
+        out.reserveCapacity(addresses.count)
+        for addr in addresses {
+            let balance: UInt64 = (try? dict.get(key: addr)) ?? 0
+            let nonce: UInt64 = (try? dict.get(key: AccountStateHeader.nonceTrackingKey(addr))) ?? 0
+            out[addr] = (balance, nonce)
+        }
+        return out
+    }
 
-        guard let network = networks[dir] else { return 0 }
-        let chain = dir == genesisConfig.spec.directory
+    private func resolveTipFrontier(directory: String) async throws -> (state: LatticeState, fetcher: Fetcher)? {
+        guard let network = networks[directory] else { return nil }
+        let chain = directory == genesisConfig.spec.directory
             ? await lattice.nexus.chain
-            : await lattice.nexus.children[dir]?.chain
-        guard let chain else { return 0 }
-        guard let snapshot = await chain.tipSnapshot else { return 0 }
-        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
-        let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
-        guard let state = resolved.node else { return 0 }
-        let accountResolved = try await state.accountState.resolve(paths: [[address]: .targeted], fetcher: network.fetcher)
-        guard let accountDict = accountResolved.node else { return 0 }
-        guard let balance = try? accountDict.get(key: address) else { return 0 }
-        return balance
+            : await lattice.nexus.children[directory]?.chain
+        guard let chain else { return nil }
+        guard let snapshot = await chain.tipSnapshot else { return nil }
+        let frontierCID = snapshot.frontierCID
+        let fetcher = await network.fetcher
+        if let cached = await frontierCaches[directory]?.get(frontierCID: frontierCID) {
+            return (cached, fetcher)
+        }
+        let frontierHeader = LatticeStateHeader(rawCID: frontierCID)
+        let resolved = try await frontierHeader.resolve(fetcher: fetcher)
+        guard let state = resolved.node else { return nil }
+        await frontierCaches[directory]?.set(frontierCID: frontierCID, state: state)
+        return (state, fetcher)
     }
 
     public func getBlock(hash: String, directory: String? = nil) async throws -> Block? {

@@ -338,7 +338,6 @@ struct NodeCommand: AsyncParsableCommand {
             }
             backgroundTasks.append(startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: effectivePort))
             backgroundTasks.append(startMempoolLoop(node: node))
-            backgroundTasks.append(startGarbageCollectionLoop(node: node, retentionDepth: nodeConfig.retentionDepth))
             backgroundTasks.append(startPinReannounceLoop(node: node))
         }
 

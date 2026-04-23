@@ -32,16 +32,14 @@ public struct TransactionValidator: Sendable {
     private let fetcher: Fetcher
     private let chainState: ChainState
     private let isCoinbase: Bool
-    private let stateStore: StateStore?
     private let frontierCache: FrontierCache?
     private let chainDirectory: String?
     private let isNexus: Bool
 
-    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, stateStore: StateStore? = nil, frontierCache: FrontierCache? = nil, chainDirectory: String? = nil, isNexus: Bool = false) {
+    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, frontierCache: FrontierCache? = nil, chainDirectory: String? = nil, isNexus: Bool = false) {
         self.fetcher = fetcher
         self.chainState = chainState
         self.isCoinbase = isCoinbase
-        self.stateStore = stateStore
         self.frontierCache = frontierCache
         self.chainDirectory = chainDirectory
         self.isNexus = isNexus
@@ -55,7 +53,7 @@ public struct TransactionValidator: Sendable {
         if let err = validateSize(body) { return .failure(err) }
         if let err = await validateSignatures(transaction, body: body) { return .failure(err) }
         if let err = validateFees(body) { return .failure(err) }
-        if let err = validateNonce(body) { return .failure(err) }
+        if let err = await validateNonce(body) { return .failure(err) }
         if let err = validateChainPath(body) { return .failure(err) }
         if let err = validateSwaps(body) { return .failure(err) }
         if let err = validateUniqueOwners(body) { return .failure(err) }
@@ -128,14 +126,28 @@ public struct TransactionValidator: Sendable {
         return nil
     }
 
-    private func validateNonce(_ body: TransactionBody) -> TransactionValidationError? {
+    private func validateNonce(_ body: TransactionBody) async -> TransactionValidationError? {
         guard !isCoinbase else { return nil }
-        let sender = body.signers.first ?? ""
-        let confirmedNonce = stateStore?.getNonce(address: sender) ?? 0
-        if body.nonce < confirmedNonce {
+        guard let snapshot = await chainState.tipSnapshot else { return nil }
+        let state: LatticeState
+        if let cached = await frontierCache?.get(frontierCID: snapshot.frontierCID) {
+            state = cached
+        } else {
+            let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+            guard let resolved = try? await frontierHeader.resolve(fetcher: fetcher).node else {
+                return nil
+            }
+            state = resolved
+            await frontierCache?.set(frontierCID: snapshot.frontierCID, state: state)
+        }
+        let nonceKey = AccountStateHeader.nonceTrackingKey(AccountStateHeader.signerPrefix(body))
+        let resolved = try? await state.accountState.resolve(paths: [[nonceKey]: .targeted], fetcher: fetcher)
+        let lastUsed: UInt64? = resolved?.node.flatMap { try? $0.get(key: nonceKey) }
+        let nextExpected: UInt64 = (lastUsed ?? 0) &+ (lastUsed != nil ? 1 : 0)
+        if body.nonce < nextExpected {
             return .nonceAlreadyUsed(nonce: body.nonce)
         }
-        if body.nonce > confirmedNonce + MAX_NONCE_DRIFT {
+        if body.nonce > nextExpected + MAX_NONCE_DRIFT {
             return .nonceFromFuture(nonce: body.nonce)
         }
         return nil

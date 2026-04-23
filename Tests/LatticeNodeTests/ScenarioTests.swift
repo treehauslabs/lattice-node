@@ -39,117 +39,21 @@ final class StateStoreScenarioTests: XCTestCase {
         return try StateStore(storagePath: tmp, chain: "Test")
     }
 
-    func testAccountCreateReadDelete() async throws {
-        let store = try makeStore()
-        let b0 = await store.getBalance(address: "alice")
-        XCTAssertNil(b0)
-
-        await store.setAccount(address: "alice", balance: 1000, nonce: 0, atHeight: 1)
-        let b1 = await store.getBalance(address: "alice")
-        XCTAssertEqual(b1, 1000)
-
-        await store.deleteAccount(address: "alice")
-        let b2 = await store.getBalance(address: "alice")
-        XCTAssertNil(b2)
-    }
-
-    // testBlockIndexRoundtrip removed — block index eliminated (ChainState is authoritative)
-
-    func testApplyBlockAtomicity() async throws {
+    func testApplyBlockMetadata() async throws {
         let store = try makeStore()
         let changeset = StateChangeset(
             height: 1,
             blockHash: "block1",
-            accountUpdates: [
-                (address: "alice", balance: 500, nonce: 0),
-                (address: "bob", balance: 300, nonce: 0),
-            ],
             timestamp: 1000,
             difficulty: "ff",
             stateRoot: "root1"
         )
         await store.applyBlock(changeset)
 
-        let _v5 = await store.getBalance(address: "alice")
-
-
-        XCTAssertEqual(_v5, 500)
-        let _v6 = await store.getBalance(address: "bob")
-
-        XCTAssertEqual(_v6, 300)
-        let _v8 = await store.getHeight()
-
-        XCTAssertEqual(_v8, 1)
-        let _v9 = await store.getChainTip()
-
-        XCTAssertEqual(_v9, "block1")
-    }
-
-    func testRollbackRestoresPreviousState() async throws {
-        let store = try makeStore()
-
-        await store.setAccount(address: "alice", balance: 1000, nonce: 0, atHeight: 0)
-
-        let changeset = StateChangeset(
-            height: 1,
-            blockHash: "block1",
-            accountUpdates: [(address: "alice", balance: 500, nonce: 1)],
-            timestamp: 1000,
-            difficulty: "ff",
-            stateRoot: "root1"
-        )
-        await store.applyBlock(changeset)
-        let _v10 = await store.getBalance(address: "alice")
-
-        XCTAssertEqual(_v10, 500)
-
-        await store.rollbackTo(height: 0)
-        let _v11 = await store.getBalance(address: "alice")
-
-        XCTAssertEqual(_v11, 1000)
-    }
-
-    func testMultiBlockRollback() async throws {
-        let store = try makeStore()
-        await store.setAccount(address: "alice", balance: 1000, nonce: 0, atHeight: 0)
-
-        for i in 1...5 {
-            let changeset = StateChangeset(
-                height: UInt64(i),
-                blockHash: "block\(i)",
-                accountUpdates: [(address: "alice", balance: UInt64(1000 - i * 100), nonce: UInt64(i))],
-                timestamp: Int64(i * 1000),
-                difficulty: "ff",
-                stateRoot: "root\(i)"
-            )
-            await store.applyBlock(changeset)
-        }
-        let _v12 = await store.getBalance(address: "alice")
-
-        XCTAssertEqual(_v12, 500)
-
-        await store.rollbackTo(height: 2)
-        let _v13 = await store.getBalance(address: "alice")
-
-        XCTAssertEqual(_v13, 800)
-
-        await store.rollbackTo(height: 0)
-        let _v14 = await store.getBalance(address: "alice")
-
-        XCTAssertEqual(_v14, 1000)
-    }
-
-    func testPruneDiffsRemovesOldEntries() async throws {
-        let store = try makeStore()
-        for i in 0..<10 {
-            await store.setAccount(address: "alice", balance: UInt64(i * 100), nonce: 0, atHeight: UInt64(i))
-        }
-        await store.pruneDiffs(belowHeight: 5)
-        await store.rollbackTo(height: 4)
-        // After pruning diffs below 5, rolling back to 4 should fail gracefully
-        // (no diff data to restore from for heights 0-4)
-        let balance = await store.getBalance(address: "alice")
-        XCTAssertNotNil(balance)
+        let h = await store.getHeight()
+        XCTAssertEqual(h, 1)
+        let tip = await store.getChainTip()
+        XCTAssertEqual(tip, "block1")
     }
 
     func testTransactionHistoryQuery() async throws {

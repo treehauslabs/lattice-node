@@ -681,14 +681,14 @@ enum RPCRoutes {
 
     static func getNonce(node: LatticeNode, address: String, request: Request) async throws -> Response {
         let dir = resolveChain(node: node, request: request)
-        let nonce: UInt64
-        if let store = await node.stateStore(for: dir) {
-            nonce = store.getNonce(address: address) ?? 0
-        } else {
-            nonce = 0
+        do {
+            let nonce = try await node.getNonce(address: address, directory: dir)
+            struct R: Encodable { let address: String; let nonce: UInt64; let chain: String }
+            return json(R(address: address, nonce: nonce, chain: dir))
+        } catch {
+            log.error("Nonce query failed for \(address): \(error)")
+            return jsonError("Failed to query nonce: \(error.localizedDescription)", status: .internalServerError)
         }
-        struct R: Encodable { let address: String; let nonce: UInt64; let chain: String }
-        return json(R(address: address, nonce: nonce, chain: dir))
     }
 
     // MARK: - Light Client
@@ -716,20 +716,18 @@ enum RPCRoutes {
 
     static func lightProof(node: LatticeNode, address: String, request: Request) async throws -> Response {
         let dir = resolveChain(node: node, request: request)
-        guard let store = await node.stateStore(for: dir) else {
-            return jsonError("State store not available", status: .internalServerError)
-        }
-
         guard let chain = await node.chain(for: dir) else {
             return jsonError("Chain not found: \(dir)", status: .notFound)
         }
         let height = await chain.getHighestBlockIndex()
         let tip = await chain.getMainChainTip()
-        let stateRoot = store.getChainTip() ?? ""
+        let stateRoot = (await chain.tipSnapshot)?.frontierCID ?? ""
+        let (balance, nonce) = try await node.getAccount(address: address, directory: dir)
 
         let proof = await LightClientProtocol.buildAccountProof(
             address: address,
-            stateStore: store,
+            balance: balance,
+            nonce: nonce,
             blockHash: tip,
             blockHeight: height,
             stateRoot: stateRoot,
@@ -914,7 +912,8 @@ enum RPCRoutes {
         guard let store = await node.stateStore(for: dir) else {
             return jsonError("State store not available", status: .internalServerError)
         }
-        let account = store.getAccount(address: address)
+        let (balance, nonce) = try await node.getAccount(address: address, directory: dir)
+        let exists = balance > 0 || nonce > 0
         let history = store.getTransactionHistory(address: address)
         struct TxEntry: Encodable { let txCID: String; let blockHash: String; let height: UInt64 }
         struct R: Encodable {
@@ -924,8 +923,8 @@ enum RPCRoutes {
         }
         return json(R(
             address: address, chain: dir,
-            balance: account?.balance ?? 0, nonce: account?.nonce ?? 0,
-            exists: account != nil,
+            balance: balance, nonce: nonce,
+            exists: exists,
             recentTransactions: history.prefix(50).map { TxEntry(txCID: $0.txCID, blockHash: $0.blockHash, height: $0.height) },
             transactionCount: history.count
         ))

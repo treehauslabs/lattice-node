@@ -55,7 +55,7 @@ final class CrossChainMempoolTests: XCTestCase {
                 DepositAction(nonce: 1, demander: address, amountDemanded: 100, amountDeposited: 100)
             ],
             genesisActions: [], peerActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [address], fee: 1, nonce: 0
+            signers: [address], fee: 1, nonce: 1
         )
         let tx = sign(body, kp)
         let validator = TransactionValidator(fetcher: fetcher, chainState: chain, frontierCache: cache, chainDirectory: "Child")
@@ -276,7 +276,7 @@ final class CrossChainMempoolTests: XCTestCase {
                 DepositAction(nonce: 1, demander: address, amountDemanded: 100, amountDeposited: 100)
             ],
             genesisActions: [], peerActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [address], fee: 1, nonce: 0
+            signers: [address], fee: 1, nonce: 1
         )
         let tx = sign(body, kp)
         let validator = TransactionValidator(fetcher: fetcher, chainState: chain, frontierCache: cache, chainDirectory: "Child")
@@ -353,7 +353,7 @@ final class CrossChainMempoolTests: XCTestCase {
             accountActions: [AccountAction(owner: address, delta: -201)],
             actions: [], depositActions: [],
             genesisActions: [], peerActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [address], fee: 1, nonce: 0
+            signers: [address], fee: 1, nonce: 1
         )
         let tx = sign(body, kp)
         let validator = TransactionValidator(fetcher: fetcher, chainState: chain, frontierCache: cache, chainDirectory: "Child")

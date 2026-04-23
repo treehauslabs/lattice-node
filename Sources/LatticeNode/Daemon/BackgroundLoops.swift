@@ -57,22 +57,3 @@ func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
         }
     }
 }
-
-
-@discardableResult
-func startGarbageCollectionLoop(node: LatticeNode, retentionDepth: UInt64) -> Task<Void, Never> {
-    Task {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(300))
-
-            for directory in await node.allDirectories() {
-                guard let store = await node.stateStore(for: directory) else { continue }
-                let height = store.getHeight() ?? 0
-
-                if height > retentionDepth {
-                    await store.pruneDiffs(belowHeight: height - retentionDepth)
-                }
-            }
-        }
-    }
-}

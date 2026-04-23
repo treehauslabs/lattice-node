@@ -9,6 +9,11 @@ public actor MinerLoop {
     private let mempool: NodeMempool
     private let fetcher: Fetcher
     private let spec: ChainSpec
+    /// Full nexus-to-this-chain path, e.g. `["Nexus"]` when mining the nexus.
+    /// Required for coinbase `chainPath`, which `validateChainPaths` compares
+    /// against the full expected path — `spec.directory` alone is only the
+    /// last segment and isn't valid on anything below the nexus.
+    private let chainPath: [String]
     private let identity: MinerIdentity?
     private let childContextProvider: (@Sendable () async -> [ChildMiningContext])?
     private let batchSize: UInt64
@@ -46,6 +51,7 @@ public actor MinerLoop {
         mempool: NodeMempool,
         fetcher: Fetcher,
         spec: ChainSpec,
+        chainPath: [String],
         identity: MinerIdentity? = nil,
         childContexts: [ChildMiningContext] = [],
         childContextProvider: (@Sendable () async -> [ChildMiningContext])? = nil,
@@ -56,6 +62,7 @@ public actor MinerLoop {
         self.mempool = mempool
         self.fetcher = fetcher
         self.spec = spec
+        self.chainPath = chainPath
         self.identity = identity
         self.childContextProvider = childContextProvider ?? { childContexts }
         self.batchSize = batchSize
@@ -76,12 +83,21 @@ public actor MinerLoop {
         }
     }
 
-    public func stop() {
+    public func stop() async {
         mining = false
-        currentTask?.cancel()
+        let task = currentTask
+        let watchdog = watchdogTask
         currentTask = nil
-        watchdogTask?.cancel()
         watchdogTask = nil
+        task?.cancel()
+        watchdog?.cancel()
+        // Await the mine task so any in-flight block submission fully commits
+        // to chain + store before stop() returns. Without this, callers that
+        // submit transactions right after stop() can race an applying block
+        // and read a stale nonce from StateStore, triggering nonceGap when
+        // the tx is later included.
+        await task?.value
+        await watchdog?.value
         cachedTipBlock = nil
         cachedTipCID = nil
         cachedChildTips.removeAll()
@@ -418,8 +434,11 @@ public actor MinerLoop {
 
     /// Resolve the miner's latest transaction nonce from the previous block's state.
     /// Returns nil when the state can't be read or no nonce exists yet.
-    private func resolveLatestMinerNonce(previousBlock: Block) async -> UInt64? {
-        guard let identity = identity else { return nil }
+    private static func resolveLatestMinerNonce(
+        previousBlock: Block,
+        identity: MinerIdentity,
+        fetcher: Fetcher
+    ) async -> UInt64? {
         guard let frontierNode = try? await previousBlock.frontier.resolve(fetcher: fetcher).node else { return nil }
         let nonceKey = AccountStateHeader.nonceTrackingKey(identity.address)
         guard let resolvedAccounts = try? await frontierNode.accountState.resolve(
@@ -431,12 +450,20 @@ public actor MinerLoop {
         return nonce
     }
 
-    private func buildCoinbaseTransaction(
+    /// Build a coinbase transaction that credits `identity.address` by
+    /// `reward + fees` for `previousBlock.index + 1` on `spec`. Callers append
+    /// this to the block's transaction list so the miner collects the block
+    /// reward; child chains use the same helper with their own spec/fetcher.
+    /// `chainPath` must equal the full nexus-to-chain path expected by
+    /// `validateChainPaths`, e.g. `["Nexus","FastTest"]` for a FastTest coinbase.
+    static func buildCoinbaseTransaction(
+        spec: ChainSpec,
+        identity: MinerIdentity,
+        chainPath: [String],
         previousBlock: Block,
-        mempoolTransactions: [Transaction]
+        mempoolTransactions: [Transaction],
+        fetcher: Fetcher
     ) async throws -> Transaction? {
-        guard let identity = identity else { return nil }
-
         let reward = spec.rewardAtBlock(previousBlock.index + 1)
         var totalFees: UInt64 = 0
         for tx in mempoolTransactions {
@@ -451,7 +478,9 @@ public actor MinerLoop {
 
         // Coinbase nonce must follow the miner's latest nonce in the state
         // PLUS any miner-signed mempool txs that precede the coinbase in the block.
-        let latestNonce = await resolveLatestMinerNonce(previousBlock: previousBlock)
+        let latestNonce = await resolveLatestMinerNonce(
+            previousBlock: previousBlock, identity: identity, fetcher: fetcher
+        )
         let minerTxsInBlock = mempoolTransactions.filter { tx in
             tx.body.node?.signers.contains(identity.address) == true
         }.count
@@ -482,7 +511,7 @@ public actor MinerLoop {
             signers: [identity.address],
             fee: 0,
             nonce: coinbaseNonce,
-            chainPath: [spec.directory]
+            chainPath: chainPath
         )
         let bodyHeader = HeaderImpl<TransactionBody>(node: body)
 
@@ -494,6 +523,21 @@ public actor MinerLoop {
         return Transaction(
             signatures: [identity.publicKeyHex: signature],
             body: bodyHeader
+        )
+    }
+
+    private func buildCoinbaseTransaction(
+        previousBlock: Block,
+        mempoolTransactions: [Transaction]
+    ) async throws -> Transaction? {
+        guard let identity = identity else { return nil }
+        return try await Self.buildCoinbaseTransaction(
+            spec: spec,
+            identity: identity,
+            chainPath: chainPath,
+            previousBlock: previousBlock,
+            mempoolTransactions: mempoolTransactions,
+            fetcher: fetcher
         )
     }
 
@@ -533,6 +577,7 @@ public actor MinerLoop {
         }
 
         let cachedSnapshot = cachedChildTips
+        let minerIdentity = identity
 
         let subtrees = await withTaskGroup(of: BuiltSubtree?.self, returning: [BuiltSubtree].self) { group in
             for ctx in contexts {
@@ -541,7 +586,8 @@ public actor MinerLoop {
                         ctx: ctx,
                         parentBlock: nexusBlock,
                         timestamp: timestamp,
-                        cachedTips: cachedSnapshot
+                        cachedTips: cachedSnapshot,
+                        identity: minerIdentity
                     )
                 }
             }
@@ -580,7 +626,8 @@ public actor MinerLoop {
         ctx: ChildMiningContext,
         parentBlock: Block,
         timestamp: Int64,
-        cachedTips: [String: (cid: String, block: Block)]
+        cachedTips: [String: (cid: String, block: Block)],
+        identity: MinerIdentity?
     ) async -> BuiltSubtree? {
         do {
             let childTipHash = await ctx.chainState.getMainChainTip()
@@ -596,9 +643,27 @@ public actor MinerLoop {
                 ])
             }
 
-            let childTxs = await ctx.mempool.selectTransactions(
+            // Reserve one slot for the coinbase in the per-block tx cap.
+            var childTxs = await ctx.mempool.selectTransactions(
                 maxCount: max(0, Int(ctx.spec.maxNumberOfTransactionsPerBlock) - 1)
             )
+
+            if let identity = identity {
+                do {
+                    if let coinbase = try await buildCoinbaseTransaction(
+                        spec: ctx.spec,
+                        identity: identity,
+                        chainPath: ctx.chainPath,
+                        previousBlock: childTip,
+                        mempoolTransactions: childTxs,
+                        fetcher: ctx.fetcher
+                    ) {
+                        childTxs.append(coinbase)
+                    }
+                } catch {
+                    NodeLogger("miner").warn("Child coinbase build failed for \(ctx.directory): \(error)")
+                }
+            }
 
             let childDifficulty = max(childTip.nextDifficulty, ChainSpec.minimumDifficulty)
             let childNextBlockIndex = childTip.index + 1
@@ -630,16 +695,48 @@ public actor MinerLoop {
             var descendantRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)] = []
             var maxDescendantDifficulty: UInt256 = .zero
             var descendantAllBlocks: [String: Block] = [:]
-            let provisional = try await BlockBuilder.buildBlock(
-                previous: childTip,
-                transactions: childTxs,
-                parentChainBlock: parentForChild,
-                timestamp: timestamp,
-                difficulty: childDifficulty,
-                nextDifficulty: childNextDifficulty,
-                nonce: 0,
-                fetcher: ctx.fetcher
-            )
+            let provisional: Block
+            do {
+                provisional = try await BlockBuilder.buildBlock(
+                    previous: childTip,
+                    transactions: childTxs,
+                    parentChainBlock: parentForChild,
+                    timestamp: timestamp,
+                    difficulty: childDifficulty,
+                    nextDifficulty: childNextDifficulty,
+                    nonce: 0,
+                    fetcher: ctx.fetcher
+                )
+            } catch StateErrors.nonceGap {
+                // Mirror the nexus-level fallback: a stale miner-signed tx in
+                // the child mempool would otherwise stall this whole subtree
+                // forever, since selectTransactions keeps handing it back and
+                // BlockBuilder keeps rejecting it. Evict everything we just
+                // selected and retry with only the coinbase. Without this,
+                // merged mining of the affected child chain halts.
+                NodeLogger("child-block-builder").warn("\(ctx.directory): nonceGap building child block, evicting \(childTxs.count) stale tx(s)")
+                let staleCIDs = Set(childTxs.map { $0.body.rawCID })
+                if !staleCIDs.isEmpty { await ctx.mempool.removeAll(txCIDs: staleCIDs) }
+                childTxs = []
+                if let identity = identity {
+                    if let coinbase = try? await buildCoinbaseTransaction(
+                        spec: ctx.spec, identity: identity, chainPath: ctx.chainPath,
+                        previousBlock: childTip, mempoolTransactions: [], fetcher: ctx.fetcher
+                    ) {
+                        childTxs.append(coinbase)
+                    }
+                }
+                provisional = try await BlockBuilder.buildBlock(
+                    previous: childTip,
+                    transactions: childTxs,
+                    parentChainBlock: parentForChild,
+                    timestamp: timestamp,
+                    difficulty: childDifficulty,
+                    nextDifficulty: childNextDifficulty,
+                    nonce: 0,
+                    fetcher: ctx.fetcher
+                )
+            }
 
             if !ctx.children.isEmpty {
                 let grandSubtrees = await withTaskGroup(of: BuiltSubtree?.self, returning: [BuiltSubtree].self) { group in
@@ -649,7 +746,8 @@ public actor MinerLoop {
                                 ctx: grandctx,
                                 parentBlock: provisional,
                                 timestamp: timestamp,
-                                cachedTips: cachedTips
+                                cachedTips: cachedTips,
+                                identity: identity
                             )
                         }
                     }

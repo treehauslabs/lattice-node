@@ -294,8 +294,9 @@ extension LatticeNode {
             }
         }
 
-        // Step 1: Roll back StateStore and resolve orphaned block transactions (newest first)
-        // orphanedBlockHashes is already newest-to-oldest order
+        // Step 1: Resolve orphaned block transactions (newest first) so we can
+        // re-validate them against the new tip. AccountState lives on-chain —
+        // no explicit rollback needed; the new tip's frontier is authoritative.
         let reorgFetcher = await buildMempoolAwareFetcher(directory: dir, baseFetcher: fetcher)
 
         var orphanedBlockTxs: [(block: Block, txEntries: [String: VolumeImpl<Transaction>])] = []
@@ -307,30 +308,6 @@ extension LatticeNode {
             }
             let txEntries = await resolveBlockTransactions(block: block, fetcher: reorgFetcher)
             orphanedBlockTxs.append((block: block, txEntries: txEntries))
-
-            if let store = stateStores[dir] {
-                for (_, txHeader) in txEntries {
-                    guard let body = txHeader.node?.body.node else { continue }
-                    for action in body.accountActions {
-                        guard action.delta != Int64.min else { continue }
-                        let currentBalance = store.getBalance(address: action.owner) ?? 0
-                        let previousBalance: UInt64
-                        if action.delta > 0 {
-                            let credit = UInt64(action.delta)
-                            previousBalance = currentBalance >= credit ? currentBalance - credit : 0
-                        } else {
-                            let (result, overflow) = currentBalance.addingReportingOverflow(UInt64(-action.delta))
-                            previousBalance = overflow ? currentBalance : result
-                        }
-                        if previousBalance == 0 {
-                            await store.deleteAccount(address: action.owner)
-                        } else {
-                            let existingNonce = store.getNonce(address: action.owner) ?? 0
-                            await store.setAccount(address: action.owner, balance: previousBalance, nonce: existingNonce, atHeight: block.index)
-                        }
-                    }
-                }
-            }
         }
 
         // Step 2: Collect confirmed tx CIDs from the NEW chain (to avoid re-adding them)
@@ -361,7 +338,7 @@ extension LatticeNode {
 
         // Step 4: Re-validate orphaned txs and return to mempool
         let isNexus = dir == genesisConfig.spec.directory
-        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, stateStore: stateStores[dir], frontierCache: frontierCaches[dir], chainDirectory: dir, isNexus: isNexus)
+        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, frontierCache: frontierCaches[dir], chainDirectory: dir, isNexus: isNexus)
         var recovered = 0
         for entry in orphanedBlockTxs {
             for (cid, txHeader) in entry.txEntries {
@@ -375,8 +352,8 @@ extension LatticeNode {
                     // orphaned chain's (higher) nonce, stranding the re-added
                     // tx forever since its nonce would be < confirmedNonce.
                     if let sender = tx.body.node?.signers.first,
-                       let storeNonce = stateStores[dir]?.getNonce(address: sender) {
-                        await network.nodeMempool.updateConfirmedNonce(sender: sender, nonce: storeNonce)
+                       let tipNonce = try? await getNonce(address: sender, directory: dir) {
+                        await network.nodeMempool.updateConfirmedNonce(sender: sender, nonce: tipNonce)
                     }
                     let _ = await network.nodeMempool.add(transaction: tx)
                     recovered += 1
@@ -409,7 +386,6 @@ extension LatticeNode {
                   let childDirs = try? childDict.allKeys() else { continue }
 
             for childDir in childDirs {
-                guard let store = stateStores[childDir] else { continue }
                 guard let childBlockHeader: VolumeImpl<Block> = try? childDict.get(key: childDir) else { continue }
                 let childBlock: Block
                 if let n = childBlockHeader.node {
@@ -421,36 +397,12 @@ extension LatticeNode {
 
                 let childTxEntries = await resolveBlockTransactions(block: childBlock, fetcher: fetcher)
 
-                // Roll back account state from transaction accountActions
-                for (_, txHeader) in childTxEntries {
-                    guard let body = txHeader.node?.body.node else { continue }
-                    for action in body.accountActions {
-                        guard action.delta != Int64.min else { continue }
-                        let currentBalance = store.getBalance(address: action.owner) ?? 0
-                        let previousBalance: UInt64
-                        if action.delta > 0 {
-                            let credit = UInt64(action.delta)
-                            previousBalance = currentBalance >= credit ? currentBalance - credit : 0
-                        } else {
-                            let (result, overflow) = currentBalance.addingReportingOverflow(UInt64(-action.delta))
-                            previousBalance = overflow ? currentBalance : result
-                        }
-                        if previousBalance == 0 {
-                            await store.deleteAccount(address: action.owner)
-                        } else {
-                            let nonce = store.getNonce(address: action.owner) ?? 0
-                            await store.setAccount(address: action.owner, balance: previousBalance, nonce: nonce, atHeight: childBlock.index)
-                        }
-                    }
-                }
-
                 // Recover orphaned child txs to child mempool (with validation)
                 if let childNetwork = networks[childDir],
                    let childChain = await lattice.nexus.children[childDir]?.chain {
                     let validator = TransactionValidator(
                         fetcher: fetcher,
                         chainState: childChain,
-                        stateStore: stateStores[childDir],
                         frontierCache: frontierCaches[childDir],
                         chainDirectory: childDir,
                         isNexus: false
@@ -462,8 +414,8 @@ extension LatticeNode {
                         let result = await validator.validate(tx)
                         if case .success = result {
                             if let sender = tx.body.node?.signers.first,
-                               let storeNonce = stateStores[childDir]?.getNonce(address: sender) {
-                                await childNetwork.nodeMempool.updateConfirmedNonce(sender: sender, nonce: storeNonce)
+                               let tipNonce = try? await getNonce(address: sender, directory: childDir) {
+                                await childNetwork.nodeMempool.updateConfirmedNonce(sender: sender, nonce: tipNonce)
                             }
                             let _ = await childNetwork.nodeMempool.add(transaction: tx)
                         }
@@ -849,9 +801,9 @@ extension LatticeNode {
         )
 
         let tChangeset = ContinuousClock.now
-        let changeset = extractStateChangeset(
+        let (changeset, mempoolNonceUpdates) = extractStateChangeset(
             block: block, blockHash: blockHash,
-            txEntries: txEntries, store: store
+            txEntries: txEntries
         )
         let dChangeset = ContinuousClock.now - tChangeset
 
@@ -874,10 +826,7 @@ extension LatticeNode {
 
         let tMempoolNonces = ContinuousClock.now
         if let network {
-            let nonceUpdates = changeset.accountUpdates.map {
-                (sender: $0.address, nonce: $0.nonce)
-            }
-            await network.nodeMempool.batchUpdateConfirmedNonces(updates: nonceUpdates)
+            await network.nodeMempool.batchUpdateConfirmedNonces(updates: mempoolNonceUpdates)
         }
         let dMempoolNonces = ContinuousClock.now - tMempoolNonces
 
@@ -955,73 +904,35 @@ extension LatticeNode {
     func extractStateChangeset(
         block: Block,
         blockHash: String,
-        txEntries: [String: VolumeImpl<Transaction>],
-        store: StateStore?
-    ) -> StateChangeset {
-        var senderTxCounts: [String: UInt64] = [:]
-        // Aggregate deltas per address across all transactions
-        var addressOrder: [String] = []
-        var netDeltas: [String: Int64] = [:]
-
+        txEntries: [String: VolumeImpl<Transaction>]
+    ) -> (changeset: StateChangeset, mempoolNonceUpdates: [(sender: String, nonce: UInt64)]) {
+        // Produce (sender, nextNonce) pairs for mempool confirmedNonce sync.
+        // AccountState tree stores `last-used` nonce; mempool stores `next-to-use`.
+        var maxSignedNonce: [String: UInt64] = [:]
+        var signerOrder: [String] = []
         for (_, txHeader) in txEntries {
             guard let body = txHeader.node?.body.node else { continue }
             let sender = body.signers.first ?? ""
-            senderTxCounts[sender, default: 0] += 1
-            for action in body.accountActions {
-                if netDeltas[action.owner] == nil {
-                    addressOrder.append(action.owner)
-                }
-                let (sum, _) = netDeltas[action.owner, default: 0].addingReportingOverflow(action.delta)
-                netDeltas[action.owner] = sum
+            if maxSignedNonce[sender] == nil {
+                signerOrder.append(sender)
+                maxSignedNonce[sender] = body.nonce
+            } else if body.nonce > maxSignedNonce[sender]! {
+                maxSignedNonce[sender] = body.nonce
             }
         }
 
-        // Remove zero-net-delta addresses
-        addressOrder.removeAll { netDeltas[$0] == 0 }
-
-        // Batch fetch current balances for all affected addresses
-        let currentBalances: [String: UInt64]
-        let nonces: [String: UInt64]
-        if let store, !addressOrder.isEmpty {
-            currentBalances = store.batchGetBalances(addresses: addressOrder)
-            nonces = store.batchGetNonces(addresses: addressOrder)
-        } else {
-            currentBalances = [:]
-            nonces = [:]
+        let mempoolNonceUpdates: [(sender: String, nonce: UInt64)] = signerOrder.map {
+            (sender: $0, nonce: maxSignedNonce[$0]! + 1)
         }
 
-        var accountUpdates: [(address: String, balance: UInt64, nonce: UInt64)] = []
-
-        for address in addressOrder {
-            let delta = netDeltas[address]!
-            let current = currentBalances[address] ?? 0
-            let newBalance: UInt64
-            if delta > 0 {
-                let (result, overflow) = current.addingReportingOverflow(UInt64(delta))
-                newBalance = overflow ? current : result
-            } else if delta != Int64.min {
-                let debit = UInt64(-delta)
-                newBalance = current >= debit ? current - debit : 0
-            } else {
-                newBalance = current
-            }
-            let currentNonce = nonces[address] ?? 0
-            let txCount = senderTxCounts[address] ?? 0
-            if current == 0 {
-                accountUpdates.append((address: address, balance: newBalance, nonce: txCount))
-            } else {
-                accountUpdates.append((address: address, balance: newBalance, nonce: currentNonce + txCount))
-            }
-        }
-
-        return StateChangeset(
+        let changeset = StateChangeset(
             height: block.index,
             blockHash: blockHash,
-            accountUpdates: accountUpdates,
             timestamp: block.timestamp,
             difficulty: block.difficulty.toHexString(),
             stateRoot: block.frontier.rawCID
         )
+        return (changeset, mempoolNonceUpdates)
     }
 
     /// Build receipt index entries and tx history concurrently.

@@ -15,6 +15,10 @@ public struct MinerIdentity: Sendable {
 
 public struct ChildMiningContext: Sendable {
     public let directory: String
+    /// Full chain path from nexus to this context, e.g. `["Nexus","FastTest"]`.
+    /// Block validation checks each transaction's `chainPath` against this
+    /// exact sequence, so the coinbase must carry the same path.
+    public let chainPath: [String]
     public let chainState: ChainState
     public let mempool: NodeMempool
     public let fetcher: Fetcher
@@ -23,6 +27,7 @@ public struct ChildMiningContext: Sendable {
 
     public init(
         directory: String,
+        chainPath: [String],
         chainState: ChainState,
         mempool: NodeMempool,
         fetcher: Fetcher,
@@ -30,6 +35,7 @@ public struct ChildMiningContext: Sendable {
         children: [ChildMiningContext] = []
     ) {
         self.directory = directory
+        self.chainPath = chainPath
         self.chainState = chainState
         self.mempool = mempool
         self.fetcher = fetcher

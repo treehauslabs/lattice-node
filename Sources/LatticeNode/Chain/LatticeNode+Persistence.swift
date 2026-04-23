@@ -49,8 +49,8 @@ extension LatticeNode {
             guard let body = try? await bodyHeader.resolve(fetcher: fetcher).node else { continue }
             let tx = Transaction(signatures: stx.signatures, body: bodyHeader)
             if let sender = body.signers.first,
-               let storeNonce = stateStores[directory]?.getNonce(address: sender) {
-                await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: storeNonce)
+               let tipNonce = try? await getNonce(address: sender, directory: directory) {
+                await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: tipNonce)
             }
             if await network.submitTransaction(tx) {
                 restored += 1
@@ -115,15 +115,22 @@ extension LatticeNode {
         // Replay in forward order (oldest first)
         blocksToReplay.reverse()
         var recovered = 0
-        for (cid, block) in blocksToReplay {
+        for (_, block) in blocksToReplay {
             let header = VolumeImpl<Block>(node: block)
             let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
             if accepted {
                 recovered += 1
-                // Update the tip cache
-                tipCaches[directory]?.update(cid)
             }
         }
+
+        // Anchor the tip cache to the actual main-chain tip after recovery.
+        // processBlockHeader returns true for child-only acceptance too, so
+        // per-iteration updates here would leave the cache pointing at a block
+        // that isn't the nexus's main tip. The miner's inner PoW loop then
+        // breaks every iteration on tipCache != previousBlockHash, spinning
+        // without producing blocks.
+        let postRecoveryTip = await chainState.getMainChainTip()
+        tipCaches[directory]?.update(postRecoveryTip)
 
         if recovered > 0 {
             log.info("\(directory): recovered \(recovered) block(s) from CAS — chain now at height \(await chainState.getHighestBlockIndex())")

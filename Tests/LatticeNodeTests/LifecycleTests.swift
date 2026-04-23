@@ -1499,12 +1499,16 @@ final class LifecycleTests: XCTestCase {
 
         // ====== PHASE 3: WITHDRAWAL on child chain ======
         // Withdrawer (miner) claims the deposited funds on the child chain.
-        // The withdrawal credits the withdrawer and removes the deposit.
         // Conservation: 0 + withdrawn(200) = credits(199) + fee(1) + deposited(0)
-        // The miner has no prior transactions on the child chain (child blocks
-        // don't have coinbase txs — only nexus does), so nonce starts at 0.
+        // Child chain has coinbase txs signed by the miner — /nonce returns the
+        // last-used nonce, so next-to-use is that + 1.
+        let wdNonceResp = try await rpcGet(base, "/nonce/\(minerAddr)?chain=Child")
+        let wdLastUsed = wdNonceResp["nonce"] as? Int ?? 0
+        let wdNonce = wdLastUsed + 1
+        let preBalResp = try await rpcGet(base, "/balance/\(minerAddr)?chain=Child")
+        let preBal = preBalResp["balance"] as? Int ?? 0
         let wdPrep = try await rpcPost(base, "/transaction/prepare", body: [
-            "nonce": 0,
+            "nonce": wdNonce,
             "signers": [minerAddr],
             "fee": 1,
             "accountActions": [["owner": minerAddr, "delta": depositAmount - 1]],
@@ -1530,9 +1534,14 @@ final class LifecycleTests: XCTestCase {
         let depAfter = try await rpcGet(base, "/deposit?demander=\(demanderAddr)&amount=\(depositAmount)&nonce=\(depositNonce)&chain=Child")
         XCTAssertFalse(depAfter["exists"] as? Bool ?? true, "Deposit should be removed after withdrawal")
 
-        // Verify withdrawer received funds on child chain
+        // Verify withdrawer received funds on child chain. Absolute balance
+        // includes miner's accumulated child coinbase rewards, so assert the
+        // delta from before the withdrawal: +withdrawn - fee, plus the one
+        // post-withdrawal coinbase (another block was mined to include wd tx).
         let wdBal = try await rpcGet(base, "/balance/\(minerAddr)?chain=Child")
-        XCTAssertEqual(wdBal["balance"] as? Int, depositAmount - 1,
-            "Withdrawer should have deposit amount minus fee on child")
+        let postBal = wdBal["balance"] as? Int ?? 0
+        let withdrawalDelta = (depositAmount - 1)
+        XCTAssertGreaterThanOrEqual(postBal - preBal, withdrawalDelta,
+            "Withdrawer balance should have grown by at least deposit amount minus fee on child")
     }
 }

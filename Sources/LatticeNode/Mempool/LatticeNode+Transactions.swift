@@ -25,7 +25,7 @@ extension LatticeNode {
             : await lattice.nexus.children[directory]?.chain
         if let chain {
             let isNexus = directory == genesisConfig.spec.directory
-            let validator = TransactionValidator(fetcher: await network.fetcher, chainState: chain, stateStore: stateStores[directory], frontierCache: frontierCaches[directory], chainDirectory: directory, isNexus: isNexus)
+            let validator = TransactionValidator(fetcher: await network.fetcher, chainState: chain, frontierCache: frontierCaches[directory], chainDirectory: directory, isNexus: isNexus)
             let result = await validator.validate(transaction)
             switch result {
             case .failure(let error):
@@ -35,8 +35,8 @@ extension LatticeNode {
             }
         }
         if let sender = transaction.body.node?.signers.first,
-           let storeNonce = stateStores[directory]?.getNonce(address: sender) {
-            await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: storeNonce)
+           let tipNonce = try? await getNonce(address: sender, directory: directory) {
+            await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: tipNonce)
         }
         let added = await network.submitTransaction(transaction)
         if added {
@@ -114,7 +114,6 @@ extension LatticeNode {
         let validator = TransactionValidator(
             fetcher: await network.fetcher,
             chainState: chain,
-            stateStore: stateStores[directory],
             frontierCache: frontierCaches[directory],
             chainDirectory: directory,
             isNexus: isNexus
@@ -122,8 +121,8 @@ extension LatticeNode {
         let result = await validator.validate(transaction)
         guard case .success = result else { return false }
         if let sender = transaction.body.node?.signers.first,
-           let storeNonce = stateStores[directory]?.getNonce(address: sender) {
-            await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: storeNonce)
+           let tipNonce = try? await getNonce(address: sender, directory: directory) {
+            await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: tipNonce)
         }
         return true
     }

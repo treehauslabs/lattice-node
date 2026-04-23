@@ -105,31 +105,23 @@ final class StateConsistencyTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = try StateStore(storagePath: dir, chain: "test")
 
-        // Apply a block with account updates
         await store.applyBlock(StateChangeset(
             height: 0, blockHash: "b0",
-            accountUpdates: [(address: "alice", balance: 1000, nonce: 0)],
             timestamp: 0, difficulty: "1", stateRoot: "s0"
         ))
+        let h0 = await store.getHeight()
+        XCTAssertEqual(h0, 0)
+        let tip0 = await store.getChainTip()
+        XCTAssertEqual(tip0, "b0")
 
-        let balance = store.getBalance(address: "alice")
-        XCTAssertEqual(balance, 1000, "Balance should be queryable after apply")
-
-        let nonce = store.getNonce(address: "alice")
-        XCTAssertEqual(nonce, 0)
-
-        // Apply another block updating balance
         await store.applyBlock(StateChangeset(
             height: 1, blockHash: "b1",
-            accountUpdates: [(address: "alice", balance: 900, nonce: 1)],
             timestamp: 1000, difficulty: "1", stateRoot: "s1"
         ))
-
-        let balance2 = store.getBalance(address: "alice")
-        XCTAssertEqual(balance2, 900, "Balance should update after second apply")
-
-        let nonce2 = store.getNonce(address: "alice")
-        XCTAssertEqual(nonce2, 1)
+        let h1 = await store.getHeight()
+        XCTAssertEqual(h1, 1)
+        let tip1 = await store.getChainTip()
+        XCTAssertEqual(tip1, "b1")
     }
 
     func testStateRootDeterminism() async throws {
@@ -327,46 +319,19 @@ final class InvalidDataHandlingTests: XCTestCase {
         }
     }
 
-    func testExpiredNonceRejected() async throws {
-        let f = cas()
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: 1_000_000, difficulty: UInt256.max, fetcher: f)
-        let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
-        let dir = tmp()
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try StateStore(storagePath: dir, chain: "test")
-
-        let kp = CryptoUtils.generateKeyPair()
-        let address = addr(kp.publicKey)
-
-        // Set confirmed nonce to 5
-        await store.setAccount(address: address, balance: 1000, nonce: 5, atHeight: 0)
-
-        let body = TransactionBody(
-            accountActions: [AccountAction(owner: address, delta: Int64(999) - Int64(1000))],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [address], fee: 1, nonce: 3 // EXPIRED
-        )
-        let tx = sign(body, kp)
-        let validator = TransactionValidator(fetcher: f, chainState: chain, stateStore: store)
-        let result = await validator.validate(tx)
-        if case .failure(.nonceAlreadyUsed) = result {
-            // Expected
-        } else {
-            XCTFail("Should reject expired nonce, got: \(result)")
-        }
-    }
-
     func testFarFutureNonceRejected() async throws {
         let f = cas()
         let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: 1_000_000, difficulty: UInt256.max, fetcher: f)
         let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
-        let dir = tmp()
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try StateStore(storagePath: dir, chain: "test")
+
+        let cache = FrontierCache()
+        guard let state0 = genesis.frontier.node else {
+            XCTFail("Genesis frontier should be resolved"); return
+        }
+        await cache.set(frontierCID: genesis.frontier.rawCID, state: state0)
 
         let kp = CryptoUtils.generateKeyPair()
         let address = addr(kp.publicKey)
-        await store.setAccount(address: address, balance: 1000, nonce: 0, atHeight: 0)
 
         let body = TransactionBody(
             accountActions: [AccountAction(owner: address, delta: Int64(999) - Int64(1000))],
@@ -374,7 +339,7 @@ final class InvalidDataHandlingTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: [address], fee: 1, nonce: 10000 // FAR FUTURE
         )
         let tx = sign(body, kp)
-        let validator = TransactionValidator(fetcher: f, chainState: chain, stateStore: store)
+        let validator = TransactionValidator(fetcher: f, chainState: chain, frontierCache: cache)
         let result = await validator.validate(tx)
         if case .failure(.nonceFromFuture) = result {
             // Expected
@@ -609,21 +574,18 @@ final class ConcurrencyTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = try StateStore(storagePath: dir, chain: "test")
 
-        // Write in background
         let writeTask = Task {
             for i in 0..<50 {
                 await store.applyBlock(StateChangeset(
                     height: UInt64(i), blockHash: "b\(i)",
-                    accountUpdates: [(address: "alice", balance: UInt64(i * 10), nonce: UInt64(i))],
                     timestamp: Int64(i), difficulty: "1", stateRoot: "s\(i)"
                 ))
             }
         }
 
-        // Read concurrently
         let readTask = Task {
             for _ in 0..<50 {
-                let _ = await store.getBalance(address: "alice")
+                let _ = await store.getHeight()
                 try? await Task.sleep(for: .milliseconds(1))
             }
         }
@@ -631,9 +593,8 @@ final class ConcurrencyTests: XCTestCase {
         await writeTask.value
         await readTask.value
 
-        // Should not crash — SQLite WAL handles concurrent reads
-        let finalBalance = await store.getBalance(address: "alice")
-        XCTAssertNotNil(finalBalance, "Balance should be queryable after concurrent access")
+        let finalHeight = await store.getHeight()
+        XCTAssertEqual(finalHeight, 49, "Final tip height should reflect last applied block")
     }
 }
 
@@ -742,19 +703,14 @@ final class PerformanceBenchmarkTests: XCTestCase {
 
         let start = ContinuousClock.now
         for i in 0..<100 {
-            var updates: [(address: String, balance: UInt64, nonce: UInt64)] = []
-            for j in 0..<50 {
-                updates.append((address: "addr_\(i)_\(j)", balance: UInt64(j * 100), nonce: UInt64(j)))
-            }
             await store.applyBlock(StateChangeset(
                 height: UInt64(i), blockHash: "b\(i)",
-                accountUpdates: updates,
                 timestamp: Int64(i), difficulty: "1", stateRoot: "s\(i)"
             ))
         }
         let elapsed = ContinuousClock.now - start
         let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-        XCTAssertLessThan(seconds, 10, "5000 account updates should complete in <10s, took \(seconds)s")
+        XCTAssertLessThan(seconds, 10, "100 block metadata updates should complete in <10s, took \(seconds)s")
     }
 }
 
@@ -1264,7 +1220,7 @@ final class ChaosLivenessTests: XCTestCase {
         try VolumeImpl<Block>(node: genesis).storeRecursively(storer: bs)
         await bs.flush(to: f)
 
-        let miner = MinerLoop(chainState: chain, mempool: mempool, fetcher: f, spec: spec, identity: identity)
+        let miner = MinerLoop(chainState: chain, mempool: mempool, fetcher: f, spec: spec, chainPath: [spec.directory], identity: identity)
 
         // Flood mempool while mining
         let collector = TestBlockCollector()
@@ -1587,10 +1543,12 @@ final class MorePersistenceTests: XCTestCase {
 
         let store = try StateStore(storagePath: dir, chain: "test")
 
-        // Should be able to read/write immediately
-        await store.setAccount(address: "test", balance: 42, nonce: 0, atHeight: 0)
-        let balance = store.getBalance(address: "test")
-        XCTAssertEqual(balance, 42)
+        await store.applyBlock(StateChangeset(
+            height: 0, blockHash: "b0",
+            timestamp: 0, difficulty: "1", stateRoot: "s0"
+        ))
+        let h = await store.getHeight()
+        XCTAssertEqual(h, 0)
     }
 }
 
@@ -2138,30 +2096,17 @@ final class RemainingPlanTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let store = try StateStore(storagePath: dir, chain: "stress")
 
-        // Apply 200 blocks rapidly
         for i in 0..<200 {
-            var updates: [(address: String, balance: UInt64, nonce: UInt64)] = []
-            for j in 0..<10 {
-                updates.append(("addr_\(j)", UInt64(i * 10 + j), UInt64(i)))
-            }
             await store.applyBlock(StateChangeset(
                 height: UInt64(i), blockHash: "b\(i)",
-                accountUpdates: updates,
                 timestamp: Int64(i), difficulty: "1", stateRoot: "s\(i)"
             ))
         }
 
-        // All 10 accounts should have final values
-        for j in 0..<10 {
-            let balance = store.getBalance(address: "addr_\(j)")
-            XCTAssertNotNil(balance, "Account addr_\(j) should exist")
-            if let b = balance {
-                XCTAssertEqual(b, UInt64(199 * 10 + j), "Final balance should match last applied")
-            }
-        }
-
-        let height = store.getHeight()
+        let height = await store.getHeight()
         XCTAssertEqual(height, 199)
+        let tip = await store.getChainTip()
+        XCTAssertEqual(tip, "b199")
     }
 
     // E1: Transaction pinning — RBF evicts both parent and child

@@ -30,20 +30,20 @@ public struct ChainHeader: Codable, Sendable {
 public enum LightClientProtocol {
     public static func buildAccountProof(
         address: String,
-        stateStore: StateStore,
+        balance: UInt64,
+        nonce: UInt64,
         blockHash: String,
         blockHeight: UInt64,
         stateRoot: String,
         timestamp: Int64
     ) async -> LightClientProof {
-        let account = stateStore.getAccount(address: address)
         return LightClientProof(
             blockHash: blockHash,
             blockHeight: blockHeight,
             stateRoot: stateRoot,
             address: address,
-            balance: account?.balance ?? 0,
-            nonce: account?.nonce ?? 0,
+            balance: balance,
+            nonce: nonce,
             proofPath: [],
             timestamp: timestamp
         )

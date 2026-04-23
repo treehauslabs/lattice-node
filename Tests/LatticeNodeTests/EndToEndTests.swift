@@ -89,7 +89,7 @@ final class SmokeTests: XCTestCase {
 
         let miner = MinerLoop(
             chainState: chain, mempool: mempool, fetcher: f,
-            spec: spec, identity: identity
+            spec: spec, chainPath: [spec.directory], identity: identity
         )
 
         let before = await miner.isMining
@@ -265,14 +265,14 @@ final class MultiChainEndToEndTests: XCTestCase {
         XCTAssertTrue(added)
 
         let childCtx = ChildMiningContext(
-            directory: "Payments", chainState: childChain,
+            directory: "Payments", chainPath: ["Nexus", "Payments"], chainState: childChain,
             mempool: childMempool, fetcher: f, spec: childSpec
         )
 
         let nexusMempool = NodeMempool(maxSize: 100)
         let miner = MinerLoop(
             chainState: nexusChain, mempool: nexusMempool, fetcher: f,
-            spec: nexusSpec, childContexts: [childCtx]
+            spec: nexusSpec, chainPath: [nexusSpec.directory], childContexts: [childCtx]
         )
 
         XCTAssertNotNil(miner)
@@ -308,13 +308,13 @@ final class MultiChainEndToEndTests: XCTestCase {
         let mempoolA = NodeMempool(maxSize: 100)
         let mempoolB = NodeMempool(maxSize: 100)
 
-        let ctxA = ChildMiningContext(directory: "Payments", chainState: chainA, mempool: mempoolA, fetcher: f, spec: childASpec)
-        let ctxB = ChildMiningContext(directory: "Identity", chainState: chainB, mempool: mempoolB, fetcher: f, spec: childBSpec)
+        let ctxA = ChildMiningContext(directory: "Payments", chainPath: ["Nexus", "Payments"], chainState: chainA, mempool: mempoolA, fetcher: f, spec: childASpec)
+        let ctxB = ChildMiningContext(directory: "Identity", chainPath: ["Nexus", "Identity"], chainState: chainB, mempool: mempoolB, fetcher: f, spec: childBSpec)
 
         let nexusMempool = NodeMempool(maxSize: 100)
         let miner = MinerLoop(
             chainState: nexusChain, mempool: nexusMempool, fetcher: f,
-            spec: nexusSpec, childContexts: [ctxA, ctxB]
+            spec: nexusSpec, chainPath: [nexusSpec.directory], childContexts: [ctxA, ctxB]
         )
         XCTAssertNotNil(miner)
     }
@@ -1182,7 +1182,7 @@ final class MultiChainMiningContextTests: XCTestCase {
         let childMempool = NodeMempool(maxSize: 100)
 
         let ctx = ChildMiningContext(
-            directory: "Payments", chainState: childChain,
+            directory: "Payments", chainPath: ["Nexus", "Payments"], chainState: childChain,
             mempool: childMempool, fetcher: f, spec: childSpec
         )
         XCTAssertEqual(ctx.directory, "Payments")
@@ -1210,14 +1210,14 @@ final class MultiChainMiningContextTests: XCTestCase {
             let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
             await f.store(rawCid: VolumeImpl<Block>(node: genesis).rawCID, data: genesis.toData()!)
             contexts.append(ChildMiningContext(
-                directory: dir, chainState: chain,
+                directory: dir, chainPath: [nexusSpec.directory, dir], chainState: chain,
                 mempool: NodeMempool(maxSize: 100), fetcher: f, spec: spec
             ))
         }
 
         let miner = MinerLoop(
             chainState: nexusChain, mempool: NodeMempool(maxSize: 100),
-            fetcher: f, spec: nexusSpec, childContexts: contexts
+            fetcher: f, spec: nexusSpec, chainPath: [nexusSpec.directory], childContexts: contexts
         )
         XCTAssertNotNil(miner)
         let mining = await miner.isMining
@@ -1613,7 +1613,7 @@ final class FullMiningIntegrationTests: XCTestCase {
 
         let miner = MinerLoop(
             chainState: chain, mempool: mempool, fetcher: f,
-            spec: spec, identity: identity, batchSize: 10_000
+            spec: spec, chainPath: [spec.directory], identity: identity, batchSize: 10_000
         )
 
         let collector = BlockCollector()
@@ -1672,14 +1672,14 @@ final class FullMiningIntegrationTests: XCTestCase {
 
         let childMempool = NodeMempool(maxSize: 100)
         let childCtx = ChildMiningContext(
-            directory: "Payments", chainState: childChain,
+            directory: "Payments", chainPath: ["Nexus", "Payments"], chainState: childChain,
             mempool: childMempool, fetcher: f, spec: childSpec
         )
 
         let nexusMempool = NodeMempool(maxSize: 100)
         let miner = MinerLoop(
             chainState: nexusChain, mempool: nexusMempool, fetcher: f,
-            spec: nexusSpec, identity: identity, childContexts: [childCtx],
+            spec: nexusSpec, chainPath: [nexusSpec.directory], identity: identity, childContexts: [childCtx],
             batchSize: 10_000
         )
 
@@ -1756,12 +1756,12 @@ final class FullMiningIntegrationTests: XCTestCase {
         await gs2.flush(to: f)
 
         let childCtx = ChildMiningContext(
-            directory: "Payments", chainState: childChainA,
+            directory: "Payments", chainPath: ["Nexus", "Payments"], chainState: childChainA,
             mempool: NodeMempool(maxSize: 100), fetcher: f, spec: childSpec
         )
         let miner = MinerLoop(
             chainState: chainA, mempool: NodeMempool(maxSize: 100), fetcher: f,
-            spec: nexusSpec, identity: identity, childContexts: [childCtx],
+            spec: nexusSpec, chainPath: [nexusSpec.directory], identity: identity, childContexts: [childCtx],
             batchSize: 10_000
         )
 

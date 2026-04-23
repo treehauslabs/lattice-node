@@ -202,26 +202,9 @@ extension LatticeNode {
         await persistChainState(directory: nexusDir)
 
         if let store = stateStores[nexusDir] {
-            log.info("Rebuilding StateStore via block replay (sparse — no full state pull)...")
-
-            // Replay synced blocks in order: each block's accountActions carry
-            // balance deltas, so we derive state from transactions alone.
-            // This avoids resolveRecursive on the account state tree entirely.
+            // StateStore is now only a local index for receipts/tx_history/block_index.
+            // Account state lives in the AccountState tree; no replay needed for balances or nonces.
             let sortedBlocks = result.persisted.blocks.sorted { $0.blockIndex < $1.blockIndex }
-            for blockMeta in sortedBlocks {
-                guard let data = try? await fetcher.fetch(rawCid: blockMeta.blockHash),
-                      let blk = Block(data: data) else { continue }
-                if let txDict = try? await blk.transactions.resolveRecursive(fetcher: fetcher).node,
-                   let txEntries = try? txDict.allKeysAndValues() {
-                    let changeset = extractStateChangeset(
-                        block: blk, blockHash: blockMeta.blockHash,
-                        txEntries: txEntries, store: store
-                    )
-                    await store.applyBlock(changeset)
-                }
-            }
-
-            // Set tip metadata from the last synced block
             if let tipMeta = sortedBlocks.last,
                let tipData = try? await fetcher.fetch(rawCid: tipMeta.blockHash),
                let tipBlock = Block(data: tipData) {
@@ -231,8 +214,6 @@ extension LatticeNode {
                     stateRoot: tipBlock.frontier.rawCID
                 )
             }
-
-            log.info("StateStore rebuilt from \(sortedBlocks.count) blocks (sparse replay)")
         }
 
         await reprocessSyncedBlocksForChildChains(persisted: result.persisted, fetcher: fetcher, network: network)
