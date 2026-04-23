@@ -579,12 +579,21 @@ public actor MinerLoop {
         let cachedSnapshot = cachedChildTips
         let minerIdentity = identity
 
+        // Top-level: convert the nexus tip into the "new nexus block" representation
+        // so its homestead (= tip.frontier) matches what validation will see for the
+        // block currently being built. Grandchildren+ recurse with the already-built
+        // provisional child block, which is already the "new block" — no further
+        // transformation needed there.
+        let nexusAsNewBlock = nexusBlock.set(properties: [
+            "homestead": nexusBlock.frontier
+        ])
+
         let subtrees = await withTaskGroup(of: BuiltSubtree?.self, returning: [BuiltSubtree].self) { group in
             for ctx in contexts {
                 group.addTask {
                     await Self.buildSubtree(
                         ctx: ctx,
-                        parentBlock: nexusBlock,
+                        parentBlock: nexusAsNewBlock,
                         timestamp: timestamp,
                         cachedTips: cachedSnapshot,
                         identity: minerIdentity
@@ -680,11 +689,13 @@ public actor MinerLoop {
                 childNextDifficulty = childDifficulty
             }
 
-            // Parent's homestead for anchoring is its own frontier from the
-            // block being built at the parent level.
-            let parentForChild = parentBlock.set(properties: [
-                "homestead": parentBlock.frontier
-            ])
+            // `parentBlock` is already the representation that validation will see
+            // for the block being built at the parent level: at the top level,
+            // buildChildBlocks transforms nexusTip so its homestead equals the
+            // new nexus block's homestead; for grandchildren+ `parentBlock` is
+            // the freshly-built provisional child block, which carries the
+            // correct homestead by construction. So use it directly.
+            let parentForChild = parentBlock
 
             // Two-pass: build this child without grandchildren first to
             // determine its frontier, then rebuild with grandchildren

@@ -20,10 +20,7 @@ extension LatticeNode {
         guard let network = networks[directory] else {
             return .failure("Unknown chain: \(directory)")
         }
-        let chain = directory == genesisConfig.spec.directory
-            ? await lattice.nexus.chain
-            : await lattice.nexus.children[directory]?.chain
-        if let chain {
+        if let chain = await chain(for: directory) {
             let isNexus = directory == genesisConfig.spec.directory
             let validator = TransactionValidator(fetcher: await network.fetcher, chainState: chain, frontierCache: frontierCaches[directory], chainDirectory: directory, isNexus: isNexus)
             let result = await validator.validate(transaction)

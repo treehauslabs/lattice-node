@@ -326,7 +326,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
     // MARK: - Chain Lookup
 
-    func chain(for directory: String) async -> ChainState? {
+    public func chain(for directory: String) async -> ChainState? {
         let nexusDir = genesisConfig.spec.directory
         if directory == nexusDir {
             return await lattice.nexus.chain

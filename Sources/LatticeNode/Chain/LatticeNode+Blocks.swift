@@ -399,7 +399,7 @@ extension LatticeNode {
 
                 // Recover orphaned child txs to child mempool (with validation)
                 if let childNetwork = networks[childDir],
-                   let childChain = await lattice.nexus.children[childDir]?.chain {
+                   let childChain = await chain(for: childDir) {
                     let validator = TransactionValidator(
                         fetcher: fetcher,
                         chainState: childChain,
@@ -731,6 +731,9 @@ extension LatticeNode {
     /// Apply child block state changes for each child block embedded in a nexus block.
     /// Stores the child block in the child CAS, applies state changes (StateStore,
     /// mempool nonces, receipts), and prunes confirmed transactions from the child mempool.
+    /// Recurses into each child's own `childBlocks` so grandchildren get the same
+    /// treatment — without recursion, a grandchild's mempool never sees
+    /// `batchUpdateConfirmedNonces`, so miner-signed user txs there stay stuck.
     private func applyChildBlockStates(nexusBlock: Block, fetcher: Fetcher) async {
         let tTotal = ContinuousClock.now
         let tResolve = ContinuousClock.now
@@ -787,6 +790,9 @@ extension LatticeNode {
                 await childNet.nodeMempool.removeAll(txCIDs: confirmedCIDs)
             }
             let dPrune = ContinuousClock.now - tPrune
+
+            // Recurse into grandchildren embedded in this child block.
+            await applyChildBlockStates(nexusBlock: childBlock, fetcher: childFetcher)
 
             let dChild = ContinuousClock.now - tChild
             print("[TIMING] applyChildBlockStates child=\(childDir) #\(childBlock.index) txs=\(txEntries.count) total=\(dChild) header=\(dHeader) store=\(dStore) fetcher=\(dFetcher) txResolve=\(dTx) apply=\(dApply) prune=\(dPrune)")

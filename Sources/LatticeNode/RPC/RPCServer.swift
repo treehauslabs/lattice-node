@@ -224,11 +224,9 @@ enum RPCRoutes {
 
     static func latestBlock(node: LatticeNode, request: Request) async throws -> Response {
         let dir = resolveChain(node: node, request: request)
-        let isNexus = dir == node.genesisConfig.spec.directory
-        let chain = isNexus
-            ? await node.lattice.nexus.chain
-            : await node.lattice.nexus.children[dir]?.chain
-        guard let chain else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
+        guard let chain = await node.chain(for: dir) else {
+            return jsonError("Unknown chain: \(dir)", status: .notFound)
+        }
         let tip = await chain.getMainChainTip()
         let s = await chain.tipSnapshot
         struct R: Encodable { let hash: String; let index: UInt64?; let timestamp: Int64?; let difficulty: String?; let chain: String }
@@ -240,11 +238,9 @@ enum RPCRoutes {
         guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
         var h = id
         if let i = UInt64(id) {
-            let isNexus = dir == node.genesisConfig.spec.directory
-            let chain = isNexus
-                ? await node.lattice.nexus.chain
-                : await node.lattice.nexus.children[dir]?.chain
-            guard let chain else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
+            guard let chain = await node.chain(for: dir) else {
+                return jsonError("Unknown chain: \(dir)", status: .notFound)
+            }
             var found = await chain.getMainChainBlockHash(atIndex: i)
             if found == nil {
                 found = await node.stateStore(for: dir)?.getBlockHash(atHeight: i)
@@ -349,11 +345,7 @@ enum RPCRoutes {
     private static func resolveBlock(id: String, dir: String, node: LatticeNode, fetcher: any Fetcher) async throws -> Block? {
         var h = id
         if let i = UInt64(id) {
-            let isNexus = dir == node.genesisConfig.spec.directory
-            let chain = isNexus
-                ? await node.lattice.nexus.chain
-                : await node.lattice.nexus.children[dir]?.chain
-            guard let chain else { return nil }
+            guard let chain = await node.chain(for: dir) else { return nil }
             guard let found = await chain.getMainChainBlockHash(atIndex: i) else { return nil }
             h = found
         }

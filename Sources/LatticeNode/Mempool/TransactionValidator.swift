@@ -165,10 +165,14 @@ public struct TransactionValidator: Sendable {
             if !body.depositActions.isEmpty { return .depositOrWithdrawalOnNexus }
             if !body.withdrawalActions.isEmpty { return .depositOrWithdrawalOnNexus }
         }
-        // Child chains cannot have receipt actions (receipts are nexus-only)
-        if !isNexus {
-            if !body.receiptActions.isEmpty { return .receiptOnChildChain }
-        }
+        // Receipts are valid on any non-leaf chain: a grandchild's withdrawal
+        // resolves `parentState.receiptState` on its DIRECT parent (which may
+        // itself be a non-nexus chain like Mid in a 3-level hierarchy). The
+        // validator can't cheaply tell whether the current chain has children,
+        // and correctness is enforced at block-application time via
+        // `TransactionBody.withdrawalsAreValid`, which checks the parent-chain
+        // receipt state. Allowing receipts on any chain makes 2+ level deep
+        // cross-chain swaps work.
         let signerSet = Set(body.signers)
         for deposit in body.depositActions {
             if deposit.amountDeposited == 0 { return .swapSignerMismatch }

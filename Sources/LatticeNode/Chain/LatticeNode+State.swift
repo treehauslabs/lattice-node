@@ -101,10 +101,7 @@ extension LatticeNode {
 
     private func resolveTipFrontier(directory: String) async throws -> (state: LatticeState, fetcher: Fetcher)? {
         guard let network = networks[directory] else { return nil }
-        let chain = directory == genesisConfig.spec.directory
-            ? await lattice.nexus.chain
-            : await lattice.nexus.children[directory]?.chain
-        guard let chain else { return nil }
+        guard let chain = await chain(for: directory) else { return nil }
         guard let snapshot = await chain.tipSnapshot else { return nil }
         let frontierCID = snapshot.frontierCID
         let fetcher = await network.fetcher
@@ -136,10 +133,7 @@ extension LatticeNode {
 
     public func getDeposit(demander: String, amountDemanded: UInt64, nonce: UInt128, directory: String) async throws -> UInt64? {
         guard let network = networks[directory] else { return nil }
-        let chain = directory == genesisConfig.spec.directory
-            ? await lattice.nexus.chain
-            : await lattice.nexus.children[directory]?.chain
-        guard let chain else { return nil }
+        guard let chain = await chain(for: directory) else { return nil }
         guard let snapshot = await chain.tipSnapshot else { return nil }
         let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
@@ -151,9 +145,13 @@ extension LatticeNode {
     }
 
     public func getReceipt(demander: String, amountDemanded: UInt64, nonce: UInt128, directory: String) async throws -> String? {
-        let nexusDir = genesisConfig.spec.directory
-        guard let network = networks[nexusDir] else { return nil }
-        let chain = await lattice.nexus.chain
+        // A receipt for a withdrawal on `directory` lives on `directory`'s
+        // direct parent chain (that's what TransactionBody.withdrawalsAreValid
+        // resolves via parentState.receiptState). For a grandchild, the parent
+        // is not the nexus.
+        let parentDir = parentDirectoryByChain[directory] ?? genesisConfig.spec.directory
+        guard let network = networks[parentDir] else { return nil }
+        guard let chain = await chain(for: parentDir) else { return nil }
         guard let snapshot = await chain.tipSnapshot else { return nil }
         let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
@@ -170,10 +168,7 @@ extension LatticeNode {
 
     public func listDeposits(directory: String, limit: Int = 100, after: String? = nil) async throws -> [(key: String, amountDeposited: UInt64)] {
         guard let network = networks[directory] else { return [] }
-        let chain = directory == genesisConfig.spec.directory
-            ? await lattice.nexus.chain
-            : await lattice.nexus.children[directory]?.chain
-        guard let chain else { return [] }
+        guard let chain = await chain(for: directory) else { return [] }
         guard let snapshot = await chain.tipSnapshot else { return [] }
         let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
@@ -187,10 +182,7 @@ extension LatticeNode {
     public func getBalanceProof(address: String, directory: String? = nil) async throws -> Data? {
         let dir = directory ?? genesisConfig.spec.directory
         guard let network = networks[dir] else { return nil }
-        let chain = dir == genesisConfig.spec.directory
-            ? await lattice.nexus.chain
-            : await lattice.nexus.children[dir]?.chain
-        guard let chain else { return nil }
+        guard let chain = await chain(for: dir) else { return nil }
         guard let snapshot = await chain.tipSnapshot else { return nil }
         let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
