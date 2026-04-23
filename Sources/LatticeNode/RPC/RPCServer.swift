@@ -174,8 +174,20 @@ enum RPCRoutes {
     static func chainInfo(node: LatticeNode) async throws -> Response {
         let statuses = await node.chainStatus()
         struct R: Encodable { let chains: [C]; let genesisHash: String; let nexus: String }
-        struct C: Encodable { let directory: String; let height: UInt64; let tip: String; let mining: Bool; let mempoolCount: Int; let syncing: Bool }
-        let chains = statuses.map { C(directory: $0.directory, height: $0.height, tip: $0.tip, mining: $0.mining, mempoolCount: $0.mempoolCount, syncing: $0.syncing) }
+        struct C: Encodable {
+            let directory: String
+            let parentDirectory: String?
+            let height: UInt64
+            let tip: String
+            let mining: Bool
+            let mempoolCount: Int
+            let syncing: Bool
+        }
+        let chains = statuses.map {
+            C(directory: $0.directory, parentDirectory: $0.parentDirectory,
+              height: $0.height, tip: $0.tip, mining: $0.mining,
+              mempoolCount: $0.mempoolCount, syncing: $0.syncing)
+        }
         return json(R(chains: chains, genesisHash: node.genesisResult.blockHash, nexus: node.genesisConfig.spec.directory))
     }
 
@@ -519,9 +531,6 @@ enum RPCRoutes {
         if FileManager.default.fileExists(atPath: storageDir.path) {
             return jsonError("Chain directory '\(dir)' already has data on disk from a prior deploy. Remove \(storageDir.path) before redeploying.", status: .conflict)
         }
-        if body.parentDirectory != node.genesisConfig.spec.directory {
-            return jsonError("Only '\(node.genesisConfig.spec.directory)' is supported as parent; nested child chains are not yet supported")
-        }
         guard let parentNetwork = await node.network(for: body.parentDirectory) else {
             return jsonError("Parent chain not found: \(body.parentDirectory)", status: .notFound)
         }
@@ -577,7 +586,11 @@ enum RPCRoutes {
         }
 
         do {
-            try await node.deployChildChain(directory: dir, genesisBlock: genesisBlock)
+            try await node.deployChildChain(
+                directory: dir,
+                parentDirectory: body.parentDirectory,
+                genesisBlock: genesisBlock
+            )
         } catch {
             log.error("deployChain: deployChildChain failed: \(error)")
             return jsonError("Failed to deploy chain: \(error.localizedDescription)", status: .internalServerError)

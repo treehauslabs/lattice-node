@@ -702,10 +702,23 @@ extension LatticeNode {
     /// cache with the genesis hash so the miner's lock-free tip check works,
     /// and persists chain state so the chain survives a restart before any
     /// blocks are mined.
-    public func deployChildChain(directory: String, genesisBlock: Block) async throws {
+    ///
+    /// `parentDirectory` identifies the chain that will anchor the new chain
+    /// via merged mining. When `nil`, defaults to the nexus so existing callers
+    /// continue to work. For grandchildren (and deeper), pass the intermediate
+    /// chain's directory.
+    public func deployChildChain(directory: String, parentDirectory: String? = nil, genesisBlock: Block) async throws {
+        let nexusDir = genesisConfig.spec.directory
+        let parentDir = parentDirectory ?? nexusDir
+        guard let parentHit = await lattice.nexus.findLevel(directory: parentDir, chainPath: [nexusDir]) else {
+            throw NodeError.parentChainNotFound(parentDir)
+        }
         try await registerChainNetworkUsingNodeConfig(directory: directory)
-        await lattice.nexus.subscribe(to: directory, genesisBlock: genesisBlock, retentionDepth: config.retentionDepth)
-        config = config.addingSubscription(chainPath: [genesisConfig.spec.directory, directory])
+        await parentHit.level.subscribe(to: directory, genesisBlock: genesisBlock, retentionDepth: config.retentionDepth)
+        let childPath = parentHit.chainPath + [directory]
+        config = config.addingSubscription(chainPath: childPath)
+        parentDirectoryByChain[directory] = parentDir
+        await persistParentHierarchy()
         if let tip = await chain(for: directory)?.getMainChainTip() {
             tipCaches[directory]?.update(tip)
         }
@@ -1035,23 +1048,35 @@ extension LatticeNode {
     }
 
     func handleChildChainDiscovery(directory: String) async {
-        guard config.isSubscribed(chainPath: [genesisConfig.spec.directory, directory]) else { return }
+        let nexusDir = genesisConfig.spec.directory
+        // The lattice delegate only carries the directory name; the discovered
+        // chain may live anywhere in the tree, so look up its full chain path.
+        guard let hit = await lattice.nexus.findLevel(directory: directory, chainPath: [nexusDir]) else { return }
+        guard config.isSubscribed(chainPath: hit.chainPath) else { return }
         guard networks[directory] == nil else { return }
         try? await registerChainNetworkUsingNodeConfig(directory: directory)
+
+        // Record the parent so a restart restores the hierarchy correctly.
+        if hit.chainPath.count >= 2 {
+            let parentDir = hit.chainPath[hit.chainPath.count - 2]
+            parentDirectoryByChain[directory] = parentDir
+            await persistParentHierarchy()
+        }
 
         // Restore any persisted mempool transactions for this child chain
         if let childNetwork = networks[directory], !config.discoveryOnly {
             await restoreMempool(directory: directory, network: childNetwork, fetcher: childNetwork.ivyFetcher)
         }
 
-        if let childNetwork = networks[directory],
-           let childLevel = await lattice.nexus.children[directory] {
-            let tipHash = await childLevel.chain.getMainChainTip()
-            let nexusDir = genesisConfig.spec.directory
-            if let nexusNetwork = networks[nexusDir] {
+        if let childNetwork = networks[directory] {
+            let tipHash = await hit.level.chain.getMainChainTip()
+            // Seed blocks from the parent's CAS — that's where the merged-mined
+            // child block data lives before it's copied into the child network.
+            let parentDir = hit.chainPath.count >= 2 ? hit.chainPath[hit.chainPath.count - 2] : nexusDir
+            if let parentNetwork = networks[parentDir] {
                 await deepCopyBlock(
                     cid: tipHash,
-                    from: nexusNetwork,
+                    from: parentNetwork,
                     to: childNetwork
                 )
             }

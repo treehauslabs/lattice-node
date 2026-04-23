@@ -10,9 +10,9 @@ extension LatticeNode {
         let nexusDir = genesisConfig.spec.directory
         if directory != nexusDir {
             guard networks[directory] != nil else { return }
-            let chainPath = [nexusDir, directory]
-            if !config.isSubscribed(chainPath: chainPath) {
-                config = config.addingSubscription(chainPath: chainPath)
+            guard let path = await chainPath(for: directory) else { return }
+            if !config.isSubscribed(chainPath: path) {
+                config = config.addingSubscription(chainPath: path)
             }
             if miners[nexusDir] == nil {
                 await startMining(directory: nexusDir, identity: identity)
@@ -50,9 +50,9 @@ extension LatticeNode {
     public func stopMining(directory: String) async {
         let nexusDir = genesisConfig.spec.directory
         if directory != nexusDir {
-            let chainPath = [nexusDir, directory]
-            if config.isSubscribed(chainPath: chainPath) {
-                config = config.removingSubscription(chainPath: chainPath)
+            if let path = await chainPath(for: directory),
+               config.isSubscribed(chainPath: path) {
+                config = config.removingSubscription(chainPath: path)
             }
             return
         }

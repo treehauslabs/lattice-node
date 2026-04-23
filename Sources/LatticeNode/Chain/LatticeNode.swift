@@ -10,6 +10,16 @@ import ArrayTrie
 import Crypto
 import OrderedCollections
 
+public enum NodeError: Error, CustomStringConvertible {
+    case parentChainNotFound(String)
+
+    public var description: String {
+        switch self {
+        case .parentChainNotFound(let dir): return "Parent chain not found: \(dir)"
+        }
+    }
+}
+
 public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public var config: LatticeNodeConfig
     public let lattice: Lattice
@@ -19,6 +29,10 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var miners: [String: MinerLoop]
     var persisters: [String: ChainStatePersister]
     var blocksSinceLastPersist: [String: UInt64]
+    /// Parent chain directory for every non-nexus chain, keyed by child
+    /// directory. Captured when `deployChildChain` registers a chain so the
+    /// hierarchy survives restarts via the parent-hierarchy sidecar file.
+    var parentDirectoryByChain: [String: String]
     var recentPeerBlocks: OrderedDictionary<String, ContinuousClock.Instant>
     var peerBlockCounts: OrderedDictionary<PeerID, (count: Int, windowStart: ContinuousClock.Instant)>
     /// CIDs currently being validated by `processBlockAndRecoverReorg`. The actor
@@ -161,6 +175,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         self.networks = [genesisConfig.spec.directory: nexusNetwork]
         self.miners = [:]
         self.persisters = [genesisConfig.spec.directory: persister]
+        self.parentDirectoryByChain = [:]
         self.blocksSinceLastPersist = [:]
         self.recentPeerBlocks = [:]
         self.peerBlockCounts = [:]
@@ -251,12 +266,14 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         Array(networks.keys.sorted())
     }
 
-    public func isMining(directory: String) -> Bool {
+    public func isMining(directory: String) async -> Bool {
         let nexusDir = genesisConfig.spec.directory
         if directory == nexusDir {
             return miners[nexusDir] != nil
         }
-        return miners[nexusDir] != nil && config.isSubscribed(chainPath: [nexusDir, directory])
+        guard miners[nexusDir] != nil else { return false }
+        guard let path = await chainPath(for: directory) else { return false }
+        return config.isSubscribed(chainPath: path)
     }
 
     public func registerChainNetwork(
@@ -310,12 +327,22 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     // MARK: - Chain Lookup
 
     func chain(for directory: String) async -> ChainState? {
-        if directory == genesisConfig.spec.directory {
+        let nexusDir = genesisConfig.spec.directory
+        if directory == nexusDir {
             return await lattice.nexus.chain
-        } else if let childLevel = await lattice.nexus.children[directory] {
-            return await childLevel.chain
         }
-        return nil
+        guard let hit = await lattice.nexus.findLevel(directory: directory, chainPath: [nexusDir]) else {
+            return nil
+        }
+        return await hit.level.chain
+    }
+
+    /// Full chain path from nexus down to `directory`, e.g. `[nexus, child, grandchild]`.
+    /// Returns nil for unknown directories.
+    func chainPath(for directory: String) async -> [String]? {
+        let nexusDir = genesisConfig.spec.directory
+        if directory == nexusDir { return [nexusDir] }
+        return await lattice.nexus.findLevel(directory: directory, chainPath: [nexusDir])?.chainPath
     }
 
     // MARK: - Mempool Maintenance

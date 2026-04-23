@@ -190,6 +190,33 @@ extension LatticeNode {
         log.info("\(directory): rebuilt \(cids.count) account pin(s) from \(history.count) transaction(s)")
     }
 
+    // MARK: - Parent Hierarchy Persistence
+
+    /// Sidecar file in the top-level storage directory mapping each non-nexus
+    /// chain directory to its parent. Written whenever a chain is deployed and
+    /// consulted on startup to rebuild the ChainLevel tree in the right shape.
+    private var parentHierarchyURL: URL {
+        config.storagePath.appendingPathComponent("parent_hierarchy.json")
+    }
+
+    func persistParentHierarchy() async {
+        do {
+            let data = try JSONEncoder().encode(parentDirectoryByChain)
+            try data.write(to: parentHierarchyURL, options: .atomic)
+        } catch {
+            let log = NodeLogger("persistence")
+            log.error("Failed to persist parent hierarchy: \(error)")
+        }
+    }
+
+    func loadParentHierarchy() -> [String: String] {
+        guard let data = try? Data(contentsOf: parentHierarchyURL),
+              let map = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return [:]
+        }
+        return map
+    }
+
     public func restoreChildChains() async throws {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(
@@ -197,6 +224,13 @@ extension LatticeNode {
             includingPropertiesForKeys: [.isDirectoryKey]
         ) else { return }
         let nexusDir = genesisConfig.spec.directory
+
+        // Discover every persisted non-nexus chain. The persisted sidecar may be
+        // stale or absent — fall back to "parent is nexus" so single-level
+        // deployments still restore, and legacy data (deployed before the
+        // sidecar existed) keeps working.
+        let persistedHierarchy = loadParentHierarchy()
+        var discovered: [String] = []
         for dir in contents {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { continue }
@@ -204,27 +238,55 @@ extension LatticeNode {
             guard dirName != nexusDir else { continue }
             let stateFile = dir.appendingPathComponent("chain_state.json")
             guard fm.fileExists(atPath: stateFile.path) else { continue }
-            let persister = ChainStatePersister(storagePath: config.storagePath, directory: dirName)
-            guard let persisted = try? await persister.load() else { continue }
-            let childChain = ChainState.restore(
-                from: persisted,
-                retentionDepth: config.retentionDepth
-            )
-            let childLevel = ChainLevel(chain: childChain, children: [:])
-            await lattice.nexus.restoreChildChain(directory: dirName, level: childLevel)
-            persisters[dirName] = persister
-            config = config.addingSubscription(chainPath: [nexusDir, dirName])
+            discovered.append(dirName)
+        }
+        parentDirectoryByChain = [:]
+        for d in discovered {
+            parentDirectoryByChain[d] = persistedHierarchy[d] ?? nexusDir
+        }
 
-            // Register network so child chain is operational immediately
-            if networks[dirName] == nil {
-                let port = deterministicPort(basePort: config.listenPort, directory: dirName)
-                let childConfig = IvyConfig(
-                    publicKey: config.publicKey,
-                    listenPort: port,
-                    enableLocalDiscovery: config.enableLocalDiscovery
+        // Restore deepest-first isn't required — topological order is. Because
+        // a child's parent must be restored before the child subscribes on it,
+        // iterate until nothing new can be restored.
+        var restored: Set<String> = [nexusDir]
+        var progress = true
+        while progress {
+            progress = false
+            for dirName in discovered where !restored.contains(dirName) {
+                let parent = parentDirectoryByChain[dirName] ?? nexusDir
+                guard restored.contains(parent) else { continue }
+                // Resolve parent level via DFS. Nexus is at chainPath [nexusDir].
+                guard let parentHit = await lattice.nexus.findLevel(directory: parent, chainPath: [nexusDir]) else {
+                    let log = NodeLogger("persistence")
+                    log.warn("Cannot restore \(dirName): parent \(parent) not found in lattice tree")
+                    continue
+                }
+                let persister = ChainStatePersister(storagePath: config.storagePath, directory: dirName)
+                guard let persisted = try? await persister.load() else { continue }
+                let childChain = ChainState.restore(
+                    from: persisted,
+                    retentionDepth: config.retentionDepth
                 )
-                try? await registerChainNetwork(directory: dirName, config: childConfig)
+                let childLevel = ChainLevel(chain: childChain, children: [:])
+                await parentHit.level.restoreChildChain(directory: dirName, level: childLevel)
+                persisters[dirName] = persister
+                let childPath = parentHit.chainPath + [dirName]
+                config = config.addingSubscription(chainPath: childPath)
+
+                if networks[dirName] == nil {
+                    let port = deterministicPort(basePort: config.listenPort, directory: dirName)
+                    let childConfig = IvyConfig(
+                        publicKey: config.publicKey,
+                        listenPort: port,
+                        enableLocalDiscovery: config.enableLocalDiscovery
+                    )
+                    try? await registerChainNetwork(directory: dirName, config: childConfig)
+                }
+                restored.insert(dirName)
+                progress = true
             }
         }
+        // Persist the normalized hierarchy so any fallbacks get captured on disk.
+        await persistParentHierarchy()
     }
 }

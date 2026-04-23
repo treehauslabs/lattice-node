@@ -7,6 +7,7 @@ extension LatticeNode {
 
     public struct ChainInfo: Sendable {
         public let directory: String
+        public let parentDirectory: String?
         public let height: UInt64
         public let tip: String
         public let mining: Bool
@@ -21,22 +22,27 @@ extension LatticeNode {
         let nexusTip = await lattice.nexus.chain.getMainChainTip()
         let nexusMempoolCount = await networks[nexusDir]?.nodeMempool.count ?? 0
         result.append(ChainInfo(
-            directory: nexusDir, height: nexusHeight, tip: nexusTip,
+            directory: nexusDir, parentDirectory: nil,
+            height: nexusHeight, tip: nexusTip,
             mining: miners[nexusDir] != nil, mempoolCount: nexusMempoolCount,
             syncing: isSyncing
         ))
-        let childDirs = await lattice.nexus.childDirectories()
-        for dir in childDirs.sorted() {
-            if let childLevel = await lattice.nexus.children[dir] {
-                let h = await childLevel.chain.getHighestBlockIndex()
-                let t = await childLevel.chain.getMainChainTip()
-                let mc = await networks[dir]?.nodeMempool.count ?? 0
-                result.append(ChainInfo(
-                    directory: dir, height: h, tip: t,
-                    mining: isMining(directory: dir), mempoolCount: mc,
-                    syncing: isChildChainSyncing(directory: dir)
-                ))
-            }
+        // Walk the whole ChainLevel tree so grandchildren show up too.
+        let allLevels = await lattice.nexus.collectAllLevels(chainPath: [nexusDir])
+        let children = allLevels.filter { $0.chainPath.count >= 2 }
+            .sorted { $0.chainPath.joined(separator: "/") < $1.chainPath.joined(separator: "/") }
+        for (childLevel, path) in children {
+            let dir = path.last ?? ""
+            let parent = path.count >= 2 ? path[path.count - 2] : nil
+            let h = await childLevel.chain.getHighestBlockIndex()
+            let t = await childLevel.chain.getMainChainTip()
+            let mc = await networks[dir]?.nodeMempool.count ?? 0
+            result.append(ChainInfo(
+                directory: dir, parentDirectory: parent,
+                height: h, tip: t,
+                mining: await isMining(directory: dir), mempoolCount: mc,
+                syncing: isChildChainSyncing(directory: dir)
+            ))
         }
         return result
     }
