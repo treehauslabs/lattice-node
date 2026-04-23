@@ -242,18 +242,8 @@ enum RPCRoutes {
         }
         let header = VolumeImpl<Block>(rawCID: h)
         guard let b = try? await header.resolve(fetcher: network.fetcher).node else { return jsonError("Block not found", status: .notFound) }
-        let txCount: Int
-        if let txNode = try? await b.transactions.resolveRecursive(fetcher: network.fetcher).node {
-            txCount = txNode.count
-        } else {
-            txCount = 0
-        }
-        let childCount: Int
-        if let cbNode = try? await b.childBlocks.resolveRecursive(fetcher: network.fetcher).node {
-            childCount = cbNode.count
-        } else {
-            childCount = 0
-        }
+        let txCount = (try? await b.transactions.resolve(fetcher: network.fetcher).node?.count) ?? 0
+        let childCount = (try? await b.childBlocks.resolve(fetcher: network.fetcher).node?.count) ?? 0
         struct R: Encodable {
             let hash: String; let index: UInt64; let timestamp: Int64
             let previousBlock: String?; let difficulty: String; let nextDifficulty: String
@@ -283,7 +273,7 @@ enum RPCRoutes {
         guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
         let block = try await resolveBlock(id: id, dir: dir, node: node, fetcher: network.fetcher)
         guard let b = block else { return jsonError("Block not found", status: .notFound) }
-        guard let txNode = try? await b.transactions.resolveRecursive(fetcher: network.fetcher).node else {
+        guard let txNode = try? await b.transactions.resolve(paths: [[""]: .list], fetcher: network.fetcher).node else {
             return jsonError("Failed to resolve transactions", status: .internalServerError)
         }
         guard let entries = try? txNode.sortedKeysAndValues() else {
@@ -296,8 +286,8 @@ enum RPCRoutes {
         }
         var txs: [TxSummary] = []
         for (_, txHeader) in entries {
-            guard let tx = txHeader.node else { continue }
-            let body = tx.body.node
+            guard let tx = try? await txHeader.resolve(fetcher: network.fetcher).node else { continue }
+            let body = try? await tx.body.resolve(fetcher: network.fetcher).node
             txs.append(TxSummary(
                 txCID: txHeader.rawCID, bodyCID: tx.body.rawCID,
                 fee: body?.fee ?? 0, nonce: body?.nonce ?? 0,
@@ -317,7 +307,7 @@ enum RPCRoutes {
         guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
         let block = try await resolveBlock(id: id, dir: dir, node: node, fetcher: network.fetcher)
         guard let b = block else { return jsonError("Block not found", status: .notFound) }
-        guard let cbNode = try? await b.childBlocks.resolveRecursive(fetcher: network.fetcher).node else {
+        guard let cbNode = try? await b.childBlocks.resolve(paths: [[""]: .list], fetcher: network.fetcher).node else {
             struct R: Encodable { let children: [String]; let count: Int }
             return json(R(children: [], count: 0))
         }
@@ -331,13 +321,8 @@ enum RPCRoutes {
         }
         var children: [ChildEntry] = []
         for (key, blockHeader) in entries {
-            guard let childBlock = blockHeader.node else { continue }
-            let txCount: Int
-            if let txNode = try? await childBlock.transactions.resolveRecursive(fetcher: network.fetcher).node {
-                txCount = txNode.count
-            } else {
-                txCount = 0
-            }
+            guard let childBlock = try? await blockHeader.resolve(fetcher: network.fetcher).node else { continue }
+            let txCount = (try? await childBlock.transactions.resolve(fetcher: network.fetcher).node?.count) ?? 0
             children.append(ChildEntry(
                 directory: key, blockHash: blockHeader.rawCID,
                 index: childBlock.index, timestamp: childBlock.timestamp,
@@ -791,18 +776,14 @@ enum RPCRoutes {
               let block = Block(data: blockData) else {
             return jsonError("Block not found", status: .notFound)
         }
-        guard let txDict = try? await block.transactions.resolveRecursive(fetcher: network.fetcher).node,
+        guard let txDict = try? await block.transactions.resolve(paths: [[""]: .list], fetcher: network.fetcher).node,
               let entries = try? txDict.allKeysAndValues() else {
             return jsonError("Transaction not found in block", status: .notFound)
         }
         var matchedTx: Transaction?
         for (_, txHeader) in entries {
             guard txHeader.rawCID == txCID else { continue }
-            if let n = txHeader.node {
-                matchedTx = n
-            } else {
-                matchedTx = try? await txHeader.resolve(fetcher: network.fetcher).node
-            }
+            matchedTx = try? await txHeader.resolve(fetcher: network.fetcher).node
             break
         }
         guard let tx = matchedTx else {
