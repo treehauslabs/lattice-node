@@ -36,6 +36,15 @@ func startMempoolLoop(node: LatticeNode) -> Task<Void, Never> {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(60))
             await node.pruneExpiredTransactions()
+            // Prune expired reorg-retention entries on every chain. Without this
+            // the recentBlockExpiry map grew unbounded and the protected set held
+            // CIDs past their TTL, pinning bytes the LRU should have been free to
+            // evict (UNSTOPPABLE_LATTICE P0 #2).
+            for directory in await node.allDirectories() {
+                if let network = await node.network(for: directory) {
+                    await network.protectionPolicy.pruneExpiredRecentBlocks()
+                }
+            }
         }
     }
 }
