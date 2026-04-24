@@ -143,12 +143,14 @@ public actor ChainNetwork: IvyDelegate {
 
     /// Store a batch that comprises a single Volume's merkle subtree and
     /// register its members with the shared store so volume-granularity
-    /// eviction can pick the whole group as a unit.
+    /// eviction can pick the whole group as a unit. The chain directory is
+    /// passed as the volume owner so the shared CAS can bias eviction
+    /// against chains that exceed their per-owner quota (S4).
     public func storeBlockBatch(rootCID: String, entries: [(String, Data)]) async {
         await storeBatch(entries)
         guard !rootCID.isEmpty else { return }
         let memberCIDs = entries.map(\.0)
-        await sharedStore.registerVolume(rootCID: rootCID, childCIDs: memberCIDs)
+        await sharedStore.registerVolume(rootCID: rootCID, childCIDs: memberCIDs, owner: directory)
     }
 
     /// Register a block's root as a volume anchor without walking or writing
@@ -156,7 +158,7 @@ public actor ChainNetwork: IvyDelegate {
     /// already landed in the shared CAS via the parent's recursive pass.
     public func registerBlockVolume(rootCID: String) async {
         guard !rootCID.isEmpty else { return }
-        await sharedStore.registerVolume(rootCID: rootCID, childCIDs: [])
+        await sharedStore.registerVolume(rootCID: rootCID, childCIDs: [], owner: directory)
         lastStoredCIDs.insert(rootCID)
         if lastStoredCIDs.count > Self.maxLastStoredCIDs {
             lastStoredCIDs.removeFirst()
