@@ -27,7 +27,7 @@ public struct LatticeNodeConfig: Sendable {
         listenPort: UInt16 = 4001,
         bootstrapPeers: [PeerEndpoint] = [],
         storagePath: URL,
-        enableLocalDiscovery: Bool = true,
+        enableLocalDiscovery: Bool = false,
         persistInterval: UInt64 = 100,
         subscribedChains: ArrayTrie<Bool> = {
             var t = ArrayTrie<Bool>()

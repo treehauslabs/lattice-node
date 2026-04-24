@@ -60,8 +60,8 @@ struct NodeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "CORS allowed origin")
     var rpcAllowedOrigin: String = "http://127.0.0.1"
 
-    @Flag(name: .long, help: "Disable mDNS local peer discovery")
-    var noDiscovery: Bool = false
+    @Flag(name: .long, help: "Enable mDNS local peer discovery (off by default; headless/server deployments don't need it)")
+    var localDiscovery: Bool = false
 
     @Flag(name: .long, help: "Enable cookie-based RPC authentication")
     var rpcAuth: Bool = false
@@ -111,7 +111,7 @@ struct NodeCommand: AsyncParsableCommand {
         var effectiveRpcPort = rpcPort
         var effectiveRpcBind = rpcBind
         var effectiveRpcAllowedOrigin = rpcAllowedOrigin
-        var effectiveNoDiscovery = noDiscovery
+        var effectiveLocalDiscovery = localDiscovery
         var effectiveRpcAuth = rpcAuth
         var effectiveNoDnsSeeds = noDnsSeeds
         var effectiveDiscoveryOnly = discoveryOnly
@@ -135,7 +135,8 @@ struct NodeCommand: AsyncParsableCommand {
                 if let v = json["rpcBind"] as? String { effectiveRpcBind = v }
                 if let v = json["rpcAllowedOrigin"] as? String { effectiveRpcAllowedOrigin = v }
                 if let v = json["rpcAuth"] as? Bool { effectiveRpcAuth = v }
-                if let v = json["noDiscovery"] as? Bool { effectiveNoDiscovery = v }
+                if let v = json["localDiscovery"] as? Bool { effectiveLocalDiscovery = v }
+                else if let v = json["noDiscovery"] as? Bool { effectiveLocalDiscovery = !v }
                 if let v = json["noDnsSeeds"] as? Bool { effectiveNoDnsSeeds = v }
                 if let v = json["discoveryOnly"] as? Bool { effectiveDiscoveryOnly = v }
                 if let v = json["stateless"] as? Bool { effectiveStateless = v }
@@ -191,7 +192,7 @@ struct NodeCommand: AsyncParsableCommand {
             maxDiskGB: effectiveMaxDisk,
             rpcPort: effectiveRpcPort,
             rpcBindAddress: effectiveRpcBind,
-            enableDiscovery: !effectiveNoDiscovery,
+            enableDiscovery: effectiveLocalDiscovery,
             rpcAllowedOrigin: effectiveRpcAllowedOrigin,
             discoveryOnly: effectiveDiscoveryOnly,
             maxPeerConnections: effectiveMaxPeersOpt
@@ -216,7 +217,7 @@ struct NodeCommand: AsyncParsableCommand {
         print("  Data dir:    \(dataDirURL.path)")
         print("  Listen port: \(effectivePort)")
         print("  Max peers:   \(effectiveMaxPeers)")
-        print("  Discovery:   \(!effectiveNoDiscovery ? "enabled" : "disabled")")
+        print("  Discovery:   \(effectiveLocalDiscovery ? "enabled" : "disabled")")
         if !bootstrapPeers.isEmpty {
             print("  Peers:       \(bootstrapPeers.count) bootstrap peer(s)")
         }
@@ -270,7 +271,7 @@ struct NodeCommand: AsyncParsableCommand {
             listenPort: effectivePort,
             bootstrapPeers: allPeers,
             storagePath: dataDirURL,
-            enableLocalDiscovery: !effectiveNoDiscovery,
+            enableLocalDiscovery: effectiveLocalDiscovery,
             persistInterval: 100,
             subscribedChains: currentSubscriptions,
             resources: resources,
