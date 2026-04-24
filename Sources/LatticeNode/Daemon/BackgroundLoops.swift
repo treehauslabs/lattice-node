@@ -33,6 +33,14 @@ func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, baseP
 @discardableResult
 func startMempoolLoop(node: LatticeNode) -> Task<Void, Never> {
     Task {
+        // Only run tx_history pruning every N mempool-loop ticks so we're not
+        // hitting SQLite with a DELETE every 60s on every chain.
+        var tickCount = 0
+        let txHistoryPruneEvery = 10 // ~every 10 minutes at the 60s cadence
+        // Keep the last ~1 day of foreign-address tx history so RPC lookups for
+        // recently-seen addresses still resolve; older rows are dropped because
+        // the only *required* history is the node's own (rebuilt at startup).
+        let txHistoryRetentionBlocks: UInt64 = 8640 // ~24h at 10s blocks
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(60))
             await node.pruneExpiredTransactions()
@@ -44,6 +52,10 @@ func startMempoolLoop(node: LatticeNode) -> Task<Void, Never> {
                 if let network = await node.network(for: directory) {
                     await network.protectionPolicy.pruneExpiredRecentBlocks()
                 }
+            }
+            tickCount += 1
+            if tickCount % txHistoryPruneEvery == 0 {
+                await node.pruneTransactionHistory(retentionBlocks: txHistoryRetentionBlocks)
             }
         }
     }

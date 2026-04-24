@@ -102,6 +102,24 @@ public actor StateStore {
         }
     }
 
+    /// Drop tx_history rows below `belowHeight` for every address except
+    /// `keepAddress` (the node's own address — needed for startup pin rebuild).
+    /// Without this, the table grows forever on disk since every block appends
+    /// one row per tx-owner and nothing ever deletes. Returns the number of rows
+    /// removed so callers can log progress.
+    @discardableResult
+    public func pruneTransactionHistory(belowHeight: UInt64, keepAddress: String) -> Int {
+        guard belowHeight > 0 else { return 0 }
+        let before = (try? db.query("SELECT COUNT(*) AS c FROM tx_history WHERE height < ?1 AND address != ?2",
+                                    params: [.int(Int64(belowHeight)), .text(keepAddress)])
+                       .first?["c"]?.intValue) ?? 0
+        try? db.execute(
+            "DELETE FROM tx_history WHERE height < ?1 AND address != ?2",
+            params: [.int(Int64(belowHeight)), .text(keepAddress)]
+        )
+        return Int(before)
+    }
+
     /// Return all (txCID, blockHash) pairs for the given address.
     /// Used at startup to rebuild account pin sets from persisted history.
     public nonisolated func getAllTransactionCIDs(address: String) -> [(txCID: String, blockHash: String)] {

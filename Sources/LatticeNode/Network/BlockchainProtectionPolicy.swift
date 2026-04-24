@@ -7,10 +7,16 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
     private var pinnedCIDs: OrderedSet<String> = []
     private let maxPinnedCount: Int
 
-    /// CIDs related to the node's own account — never subject to FIFO eviction.
-    /// Contains block hashes, transaction CIDs, and body CIDs for transactions
-    /// that involve the node's address (sent, received, or mined).
-    private var accountCIDs: Set<String> = []
+    /// CIDs related to the node's own account. LRU-capped: without a cap, a
+    /// miner accumulates ~3 entries per block forever (block hash + txCID +
+    /// bodyCID on each coinbase). At a 10s block time that's ~9.5M entries/year
+    /// permanently in memory and checked on every eviction. The announce
+    /// coupling below (`announceExpiry`) still keeps any pin the network was
+    /// told about protected regardless of LRU eviction here, so dropping old
+    /// entries from this set is safe — anything still actively announced
+    /// remains in `isProtected`.
+    private var accountCIDs: OrderedSet<String> = []
+    private let maxAccountCIDs: Int
 
     /// Per-chain state-root CIDs (frontier / homestead / tx / childBlocks / tip).
     /// Protected while subscribed; cleared on unsubscribe via `clearStateRoots`.
@@ -33,9 +39,11 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
 
     public init(
         maxPinnedCount: Int = 10_000,
+        maxAccountCIDs: Int = 200_000,
         recentBlockTTL: Duration = .seconds(3600)
     ) {
         self.maxPinnedCount = maxPinnedCount
+        self.maxAccountCIDs = maxAccountCIDs
         self.recentBlockTTL = recentBlockTTL
     }
 
@@ -67,15 +75,30 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
     // MARK: - Account pinning (permanent, not evicted)
 
     public func pinAccount(_ cid: String) {
-        accountCIDs.insert(cid)
+        bumpAccount(cid)
+        evictAccountIfNeeded()
     }
 
     public func pinAccountBatch(_ cids: [String]) {
-        for cid in cids { accountCIDs.insert(cid) }
+        for cid in cids { bumpAccount(cid) }
+        evictAccountIfNeeded()
     }
 
     public func isAccountPinned(_ cid: String) -> Bool {
         accountCIDs.contains(cid)
+    }
+
+    private func bumpAccount(_ cid: String) {
+        // LRU: remove existing position (if any) and append at the tail so the
+        // most-recently-touched CIDs sit at the back and the oldest drop first.
+        accountCIDs.remove(cid)
+        accountCIDs.append(cid)
+    }
+
+    private func evictAccountIfNeeded() {
+        while accountCIDs.count > maxAccountCIDs {
+            accountCIDs.removeFirst()
+        }
     }
 
     // MARK: - State-root protection (per-chain, permanent while subscribed)

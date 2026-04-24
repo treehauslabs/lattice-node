@@ -357,6 +357,26 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         }
     }
 
+    /// Drop tx_history rows for foreign addresses older than `retentionBlocks`
+    /// behind the chain tip. Own-address rows are always retained — startup pin
+    /// rebuild (`rebuildAccountPinsFromTxHistory`) depends on them. Without
+    /// this, `tx_history` grows forever on disk (UNSTOPPABLE_LATTICE P0 #4).
+    public func pruneTransactionHistory(retentionBlocks: UInt64) async {
+        for (dir, store) in stateStores {
+            guard let chain = await chain(for: dir) else { continue }
+            let height = await chain.getHighestBlockIndex()
+            guard height > retentionBlocks else { continue }
+            let below = height - retentionBlocks
+            let removed = await store.pruneTransactionHistory(
+                belowHeight: below,
+                keepAddress: nodeAddress
+            )
+            if removed > 0 {
+                NodeLogger("gc").info("Pruned \(removed) tx_history rows on \(dir) below height \(below)")
+            }
+        }
+    }
+
     // MARK: - Pin Re-announcement
 
     /// Re-announce the current chain tip block and its Volume boundaries.
