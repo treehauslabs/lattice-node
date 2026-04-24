@@ -45,6 +45,13 @@ public actor MinerLoop {
     // resolved frontier/child state, amplifying memory pressure.
     private static let stallThreshold: Duration = .seconds(300)
     private static let watchdogInterval: Duration = .seconds(30)
+    /// Hard ceiling on a single submitMinedBlock call. If the delegate's
+    /// await hangs beyond this (e.g. processBlockAndRecoverReorg stuck in a
+    /// fetch, child-state walk pathology, or an actor deadlock), we orphan
+    /// the in-flight submit and resume mining. 20 min is long enough that
+    /// legitimate large-subtree submits on swap-pressured hardware finish
+    /// normally, but short enough to keep a wedged node recoverable.
+    internal static let submitTimeout: Duration = .seconds(1200)
 
     public init(
         chainState: ChainState,
@@ -150,6 +157,31 @@ public actor MinerLoop {
 
     private func endSubmit() {
         isSubmitting = false
+    }
+
+    /// Race the delegate's `minerDidProduceBlock` against a hard timeout.
+    /// Returns when either completes. On timeout the submit task is orphaned
+    /// (continues in the background) — we cannot truly cancel an in-flight
+    /// actor await, but releasing the mine loop prevents a single wedged
+    /// submit from freezing block production indefinitely.
+    internal func submitWithTimeout(
+        mined: Block,
+        hash: String,
+        pendingRemovals: MinedBlockPendingRemovals,
+        timeout: Duration
+    ) async {
+        let delegate = self.delegate
+        let directory = spec.directory
+        let didFinish = await raceSubmitWithTimeout(
+            timeout: timeout,
+            work: {
+                await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals)
+            }
+        )
+        if !didFinish {
+            let secs = Int(timeout / .seconds(1))
+            NodeLogger("miner").error("\(directory): submitMinedBlock timed out after \(secs)s for block \(String(hash.prefix(16)))… — orphaning submit, resuming mine loop")
+        }
     }
 
     private func recordBlockProduced() {
@@ -328,7 +360,7 @@ public actor MinerLoop {
                         let hash = VolumeImpl<Block>(node: mined).rawCID
                         log.info("\(spec.directory): found valid nonce \(foundNonce) for block \(mined.index), submitting \(String(hash.prefix(16)))…")
                         beginSubmit()
-                        await delegate?.minerDidProduceBlock(mined, hash: hash, pendingRemovals: pendingRemovals)
+                        await submitWithTimeout(mined: mined, hash: hash, pendingRemovals: pendingRemovals, timeout: Self.submitTimeout)
                         endSubmit()
                         recordBlockProduced()
                         // Cache the fully-resolved mined block (frontier.node is
@@ -872,6 +904,32 @@ public actor MinerLoop {
             nonce: startNonce
         )
     }
+}
+
+/// Race `work` against `timeout`. Returns `true` if `work` finished first,
+/// `false` if the timeout fired. On timeout, `work` is NOT cancelled and
+/// continues in the background — Swift actor awaits don't respect
+/// cancellation, so the only escape is to stop awaiting.
+internal func raceSubmitWithTimeout(
+    timeout: Duration,
+    work: @escaping @Sendable () async -> Void
+) async -> Bool {
+    let stream = AsyncStream<Bool> { continuation in
+        Task.detached {
+            await work()
+            continuation.yield(true)
+            continuation.finish()
+        }
+        Task.detached {
+            try? await Task.sleep(for: timeout)
+            continuation.yield(false)
+            continuation.finish()
+        }
+    }
+    for await result in stream {
+        return result
+    }
+    return false
 }
 
 // Sendable wrapper for mining arguments that cross task boundaries.
