@@ -221,6 +221,13 @@ public actor StateStore {
         return row["blockHash"]?.textValue
     }
 
+    public nonisolated func getBlockIndexCount() -> Int {
+        guard let rows = try? readDb.query("SELECT COUNT(*) AS c FROM block_index"),
+              let row = rows.first,
+              let c = row["c"]?.intValue else { return 0 }
+        return Int(c)
+    }
+
     public func backfillBlockIndex(_ entries: [(height: UInt64, blockHash: String)]) {
         guard !entries.isEmpty else { return }
         try? db.beginTransaction()

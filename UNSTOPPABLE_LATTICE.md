@@ -20,7 +20,7 @@ Every item below was re-verified against the current tree. Line numbers shift ev
 | P1 #6 mempool fetcherCache | STILL VALID | now at `:719-723` |
 | P1 #7 serial pin announces | STILL VALID | now at `:950-952` |
 | P1 #8 resolveLatestMinerNonce | STILL VALID | `:413-424` |
-| P1 #11 backfillBlockIndex | STILL VALID | `:139-160` unchanged |
+| P1 #11 backfillBlockIndex | **DONE** | `LatticeNode+Persistence.swift:146` skips the scan when `StateStore.getBlockIndexCount() >= height+1`. Tests in `BackfillBlockIndexTests.swift`. |
 | P1 #12 finalizeSyncResult | STILL VALID — **intent shifted** | `resolveRecursive` on transactions is now required for sparse state replay (comment at `:209`), not redundant validation. Fix suggestion should cache txDict during sync, not skip the resolve |
 | P1 #13 recoverFromCAS | STILL VALID | `:73-132` unchanged |
 | P1 #14 per-chain maps on unsubscribe | STILL VALID | `stop()` at `:222` + `stopMining` at `Mining.swift:49` confirmed not to touch these maps |
@@ -563,7 +563,7 @@ Re-ranking principle: **liveness items that fire in bounded time first, then con
 11. Shared-CAS per-chain eviction quotas (S4) — matters if `deployChildChain` is exposed to untrusted callers.
 12. ~~De-duplicate child-block CAS writes (P1 #5)~~ — **partially fixed** via BufferedStorer skipSet. Remaining: drop the second trie walk.
 13. Miner-nonce cache (P1 #8) — **must include reorg invalidation** (see safety note on P1 #8).
-14. Skip `backfillBlockIndex` when already populated (P1 #11) — bounds startup time.
+14. ~~Skip `backfillBlockIndex` when already populated (P1 #11)~~ — **done**, skip guarded by `StateStore.getBlockIndexCount()`.
 15. Bounded gossip seen-set + per-peer Bloom (SOTA #1).
 16. CAS mark-and-sweep GC (SOTA #2).
 17. SQLite WAL checkpoint + VACUUM schedule (S7).

@@ -148,6 +148,13 @@ extension LatticeNode {
               let chainState = await chain(for: directory) else { return }
         let log = NodeLogger("persistence")
         let height = await chainState.getHighestBlockIndex()
+        // Skip the full chain walk when block_index is already populated up to
+        // `height`. Each `applyBlock` writes its own height into block_index
+        // atomically, so on any steady-state restart the table already has
+        // height+1 rows and the scan is pure overhead. At ~300 blocks/hour a
+        // year-old chain is ~2.6M rows to walk; the skip drops restart from
+        // seconds-to-minutes to O(1).
+        if store.getBlockIndexCount() >= Int(height) + 1 { return }
         let tip = await chainState.getMainChainTip()
         var entries: [(height: UInt64, blockHash: String)] = []
         var missing: [UInt64] = []
