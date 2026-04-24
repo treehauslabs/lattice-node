@@ -151,6 +151,25 @@ public actor ChainNetwork: IvyDelegate {
         await sharedStore.registerVolume(rootCID: rootCID, childCIDs: memberCIDs)
     }
 
+    /// Register a block's root as a volume anchor without walking or writing
+    /// any bytes. Used by the child-block fast path where the subtree has
+    /// already landed in the shared CAS via the parent's recursive pass.
+    public func registerBlockVolume(rootCID: String) async {
+        guard !rootCID.isEmpty else { return }
+        await sharedStore.registerVolume(rootCID: rootCID, childCIDs: [])
+        lastStoredCIDs.insert(rootCID)
+        if lastStoredCIDs.count > Self.maxLastStoredCIDs {
+            lastStoredCIDs.removeFirst()
+        }
+    }
+
+    /// True iff the shared CAS already has bytes for `cid`. Used to pick the
+    /// storeBlockRecursively fast path when a child block's subtree was
+    /// already persisted by the parent's walk.
+    public func hasCID(_ cid: String) async -> Bool {
+        await sharedStore.has(cid: ContentIdentifier(rawValue: cid))
+    }
+
     /// Snapshot the set of CIDs known to be resident in CAS from recent stores.
     /// Callers pass this into BufferedStorer so the merkle walk short-circuits
     /// on already-written subtrees instead of re-serializing them.

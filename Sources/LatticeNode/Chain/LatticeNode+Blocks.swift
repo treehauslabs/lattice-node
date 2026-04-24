@@ -70,6 +70,27 @@ extension LatticeNode {
         timingLog("[TIMING] storeBlock mined \(dir) #\(block.index) entries=\(entryCount) skip=\(skipSet.count) total=\(dTotal) walk=\(dWalk) storeBatch=\(dBatch)")
     }
 
+    /// Fast path invoked from `applyChildBlockStates`: when the parent's
+    /// `storeBlockRecursively` pass walked the full Merkle tree, the child's
+    /// subtree is already resident in the shared CAS. Running another
+    /// recursive walk on the child network repeats O(child subtree size) of
+    /// serialize + batch work per nexus block for zero new bytes on disk.
+    ///
+    /// Skip the walk when the shared CAS already has the child root; just
+    /// `registerVolume` so the child network's eviction accounting owns its
+    /// root, and update `lastStoredCIDs` so a later same-child re-store (e.g.
+    /// gossip echo) short-circuits too. Fall back to the full walk only when
+    /// the root is genuinely missing — e.g. a child-chain block that arrived
+    /// via gossip before its parent nexus block.
+    func registerChildBlockVolume(childBlock: Block, header: VolumeImpl<Block>, network: ChainNetwork) async {
+        let rootCID = header.rawCID
+        if await network.hasCID(rootCID) {
+            await network.registerBlockVolume(rootCID: rootCID)
+            return
+        }
+        await storeBlockRecursively(childBlock, network: network)
+    }
+
     static let maxCopyDepth = 64
 
     func deepCopyBlock(cid: String, from source: ChainNetwork, to dest: ChainNetwork) async {
@@ -783,7 +804,11 @@ extension LatticeNode {
 
             let tStore = ContinuousClock.now
             if let childNet = networks[childDir] {
-                await storeBlockRecursively(childBlock, network: childNet)
+                await registerChildBlockVolume(
+                    childBlock: childBlock,
+                    header: childBlockHeader,
+                    network: childNet
+                )
             }
             let dStore = ContinuousClock.now - tStore
 
