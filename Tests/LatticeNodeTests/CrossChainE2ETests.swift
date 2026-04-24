@@ -147,9 +147,15 @@ final class CrossChainMempoolTests: XCTestCase {
         }
     }
 
-    func testReceiptRejectedOnChildChain() async throws {
+    func testReceiptAcceptedOnIntermediateChain() async throws {
+        // A chain can simultaneously be a child (of its parent) AND a parent
+        // (of grandchildren). In a 3-level hierarchy Nexus → Mid → {Alpha, Beta},
+        // Mid is non-nexus yet must hold receipts for Alpha/Beta withdrawals.
+        // The structural check belongs at block-application time via
+        // `withdrawalsAreValid` against the actual parent receipt state — the
+        // mempool validator must not blanket-reject receipts on non-nexus chains.
         let fetcher = f()
-        let spec = testSpec("Child")
+        let spec = testSpec("Mid")
         let genesis = try await BlockBuilder.buildGenesis(
             spec: spec, timestamp: 1_000_000, difficulty: UInt256.max, fetcher: fetcher
         )
@@ -163,18 +169,16 @@ final class CrossChainMempoolTests: XCTestCase {
             actions: [], depositActions: [],
             genesisActions: [], peerActions: [],
             receiptActions: [
-                ReceiptAction(withdrawer: address, nonce: 1, demander: "someone", amountDemanded: 100, directory: "Child")
+                ReceiptAction(withdrawer: address, nonce: 1, demander: "someone", amountDemanded: 100, directory: "Alpha")
             ],
             withdrawalActions: [],
             signers: [address], fee: 0, nonce: 0
         )
         let tx = sign(body, kp)
-        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, isCoinbase: true, chainDirectory: "Child", isNexus: false)
+        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, isCoinbase: true, chainDirectory: "Mid", isNexus: false)
         let result = await validator.validate(tx)
-        if case .failure(.receiptOnChildChain) = result {
-            // Expected
-        } else {
-            XCTFail("Child chain should reject receipt actions, got: \(result)")
+        if case .failure(let err) = result {
+            XCTFail("Receipt on intermediate chain should be accepted, got: \(err)")
         }
     }
 
