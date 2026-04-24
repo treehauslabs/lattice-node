@@ -67,7 +67,7 @@ extension LatticeNode {
         let dBatch = ContinuousClock.now - tBatch
         let dTotal = ContinuousClock.now - tTotal
         let dir = await network.directory
-        print("[TIMING] storeBlock mined \(dir) #\(block.index) entries=\(entryCount) skip=\(skipSet.count) total=\(dTotal) walk=\(dWalk) storeBatch=\(dBatch)")
+        timingLog("[TIMING] storeBlock mined \(dir) #\(block.index) entries=\(entryCount) skip=\(skipSet.count) total=\(dTotal) walk=\(dWalk) storeBatch=\(dBatch)")
     }
 
     static let maxCopyDepth = 64
@@ -121,7 +121,7 @@ extension LatticeNode {
         let dBatch = ContinuousClock.now - tBatch
         let dTotal = ContinuousClock.now - tTotal
         let dir = await network.directory
-        print("[TIMING] storeBlock recv \(dir) #\(block.index) entries=\(entryCount) skip=\(skipSet.count) total=\(dTotal) local=\(dLocal) walk=\(dWalk) storeBatch=\(dBatch)")
+        timingLog("[TIMING] storeBlock recv \(dir) #\(block.index) entries=\(entryCount) skip=\(skipSet.count) total=\(dTotal) local=\(dLocal) walk=\(dWalk) storeBatch=\(dBatch)")
     }
 
     // MARK: - Block Processing with Reorg Recovery
@@ -240,7 +240,7 @@ extension LatticeNode {
         let dTipUpdate = ContinuousClock.now - tTipUpdate
 
         let dProcess = ContinuousClock.now - tProcess
-        print("[TIMING] processBlock \(directory) #\(blockIndex) \(phShort)… txs=\(txCount) total=\(dProcess) header=\(dHeader) resolve=\(dResolve) resolveTxs=\(dResolveTxs) applyAccepted=\(dApplyAccepted) applyChildStates=\(dApplyChildStates) tipUpdate=\(dTipUpdate) reorg=\(dReorg)")
+        timingLog("[TIMING] processBlock \(directory) #\(blockIndex) \(phShort)… txs=\(txCount) total=\(dProcess) header=\(dHeader) resolve=\(dResolve) resolveTxs=\(dResolveTxs) applyAccepted=\(dApplyAccepted) applyChildStates=\(dApplyChildStates) tipUpdate=\(dTipUpdate) reorg=\(dReorg)")
 
         return .accepted
     }
@@ -515,7 +515,7 @@ extension LatticeNode {
         ) {
             tally.recordSuccess(peer: peer)
             let dTotal = ContinuousClock.now - tGossip
-            print("[TIMING] gossipRecv block syncNeeded \(short)… #\(block.index) total=\(dTotal) store=\(dStore)")
+            timingLog("[TIMING] gossipRecv block syncNeeded \(short)… #\(block.index) total=\(dTotal) store=\(dStore)")
             return
         }
 
@@ -544,7 +544,7 @@ extension LatticeNode {
         await maybePersist(directory: directory)
         let dTail = ContinuousClock.now - tTail
         let dTotal = ContinuousClock.now - tGossip
-        print("[TIMING] gossipRecv block \(directory) #\(block.index) \(short)… outcome=\(outcome) total=\(dTotal) store=\(dStore) process=\(dProcess) tail=\(dTail)")
+        timingLog("[TIMING] gossipRecv block \(directory) #\(block.index) \(short)… outcome=\(outcome) total=\(dTotal) store=\(dStore) process=\(dProcess) tail=\(dTail)")
     }
 
     nonisolated public func chainNetwork(
@@ -621,7 +621,7 @@ extension LatticeNode {
         ) {
             tally.recordSuccess(peer: peer)
             let dTotal = ContinuousClock.now - tGossip
-            print("[TIMING] gossipRecv announce syncNeeded \(short)… #\(block.index) total=\(dTotal) resolve=\(dResolve)")
+            timingLog("[TIMING] gossipRecv announce syncNeeded \(short)… #\(block.index) total=\(dTotal) resolve=\(dResolve)")
             return
         }
 
@@ -646,7 +646,7 @@ extension LatticeNode {
         }
         let dTail = ContinuousClock.now - tTail
         let dTotal = ContinuousClock.now - tGossip
-        print("[TIMING] gossipRecv announce \(directory) #\(block.index) \(short)… outcome=\(outcome) total=\(dTotal) resolve=\(dResolve) process=\(dProcess) tail=\(dTail)")
+        timingLog("[TIMING] gossipRecv announce \(directory) #\(block.index) \(short)… outcome=\(outcome) total=\(dTotal) resolve=\(dResolve) process=\(dProcess) tail=\(dTail)")
     }
 
     func isPeerBlockRateLimited(_ peer: PeerID) -> Bool {
@@ -821,10 +821,10 @@ extension LatticeNode {
             await applyChildBlockStates(nexusBlock: childBlock, fetcher: childFetcher)
 
             let dChild = ContinuousClock.now - tChild
-            print("[TIMING] applyChildBlockStates child=\(childDir) #\(childBlock.index) txs=\(txEntries.count) total=\(dChild) header=\(dHeader) store=\(dStore) fetcher=\(dFetcher) txResolve=\(dTx) apply=\(dApply) prune=\(dPrune)")
+            timingLog("[TIMING] applyChildBlockStates child=\(childDir) #\(childBlock.index) txs=\(txEntries.count) total=\(dChild) header=\(dHeader) store=\(dStore) fetcher=\(dFetcher) txResolve=\(dTx) apply=\(dApply) prune=\(dPrune)")
         }
         let dTotal = ContinuousClock.now - tTotal
-        print("[TIMING] applyChildBlockStates parent=#\(nexusBlock.index) childCount=\(childDirs.count) total=\(dTotal) resolveChildBlocks=\(dResolve)")
+        timingLog("[TIMING] applyChildBlockStates parent=#\(nexusBlock.index) childCount=\(childDirs.count) total=\(dTotal) resolveChildBlocks=\(dResolve)")
     }
 
     /// Apply an accepted block's state changes, receipts, fees, events, and metrics.
@@ -910,7 +910,7 @@ extension LatticeNode {
         metrics.set("lattice_chain_height", value: Double(blockHeight))
 
         let dAccepted = ContinuousClock.now - tAccepted
-        print("[TIMING] applyAccepted \(directory) #\(blockHeight) txs=\(txEntries.count) total=\(dAccepted) changeset=\(dChangeset) receiptsWait=\(dReceiptsWait) storeApply=\(dStoreApply) mempoolNonces=\(dMempoolNonces) batchReceipts=\(dBatchReceipts) pin=\(dPin) fee=\(dFee) emit=\(dEmit)")
+        timingLog("[TIMING] applyAccepted \(directory) #\(blockHeight) txs=\(txEntries.count) total=\(dAccepted) changeset=\(dChangeset) receiptsWait=\(dReceiptsWait) storeApply=\(dStoreApply) mempoolNonces=\(dMempoolNonces) batchReceipts=\(dBatchReceipts) pin=\(dPin) fee=\(dFee) emit=\(dEmit)")
     }
 
     /// Pin block, transaction, and body CIDs for transactions that involve our account.

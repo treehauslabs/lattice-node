@@ -321,7 +321,7 @@ public actor MinerLoop {
                 log.info("\(spec.directory): nonce search started for block \(previousBlock.index + 1) (difficulty=\(String(targetDifficulty.toHexString().prefix(16)))… workers=\(workerCount) batch=\(batchSize))")
 
                 let dPrepIter = ContinuousClock.now - tIter
-                print("[TIMING] mineIter \(spec.directory) #\(nextBlockIndex) txs=\(transactions.count) children=\(childResult.blocks.count) prep=\(dPrepIter) resolveTip=\(dResolveTip) selectTxs=\(dSelectTxs) buildChildren=\(dBuildChildren) coinbase=\(dCoinbase) difficulty=\(dDifficulty) buildTemplate=\(dBuildTemplate) midstate=\(dMidstate)")
+                timingLog("[TIMING] mineIter \(spec.directory) #\(nextBlockIndex) txs=\(transactions.count) children=\(childResult.blocks.count) prep=\(dPrepIter) resolveTip=\(dResolveTip) selectTxs=\(dSelectTxs) buildChildren=\(dBuildChildren) coinbase=\(dCoinbase) difficulty=\(dDifficulty) buildTemplate=\(dBuildTemplate) midstate=\(dMidstate)")
 
                 let tPoW = ContinuousClock.now
                 var batchCount = 0
@@ -377,7 +377,7 @@ public actor MinerLoop {
                         let dSubmit = ContinuousClock.now - tSubmit
                         let dIterTotal = ContinuousClock.now - tIter
                         let hashesAttempted = UInt64(batchCount) * batchSize
-                        print("[TIMING] mineFound \(spec.directory) #\(mined.index) total=\(dIterTotal) prep=\(dPrepIter) pow=\(dPoW) submit=\(dSubmit) batches=\(batchCount) hashes=\(hashesAttempted)")
+                        timingLog("[TIMING] mineFound \(spec.directory) #\(mined.index) total=\(dIterTotal) prep=\(dPrepIter) pow=\(dPoW) submit=\(dSubmit) batches=\(batchCount) hashes=\(hashesAttempted)")
                         break
                     }
 
