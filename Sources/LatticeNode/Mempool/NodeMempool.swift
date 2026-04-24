@@ -71,6 +71,11 @@ public actor NodeMempool {
     private var byCID: [String: MempoolEntry] = [:]
     private var byAccount: [String: AccountTxQueue] = [:]
     private var sortedEntries: [MempoolEntry] = []
+    /// CID→Data view served to MempoolAwareFetcher. Maintained incrementally
+    /// on insert/remove so `fetcherCache()` is O(1); the previous build-on-call
+    /// approach re-serialized every transaction and body on every miner round
+    /// (P1 #6).
+    private var cachedFetcherData: [String: Data] = [:]
     private let maxSize: Int
     private let maxPerAccount: Int
     /// Largest permitted distance between an admitted tx's nonce and the
@@ -203,6 +208,7 @@ public actor NodeMempool {
     /// over sortedEntries instead of N separate full scans.
     public func batchUpdateConfirmedNonces(updates: [(sender: String, nonce: UInt64)]) {
         var allStaleCIDs = Set<String>()
+        var staleEntries: [MempoolEntry] = []
         for update in updates {
             var queue = byAccount[update.sender] ?? AccountTxQueue()
             queue.confirmedNonce = update.nonce
@@ -211,12 +217,16 @@ public actor NodeMempool {
                 if let entry = queue.txsByNonce.removeValue(forKey: n) {
                     byCID.removeValue(forKey: entry.cid)
                     allStaleCIDs.insert(entry.cid)
+                    staleEntries.append(entry)
                 }
             }
             byAccount[update.sender] = queue
         }
         if !allStaleCIDs.isEmpty {
             sortedEntries.removeAll(where: { allStaleCIDs.contains($0.cid) })
+            for entry in staleEntries {
+                removeFetcherEntries(for: entry)
+            }
         }
     }
 
@@ -255,6 +265,7 @@ public actor NodeMempool {
                     byAccount[entry.sender] = queue
                 }
             }
+            removeFetcherEntries(for: entry)
         }
         sortedEntries.removeAll(where: { txCIDs.contains($0.cid) })
     }
@@ -267,22 +278,12 @@ public actor NodeMempool {
         byCID.values.map { $0.transaction }
     }
 
-    /// Build CID→Data cache for MempoolAwareFetcher directly, avoiding an
-    /// intermediate [Transaction] array allocation. Each transaction and its
-    /// body are serialized and keyed by their content-addressed CID.
+    /// CID→Data view of admitted transactions, served to MempoolAwareFetcher.
+    /// Maintained incrementally by insertEntry/removeEntry; returning the
+    /// stored dict is O(1) per miner round instead of O(n·serialize) on every
+    /// call.
     public func fetcherCache() -> [String: Data] {
-        var cache: [String: Data] = [:]
-        cache.reserveCapacity(byCID.count * 2)
-        for entry in byCID.values {
-            let tx = entry.transaction
-            if let data = tx.toData() {
-                cache[VolumeImpl<Transaction>(node: tx).rawCID] = data
-            }
-            if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
-                cache[tx.body.rawCID] = bodyData
-            }
-        }
-        return cache
+        return cachedFetcherData
     }
 
     public func totalFees() -> UInt64 {
@@ -368,6 +369,8 @@ public actor NodeMempool {
         // Binary search for insertion point in descending-fee array: O(log n)
         let insertIndex = sortedEntries.binarySearchDescending { $0.fee >= entry.fee }
         sortedEntries.insert(entry, at: insertIndex)
+
+        addFetcherEntries(for: entry)
     }
 
     private func removeEntry(_ entry: MempoolEntry) {
@@ -390,6 +393,26 @@ public actor NodeMempool {
                 sortedEntries.remove(at: i)
                 break
             }
+        }
+
+        removeFetcherEntries(for: entry)
+    }
+
+    private func addFetcherEntries(for entry: MempoolEntry) {
+        let tx = entry.transaction
+        if let data = tx.toData() {
+            cachedFetcherData[VolumeImpl<Transaction>(node: tx).rawCID] = data
+        }
+        if let bodyNode = tx.body.node, let bodyData = bodyNode.toData() {
+            cachedFetcherData[tx.body.rawCID] = bodyData
+        }
+    }
+
+    private func removeFetcherEntries(for entry: MempoolEntry) {
+        let tx = entry.transaction
+        cachedFetcherData.removeValue(forKey: VolumeImpl<Transaction>(node: tx).rawCID)
+        if tx.body.node != nil {
+            cachedFetcherData.removeValue(forKey: tx.body.rawCID)
         }
     }
 

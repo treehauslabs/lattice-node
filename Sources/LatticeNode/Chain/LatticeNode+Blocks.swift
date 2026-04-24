@@ -894,11 +894,19 @@ extension LatticeNode {
 
         await network.protectionPolicy.pinAccountBatch(cidsToPin)
 
-        // Announce so peers can discover us as a provider of our own tx data
+        // Announce so peers can discover us as a provider of our own tx data.
+        // Overlap awaits inside ivy.publishPinAnnounce via a task group — the
+        // announce call itself is actor-isolated, but the inner network
+        // publish yields long enough to benefit from concurrent issuance
+        // rather than running serially per-CID (P1 #7).
         let fee = await network.ivy.config.relayFee * 2
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
-        for cid in cidsToPin {
-            await network.announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
+        await withTaskGroup(of: Void.self) { group in
+            for cid in cidsToPin {
+                group.addTask {
+                    await network.announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
+                }
+            }
         }
     }
 
