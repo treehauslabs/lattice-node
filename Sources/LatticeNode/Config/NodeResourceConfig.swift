@@ -51,8 +51,11 @@ public struct NodeResourceConfig: Sendable {
 
     /// Total disk budget for the node's shared content-addressed store.
     /// All chains share this budget; per-chain protection pins decide what survives LRU.
+    /// A budget of 0 is honored as-is (stateless mode); otherwise we floor at 1 MiB to avoid
+    /// accidentally configuring a useless sub-MiB store.
     public func totalDiskBytes() -> Int {
-        max(Int(diskBudgetGB * 1_073_741_824), 1_048_576)
+        if diskBudgetGB <= 0 { return 0 }
+        return max(Int(diskBudgetGB * 1_073_741_824), 1_048_576)
     }
 
     public func mempoolSizePerChain(chainCount: Int) -> Int {

@@ -72,6 +72,9 @@ struct NodeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Discovery-only mode: relay peers without syncing or mining")
     var discoveryOnly: Bool = false
 
+    @Flag(name: .long, help: "Stateless mode: disk CAS budget forced to 0 (validates from peers; cannot mine)")
+    var stateless: Bool = false
+
     @Option(name: .long, help: "Maximum peer connections (default 128, discovery-only 512)")
     var maxPeers: Int?
 
@@ -112,6 +115,7 @@ struct NodeCommand: AsyncParsableCommand {
         var effectiveRpcAuth = rpcAuth
         var effectiveNoDnsSeeds = noDnsSeeds
         var effectiveDiscoveryOnly = discoveryOnly
+        var effectiveStateless = stateless
         var effectiveMaxPeersOpt = maxPeers
         var effectiveFinalityConfirmations = finalityConfirmations
         var effectiveFinalityPolicy = finalityPolicy
@@ -134,6 +138,7 @@ struct NodeCommand: AsyncParsableCommand {
                 if let v = json["noDiscovery"] as? Bool { effectiveNoDiscovery = v }
                 if let v = json["noDnsSeeds"] as? Bool { effectiveNoDnsSeeds = v }
                 if let v = json["discoveryOnly"] as? Bool { effectiveDiscoveryOnly = v }
+                if let v = json["stateless"] as? Bool { effectiveStateless = v }
                 if let v = json["maxPeers"] as? Int { effectiveMaxPeersOpt = v }
                 if let v = json["autosize"] as? Bool { effectiveAutosize = v }
                 if let v = json["finalityConfirmations"] as? Int { effectiveFinalityConfirmations = UInt64(v) }
@@ -155,6 +160,14 @@ struct NodeCommand: AsyncParsableCommand {
         for sub in effectiveSubscribe {
             let path = sub.split(separator: "/").map(String.init)
             subscribedChains.set(path, value: true)
+        }
+
+        if effectiveStateless && !effectiveMine.isEmpty {
+            print("  FATAL: --stateless is incompatible with --mine (miners need full state).")
+            throw ExitCode.failure
+        }
+        if effectiveStateless {
+            effectiveDisk = 0.0
         }
 
         let mineChains = Set(effectiveMine)
@@ -219,7 +232,11 @@ struct NodeCommand: AsyncParsableCommand {
 
         if !effectiveDiscoveryOnly {
             print("  Memory:      \(String(format: "%.2f", resources.memoryBudgetGB)) GB")
-            print("  Disk:        \(String(format: "%.2f", resources.diskBudgetGB)) GB")
+            if effectiveStateless {
+                print("  Disk:        0.00 GB (stateless)")
+            } else {
+                print("  Disk:        \(String(format: "%.2f", resources.diskBudgetGB)) GB")
+            }
             print("  Mempool:     \(String(format: "%.0f", resources.mempoolBudgetMB)) MB")
             print("  Mine batch:  \(resources.miningBatchSize)")
         }
