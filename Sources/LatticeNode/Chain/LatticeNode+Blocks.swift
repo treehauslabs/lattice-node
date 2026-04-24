@@ -22,6 +22,16 @@ extension LatticeNode {
         return true
     }
 
+    /// Cheap O(1) proof-of-work sanity check: does the block's hash actually
+    /// meet its own claimed difficulty target? Runs against header fields only
+    /// — no CAS touch, no state resolve. Catches lazy gossip spam that forged
+    /// `difficulty` without burning any nonce work; correctness of the claimed
+    /// difficulty itself (vs. chain rules) is re-checked later in
+    /// `validateNextDifficulty` once ancestor timestamps are available.
+    nonisolated func isBlockPoWValid(_ block: Block) -> Bool {
+        block.validateBlockDifficulty(nexusHash: block.getDifficultyHash())
+    }
+
     // MARK: - State Root Extraction
 
     /// Volume boundary CIDs that must stay resolvable to answer queries at `block`.
@@ -470,6 +480,14 @@ extension LatticeNode {
             return
         }
 
+        // Reject insufficient-PoW before any CAS write. A block whose own hash
+        // doesn't meet its claimed difficulty cost zero PoW to forge; we must
+        // not spend a disk write or a retention slot on it.
+        if !isBlockPoWValid(block) {
+            tally.recordFailure(peer: peer)
+            return
+        }
+
         if block.index == 0 && block.previousBlock != nil {
             tally.recordFailure(peer: peer)
             return
@@ -584,6 +602,14 @@ extension LatticeNode {
         await resolveFetcher.bindBlockRoots(block, peer: peer)
 
         if !isBlockTimestampValid(block) {
+            tally.recordFailure(peer: peer)
+            return
+        }
+
+        // PoW short-circuit *before* checkSyncNeeded / processBlockAndRecoverReorg.
+        // `resolve` already paid a CAS hit, but this still avoids the full-subtree
+        // resolve + state-apply cost that follows for forged announcements.
+        if !isBlockPoWValid(block) {
             tally.recordFailure(peer: peer)
             return
         }
