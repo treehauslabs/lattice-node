@@ -674,7 +674,9 @@ final class PersistenceEdgeCaseTests: XCTestCase {
 final class PerformanceBenchmarkTests: XCTestCase {
 
     func testMempoolInsertionThroughput() async throws {
-        let mempool = NodeMempool(maxSize: 10000, maxPerAccount: 10000)
+        // Throughput benchmark from one sender across 1000 nonces; needs
+        // maxNonceGap ≥ 1000 to not trip S1's anti-DoS gap limiter.
+        let mempool = NodeMempool(maxSize: 10000, maxPerAccount: 10000, maxNonceGap: 1000)
         let kp = CryptoUtils.generateKeyPair()
         let address = addr(kp.publicKey)
 

@@ -221,7 +221,10 @@ final class MempoolLoadTests: XCTestCase {
 
     /// Submit 10K transactions from 100 senders and verify mempool handles it
     func testTenThousandTransactions() async throws {
-        let mempool = NodeMempool(maxSize: 10_000, maxPerAccount: 100)
+        // maxNonceGap=100 lets each sender submit nonces 0..99 without
+        // tripping the anti-DoS gap limiter (S1 #72); this test is measuring
+        // raw capacity, not realistic nonce discipline.
+        let mempool = NodeMempool(maxSize: 10_000, maxPerAccount: 100, maxNonceGap: 100)
 
         var added = 0
         // 100 senders, 100 txs each
@@ -262,7 +265,9 @@ final class MempoolLoadTests: XCTestCase {
 
     /// RBF under pressure: replace low-fee txs with high-fee ones
     func testRBFUnderPressure() async throws {
-        let mempool = NodeMempool(maxSize: 100, maxPerAccount: 100)
+        // 100 nonces from a single sender; needs maxNonceGap ≥ 99 to not
+        // hit S1's anti-DoS gap limiter on nonce submission.
+        let mempool = NodeMempool(maxSize: 100, maxPerAccount: 100, maxNonceGap: 100)
         let kp = CryptoUtils.generateKeyPair()
         let senderAddr = addr(kp.publicKey)
 
