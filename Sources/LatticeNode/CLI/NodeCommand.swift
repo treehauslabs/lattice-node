@@ -322,9 +322,6 @@ struct NodeCommand: AsyncParsableCommand {
         }
         print()
 
-        let health = HealthCheck(dataDir: dataDirURL)
-        await health.start()
-
         var rpcServer: RPCServer? = nil
         var rpcTask: Task<Void, any Error>? = nil
         if !effectiveDiscoveryOnly, let rpcPort = effectiveRpcPort {
@@ -360,20 +357,6 @@ struct NodeCommand: AsyncParsableCommand {
 
         let peerRefreshTask = Task { await node.startPeerRefresh() }
 
-        let isDiscovery = effectiveDiscoveryOnly
-        let healthTask = Task {
-            while !Task.isCancelled {
-                let peerCount = await node.network(for: "Nexus")?.ivy.connectedPeers.count ?? 0
-                if isDiscovery {
-                    await health.update(chainHeight: 0, peerCount: peerCount)
-                } else {
-                    let height = await node.lattice.nexus.chain.getHighestBlockIndex()
-                    await health.update(chainHeight: height, peerCount: peerCount)
-                }
-                try? await Task.sleep(for: .seconds(10))
-            }
-        }
-
         if effectiveDiscoveryOnly {
             print("  Discovery node running (\(effectiveMaxPeers) max peers). Type 'quit' to stop.")
         } else if !mineChains.isEmpty {
@@ -406,12 +389,10 @@ struct NodeCommand: AsyncParsableCommand {
         withExtendedLifetime(signalSources) {}
 
         print("\n  Shutting down...")
-        healthTask.cancel()
         peerRefreshTask.cancel()
         await rpcServer?.shutdown()
         rpcTask?.cancel()
         for task in backgroundTasks { task.cancel() }
-        await health.stop()
 
         if !effectiveDiscoveryOnly {
             let mempoolPersistence = MempoolPersistence(dataDir: dataDirURL)

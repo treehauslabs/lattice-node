@@ -193,34 +193,27 @@ public actor MinerLoop {
         log.info("\(spec.directory): mineLoop entered, starting mining iterations")
         while mining && !Task.isCancelled {
             do {
-                let tIter = ContinuousClock.now
-                let tResolveTip = ContinuousClock.now
                 let previousBlock = try await resolveCurrentTip()
                 guard let previousBlock = previousBlock else {
                     try await Task.sleep(for: .milliseconds(100))
                     continue
                 }
-                let dResolveTip = ContinuousClock.now - tResolveTip
 
                 let previousBlockHash = VolumeImpl<Block>(node: previousBlock).rawCID
                 let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
                 log.info("\(spec.directory): mining on tip \(String(previousBlockHash.prefix(16)))… at index \(previousBlock.index), building block \(previousBlock.index + 1)")
 
-                let tSelectTxs = ContinuousClock.now
                 let maxTxCount = Int(spec.maxNumberOfTransactionsPerBlock) - 1 // reserve slot for coinbase
                 async let txAsync = mempool.selectTransactions(maxCount: max(0, maxTxCount))
                 let currentChildContexts = await childContextProvider?() ?? []
 
                 var transactions = await txAsync
-                let dSelectTxs = ContinuousClock.now - tSelectTxs
 
                 // Build child blocks in parallel, coinbase sequentially (depends on transactions)
-                let tBuildChildren = ContinuousClock.now
                 async let childResultAsync = buildChildBlocks(
                     contexts: currentChildContexts,
                     nexusBlock: previousBlock, timestamp: blockTimestamp
                 )
-                let tCoinbase = ContinuousClock.now
                 do {
                     if let coinbase = try await buildCoinbaseTransaction(
                         previousBlock: previousBlock,
@@ -233,10 +226,7 @@ public actor MinerLoop {
                 } catch {
                     NodeLogger("miner").warn("Coinbase build failed: \(error)")
                 }
-                let dCoinbase = ContinuousClock.now - tCoinbase
                 let childResult = await childResultAsync
-                let dBuildChildren = ContinuousClock.now - tBuildChildren
-                let tDifficulty = ContinuousClock.now
                 let blockDifficulty = max(previousBlock.nextDifficulty, ChainSpec.minimumDifficulty)
                 let nextBlockIndex = previousBlock.index + 1
                 let computedNextDifficulty: UInt256
@@ -252,7 +242,6 @@ public actor MinerLoop {
                 } else {
                     computedNextDifficulty = blockDifficulty
                 }
-                let dDifficulty = ContinuousClock.now - tDifficulty
                 // Use a composite fetcher so nexus block building can resolve
                 // CIDs that live in child CAS stores (e.g. during receipt
                 // deletion when processing child withdrawals).
@@ -265,7 +254,6 @@ public actor MinerLoop {
                 } else {
                     blockFetcher = fetcher
                 }
-                let tBuildTemplate = ContinuousClock.now
                 let template: Block
                 do {
                     template = try await BlockBuilder.buildBlock(
@@ -294,9 +282,6 @@ public actor MinerLoop {
                         fetcher: blockFetcher
                     )
                 }
-                let dBuildTemplate = ContinuousClock.now - tBuildTemplate
-
-                let tMidstate = ContinuousClock.now
                 let prefixBytes = difficultyHashPrefixBytes(template)
                 // Precompute SHA256 midstate for the fixed prefix — each nonce attempt
                 // clones this state and hashes only the 1-20 nonce digits instead of
@@ -306,7 +291,6 @@ public actor MinerLoop {
                     h.update(bufferPointer: UnsafeRawBufferPointer(ptr))
                     return h
                 }
-                let dMidstate = ContinuousClock.now - tMidstate
                 // Merged-mining target: search with the EASIEST target across
                 // the entire registered chain tree (nexus + all descendants).
                 // The first nonce that satisfies this max target might only
@@ -320,11 +304,6 @@ public actor MinerLoop {
                 let workerCount = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
                 log.info("\(spec.directory): nonce search started for block \(previousBlock.index + 1) (difficulty=\(String(targetDifficulty.toHexString().prefix(16)))… workers=\(workerCount) batch=\(batchSize))")
 
-                let dPrepIter = ContinuousClock.now - tIter
-                timingLog("[TIMING] mineIter \(spec.directory) #\(nextBlockIndex) txs=\(transactions.count) children=\(childResult.blocks.count) prep=\(dPrepIter) resolveTip=\(dResolveTip) selectTxs=\(dSelectTxs) buildChildren=\(dBuildChildren) coinbase=\(dCoinbase) difficulty=\(dDifficulty) buildTemplate=\(dBuildTemplate) midstate=\(dMidstate)")
-
-                let tPoW = ContinuousClock.now
-                var batchCount = 0
                 while mining && !Task.isCancelled {
                     // Lock-free tip check avoids actor hop into ChainState per batch
                     let currentTip: String
@@ -342,11 +321,8 @@ public actor MinerLoop {
                         workerCount: workerCount,
                         nonceOffset: nonceOffset
                     )
-                    batchCount += 1
 
                     if let foundNonce {
-                        let dPoW = ContinuousClock.now - tPoW
-                        let tSubmit = ContinuousClock.now
                         let mined = withNonce(template, startNonce: foundNonce)
 
                         let confirmedCIDs = Set(transactions.map { $0.body.rawCID })
@@ -374,10 +350,6 @@ public actor MinerLoop {
                             let childCID = VolumeImpl<Block>(node: childBlock).rawCID
                             cachedChildTips[dir] = (cid: childCID, block: childBlock)
                         }
-                        let dSubmit = ContinuousClock.now - tSubmit
-                        let dIterTotal = ContinuousClock.now - tIter
-                        let hashesAttempted = UInt64(batchCount) * batchSize
-                        timingLog("[TIMING] mineFound \(spec.directory) #\(mined.index) total=\(dIterTotal) prep=\(dPrepIter) pow=\(dPoW) submit=\(dSubmit) batches=\(batchCount) hashes=\(hashesAttempted)")
                         break
                     }
 
