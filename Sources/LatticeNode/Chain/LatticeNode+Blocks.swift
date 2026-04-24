@@ -15,19 +15,6 @@ extension LatticeNode {
     static let peerBlockCountWindow: Duration = .seconds(30)
     static let maxReorgDepth: Int = 100
 
-    nonisolated static func diagLog(_ msg: String) {
-        let line = "[\(Date().timeIntervalSince1970)] \(msg)\n"
-        guard let data = line.data(using: .utf8) else { return }
-        let path = "/tmp/lattice-diag.log"
-        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) {
-            try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-            try? handle.close()
-        } else {
-            try? data.write(to: URL(fileURLWithPath: path))
-        }
-    }
-
     nonisolated func isBlockTimestampValid(_ block: Block) -> Bool {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         if block.timestamp > nowMs + Self.maxTimestampDriftMs { return false }
@@ -179,10 +166,8 @@ extension LatticeNode {
         let phLog = NodeLogger("blocks")
         let phStart = ContinuousClock.now
         let phShort = String(header.rawCID.prefix(16))
-        Self.diagLog("processBlockHeader enter \(directory) \(phShort)…")
         let accepted = await lattice.processBlockHeader(header, fetcher: validationFetcher, skipValidation: skipValidation)
         let dHeader = ContinuousClock.now - phStart
-        Self.diagLog("processBlockHeader exit  \(directory) \(phShort)… accepted=\(accepted) elapsed=\(dHeader)")
         guard accepted else {
             phLog.warn("\(directory): block \(phShort)… rejected by processBlockHeader")
             return .rejected
@@ -518,8 +503,11 @@ extension LatticeNode {
 
         let header = VolumeImpl<Block>(rawCID: cid)
         let tProcess = ContinuousClock.now
+        let blockFetcher = await network.ivyFetcher
+        await blockFetcher.bindPinner(rootCID: cid, peer: peer)
+        await blockFetcher.bindBlockRoots(block, peer: peer)
         let outcome = await processBlockAndRecoverReorg(
-            header: header, directory: directory, fetcher: await network.ivyFetcher,
+            header: header, directory: directory, fetcher: blockFetcher,
             resolvedBlock: block
         )
         let dProcess = ContinuousClock.now - tProcess
@@ -571,7 +559,12 @@ extension LatticeNode {
             return
         }
 
-        let resolveFetcher: any Fetcher = await network.ivyFetcher
+        let resolveFetcher = await network.ivyFetcher
+
+        // The peer who announced this block is a guaranteed source for its
+        // entire tree. Skip DHT discovery — bind them directly so fetch()
+        // can hop straight to them for any sub-CID we don't have locally.
+        await resolveFetcher.bindPinner(rootCID: cid, peer: peer)
 
         let header = VolumeImpl<Block>(rawCID: cid)
 
@@ -582,6 +575,13 @@ extension LatticeNode {
             return
         }
         let dResolve = ContinuousClock.now - tResolve
+
+        // Now that we have the block's boundary CIDs, bind the same peer as
+        // a known source for each sub-Volume root. validateNexus and friends
+        // will walk these trees via IvyFetcher; binding the peer up front
+        // avoids the 15s DHT-walk timeout when the peer hasn't yet reached
+        // the DHT as a discoverable pinner for every inner CID.
+        await resolveFetcher.bindBlockRoots(block, peer: peer)
 
         if !isBlockTimestampValid(block) {
             tally.recordFailure(peer: peer)
@@ -1089,5 +1089,23 @@ extension LatticeNode {
         }
     }
 
+}
+
+extension IvyFetcher {
+    /// Bind `peer` as a known source for every Volume-boundary CID referenced
+    /// by `block`. A peer that just announced this block is by transitive
+    /// pinning guaranteed to hold every subtree it points at — routing
+    /// subsequent resolves directly to them avoids a DHT discovery round
+    /// (and the 15s untargeted-walk timeout that follows when the pinner
+    /// announcement hasn't yet reached us).
+    func bindBlockRoots(_ block: Block, peer: PeerID) async {
+        if let prev = block.previousBlock?.rawCID { bindPinner(rootCID: prev, peer: peer) }
+        bindPinner(rootCID: block.spec.rawCID, peer: peer)
+        bindPinner(rootCID: block.transactions.rawCID, peer: peer)
+        bindPinner(rootCID: block.frontier.rawCID, peer: peer)
+        bindPinner(rootCID: block.homestead.rawCID, peer: peer)
+        bindPinner(rootCID: block.parentHomestead.rawCID, peer: peer)
+        bindPinner(rootCID: block.childBlocks.rawCID, peer: peer)
+    }
 }
 

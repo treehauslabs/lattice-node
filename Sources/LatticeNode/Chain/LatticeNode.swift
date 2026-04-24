@@ -43,7 +43,11 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     /// instead of burning ~1.5s re-validating a block that will be rejected as a
     /// duplicate anyway.
     var inFlightBlockCIDs: Set<String> = []
-    static let maxBlocksPerPeerPerWindow = 20
+    // The rate limiter exists to bound validation cost from a misbehaving
+    // peer; it is not meant to throttle legitimate gossip. `validateNexus`
+    // costs ~25ms/block, so even 30/s is bounded (≈75% of one core). Setting
+    // this below burst block-production rates silently strands catch-up sync.
+    static let maxBlocksPerPeerPerWindow = 300
     static let peerRateWindow: Duration = .seconds(10)
     var syncTask: Task<Void, Never>?
     var peerRefreshTask: Task<Void, Never>?

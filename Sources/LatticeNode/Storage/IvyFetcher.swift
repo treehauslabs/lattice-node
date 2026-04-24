@@ -27,6 +27,13 @@ public actor IvyFetcher: VolumeAwareFetcher {
     /// to route requests directly to the pinner instead of DHT-walking.
     private var activeVolumeRoot: String?
 
+    /// Most recently bound pinner, used as a fallback when `activeVolumeRoot`
+    /// has no explicit pinner. A peer that gave us a block transitively holds
+    /// every sub-volume it references, but DHT discovery for those sub-volumes
+    /// lags — falling back to this peer turns a 15s DHT-walk timeout into one
+    /// extra round-trip to a connected node that almost certainly has the data.
+    private var recentPinner: PeerID?
+
     public init(ivy: Ivy, localWorker: any AcornCASWorker) {
         self.ivy = ivy
         self.localWorker = localWorker
@@ -45,12 +52,23 @@ public actor IvyFetcher: VolumeAwareFetcher {
         }
     }
 
+    /// Bind `peer` as a known source for `rootCID`, bypassing DHT discovery.
+    /// Call this when we receive data directly from a peer (e.g., a gossip
+    /// block announce) — the sender is by definition a pinner for the tree
+    /// and any tree it references. Subsequent `provide()` calls for this
+    /// rootCID short-circuit without hitting the DHT, and `fetch()` routes
+    /// misses to `peer` before falling back.
+    public func bindPinner(rootCID: String, peer: PeerID) {
+        guard !rootCID.isEmpty else { return }
+        volumePinners[rootCID] = peer
+        touchPinnerCache(rootCID)
+        evictPinnerCacheIfNeeded()
+        recentPinner = peer
+    }
+
     // MARK: - Fetcher
 
     public func fetch(rawCid: String) async throws -> Data {
-        let start = ContinuousClock.now
-        let shortCid = String(rawCid.prefix(16))
-
         // 1. Check local storage (memory + node-level shared CAS; merged-mining child
         //    state written by the nexus miner lives in the same store).
         let cid = ContentIdentifier(rawValue: rawCid)
@@ -58,31 +76,31 @@ public actor IvyFetcher: VolumeAwareFetcher {
             return data
         }
 
-        let volHint = activeVolumeRoot.map { String($0.prefix(12)) + "…" } ?? "nil"
-        let hasPinner = activeVolumeRoot.flatMap { volumePinners[$0] } != nil
-        LatticeNode.diagLog("IvyFetcher local-miss \(shortCid)… volume=\(volHint) hasPinner=\(hasPinner)")
+        let volumePinner = activeVolumeRoot.flatMap { volumePinners[$0] }
+        let pinner = volumePinner ?? recentPinner
 
-        // 2. If we have a pinner for the active Volume, go directly to them (one hop)
-        if let root = activeVolumeRoot, let pinner = volumePinners[root] {
-            touchPinnerCache(root)
-            let pStart = ContinuousClock.now
-            if let data = await ivy.get(cid: rawCid, target: pinner) {
-                LatticeNode.diagLog("IvyFetcher pinner-hit  \(shortCid)… elapsed=\(ContinuousClock.now - pStart)")
+        // 2. Route directly to a known pinner (one hop) via the fee-less direct
+        //    path — gossip follow-up, not a cold DHT query. Prefer the active
+        //    volume's specific pinner; fall back to `recentPinner` (the most
+        //    recent peer bound for any volume) so sub-volumes encountered mid
+        //    block-resolution still hop to the announcing peer instead of
+        //    waiting 15s on DHT discovery. The fee path's debtPressure throttle
+        //    would otherwise drop these requests once our balance with the
+        //    announcing peer exceeded the (tiny) initial credit-line threshold.
+        if let pinner = pinner {
+            if let root = activeVolumeRoot, volumePinner != nil { touchPinnerCache(root) }
+            if let data = await ivy.getDirect(cid: rawCid, from: pinner) {
                 await localWorker.store(cid: cid, data: data)
                 return data
             }
-            LatticeNode.diagLog("IvyFetcher pinner-miss \(shortCid)… elapsed=\(ContinuousClock.now - pStart)")
         }
 
         // 3. Fall back to untargeted DHT walk
-        let dStart = ContinuousClock.now
         if let data = await ivy.get(cid: rawCid) {
-            LatticeNode.diagLog("IvyFetcher dht-hit     \(shortCid)… elapsed=\(ContinuousClock.now - dStart)")
             await localWorker.store(cid: cid, data: data)
             return data
         }
 
-        LatticeNode.diagLog("IvyFetcher notfound    \(shortCid)… totalElapsed=\(ContinuousClock.now - start)")
         throw FetcherError.notFound(rawCid)
     }
 
