@@ -73,10 +73,26 @@ public actor NodeMempool {
     private var sortedEntries: [MempoolEntry] = []
     private let maxSize: Int
     private let maxPerAccount: Int
+    /// Largest permitted distance between an admitted tx's nonce and the
+    /// sender's currently-confirmed nonce. Caps how far into the future a
+    /// sender can reserve slots — a sender submitting `confirmedNonce +
+    /// 100_000` would otherwise squat slots that can never clear until
+    /// 99_999 earlier nonces arrive.
+    private let maxNonceGap: UInt64
+    /// Absolute minimum fee for admission, independent of mempool fullness.
+    /// Defaults to 0 to preserve existing behavior; raise to impose a spam tax.
+    private let minFeeFloor: UInt64
 
-    public init(maxSize: Int = 10_000, maxPerAccount: Int = 64) {
+    public init(
+        maxSize: Int = 10_000,
+        maxPerAccount: Int = 64,
+        maxNonceGap: UInt64 = 64,
+        minFeeFloor: UInt64 = 0
+    ) {
         self.maxSize = maxSize
         self.maxPerAccount = maxPerAccount
+        self.maxNonceGap = maxNonceGap
+        self.minFeeFloor = minFeeFloor
     }
 
     public var count: Int { byCID.count }
@@ -105,9 +121,21 @@ public actor NodeMempool {
             return .rejected(reason: "Duplicate transaction")
         }
 
+        if fee < minFeeFloor {
+            return .rejected(reason: "Fee below floor: \(fee) < \(minFeeFloor)")
+        }
+
         let accountQueue = byAccount[sender] ?? AccountTxQueue()
         if nonce < accountQueue.confirmedNonce {
             return .rejected(reason: "Nonce already confirmed: \(nonce) < \(accountQueue.confirmedNonce)")
+        }
+        // Reject far-future nonces before allocating a slot. A sender at
+        // confirmedNonce=5 with maxNonceGap=64 may submit nonces 5..69; a
+        // submission at nonce=100_005 would pin a slot that can never clear
+        // until 99_999 other txs from the same sender arrive first.
+        let (gapLimit, gapOverflow) = accountQueue.confirmedNonce.addingReportingOverflow(maxNonceGap)
+        if !gapOverflow && nonce > gapLimit {
+            return .rejected(reason: "Nonce gap exceeds limit: \(nonce) > \(gapLimit)")
         }
         if let existing = accountQueue.txsByNonce[nonce] {
             return tryReplace(existing: existing, transaction: transaction, cid: cid, fee: fee, sender: sender, nonce: nonce, stateKeys: stateKeys)
