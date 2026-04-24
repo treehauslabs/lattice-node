@@ -102,6 +102,18 @@ public actor StateStore {
         }
     }
 
+    // MARK: - Maintenance
+
+    /// Checkpoint WAL + reclaim free pages. Scheduled on a slow cadence from
+    /// `startStorageMaintenanceLoop`. Without periodic `wal_checkpoint(TRUNCATE)`
+    /// the WAL file grows during heavy write bursts; without `incremental_vacuum`
+    /// the space freed by `pruneTransactionHistory`/`pruneDiffs` stays in the
+    /// freelist and the DB file never shrinks.
+    public func maintain() {
+        try? db.walCheckpointTruncate()
+        try? db.incrementalVacuum()
+    }
+
     /// Drop tx_history rows below `belowHeight` for every address except
     /// `keepAddress` (the node's own address — needed for startup pin rebuild).
     /// Without this, the table grows forever on disk since every block appends

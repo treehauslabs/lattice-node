@@ -61,6 +61,21 @@ func startMempoolLoop(node: LatticeNode) -> Task<Void, Never> {
     }
 }
 
+/// Checkpoint WAL + run incremental vacuum on every chain's SQLite store.
+/// Slow cadence — WAL truncation is cheap but not free, and incremental
+/// vacuum is IO-heavy. Once per hour is plenty to keep the WAL from
+/// ballooning and the DB file from drifting away from its logical size
+/// after tx_history / state_diffs prune passes (UNSTOPPABLE_LATTICE S7).
+@discardableResult
+func startStorageMaintenanceLoop(node: LatticeNode) -> Task<Void, Never> {
+    Task {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(3600)) // 1 hour
+            await node.maintainStorage()
+        }
+    }
+}
+
 /// Re-announce pins and advertise storage capacity periodically.
 /// Pin announcements expire after 24 hours; this re-announces every 6 hours
 /// and broadcasts available storage so peers can route pin requests to us.

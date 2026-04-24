@@ -53,6 +53,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var peerRefreshTask: Task<Void, Never>?
     private var mempoolPruneTask: Task<Void, Never>?
     private var pinReannounceTask: Task<Void, Never>?
+    private var storageMaintenanceTask: Task<Void, Never>?
     public var feeEstimators: [String: FeeEstimator]
     public let subscriptions: SubscriptionManager
     public let anchorPeers: AnchorPeers
@@ -233,6 +234,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         if !config.discoveryOnly {
             mempoolPruneTask = startMempoolLoop(node: self)
             pinReannounceTask = startPinReannounceLoop(node: self)
+            storageMaintenanceTask = startStorageMaintenanceLoop(node: self)
         }
     }
 
@@ -241,6 +243,11 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         mempoolPruneTask = nil
         pinReannounceTask?.cancel()
         pinReannounceTask = nil
+        storageMaintenanceTask?.cancel()
+        storageMaintenanceTask = nil
+        // One last WAL checkpoint + incremental vacuum on a graceful stop so
+        // the file on disk is consistent-and-compact before the process exits.
+        await maintainStorage()
         peerRefreshTask?.cancel()
         peerRefreshTask = nil
         syncTask?.cancel()
@@ -374,6 +381,16 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             if removed > 0 {
                 NodeLogger("gc").info("Pruned \(removed) tx_history rows on \(dir) below height \(below)")
             }
+        }
+    }
+
+    /// Checkpoint WAL and reclaim freelist pages on every chain's StateStore.
+    /// Scheduled on a slow cadence so the per-chain SQLite file doesn't bloat
+    /// across a long mining session (UNSTOPPABLE_LATTICE S7).
+    public func maintainStorage() async {
+        for (dir, store) in stateStores {
+            await store.maintain()
+            NodeLogger("gc").debug("Storage maintenance pass on \(dir)")
         }
     }
 
