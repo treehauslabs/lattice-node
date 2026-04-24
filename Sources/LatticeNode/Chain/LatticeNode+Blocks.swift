@@ -220,6 +220,35 @@ extension LatticeNode {
         return .accepted
     }
 
+    /// Walk back from `oldTip` up to `retentionDepth` blocks, collecting
+    /// hashes that are NOT in `newChainHashes` as orphans. Reports whether a
+    /// common ancestor was actually found — if not, the reorg exceeds the
+    /// retention window and the caller must refuse recovery rather than
+    /// proceed with a truncated orphan set (S3).
+    ///
+    /// Static + `resolveParent` closure so the walk is directly testable
+    /// without spinning up a `ChainState`/`LatticeNode`.
+    static func walkOrphansToCommonAncestor(
+        oldTip: String,
+        newChainHashes: Set<String>,
+        retentionDepth: UInt64,
+        resolveParent: (String) async -> String?
+    ) async -> (orphans: [String], foundCommonAncestor: Bool) {
+        var orphans: [String] = []
+        var current = oldTip
+        for _ in 0..<retentionDepth {
+            if newChainHashes.contains(current) {
+                return (orphans, true)
+            }
+            orphans.append(current)
+            guard let prev = await resolveParent(current) else {
+                return (orphans, false)
+            }
+            current = prev
+        }
+        return (orphans, false)
+    }
+
     private func recoverOrphanedTransactions(
         oldTip: String,
         newTip: String,
@@ -235,17 +264,30 @@ extension LatticeNode {
             from: newTip, chain: chain, limit: config.retentionDepth
         )
 
-        var orphanedBlockHashes: [String] = []
-        var current = oldTip
-        for _ in 0..<config.retentionDepth {
-            if newChainHashes.contains(current) { break }
-            orphanedBlockHashes.append(current)
-            guard let meta = await chain.getConsensusBlock(hash: current),
-                  let prev = meta.previousBlockHash else { break }
-            current = prev
-        }
+        let walk = await Self.walkOrphansToCommonAncestor(
+            oldTip: oldTip,
+            newChainHashes: newChainHashes,
+            retentionDepth: config.retentionDepth,
+            resolveParent: { hash in
+                await chain.getConsensusBlock(hash: hash)?.previousBlockHash
+            }
+        )
+        let orphanedBlockHashes = walk.orphans
 
         guard !orphanedBlockHashes.isEmpty else { return }
+
+        // S3: retentionDepth is a consensus-safety parameter, not just storage.
+        // If we walked `retentionDepth` blocks back from oldTip without finding
+        // a common ancestor with the new chain, the fork is deeper than our
+        // retention window and we cannot correctly identify the orphan set.
+        // Applying a reorg with a truncated/incomplete orphan list silently
+        // corrupts mempool recovery and child-chain rollback — refuse and log
+        // loudly instead of guessing.
+        if !walk.foundCommonAncestor {
+            log.error("Reorg refused: no common ancestor within retentionDepth=\(config.retentionDepth) blocks from oldTip=\(String(oldTip.prefix(16)))… to newTip=\(String(newTip.prefix(16)))…. Fork either exceeds the retention window (honest — raise retentionDepth) or indicates a malicious peer.")
+            return
+        }
+
         log.info("Reorg: \(orphanedBlockHashes.count) orphaned block(s)")
 
         if orphanedBlockHashes.count > Self.maxReorgDepth {
