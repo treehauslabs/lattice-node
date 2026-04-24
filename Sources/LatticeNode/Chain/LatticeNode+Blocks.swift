@@ -207,6 +207,12 @@ extension LatticeNode {
         if tipBefore != tipAfter {
             let parentOfNewTip = await chain.getConsensusBlock(hash: tipAfter)?.previousBlockHash
             if parentOfNewTip != tipBefore {
+                // Reorg (new tip's parent is not the old tip). Drop the
+                // miner's cached account-trie slice so the next iteration
+                // re-reads from the canonical frontier — paths resolved
+                // against a no-longer-canonical ancestor would produce a
+                // coinbase that trips `nonceGap` forever otherwise.
+                await miners[directory]?.invalidateAccountCache()
                 await recoverOrphanedTransactions(
                     oldTip: tipBefore,
                     newTip: tipAfter,

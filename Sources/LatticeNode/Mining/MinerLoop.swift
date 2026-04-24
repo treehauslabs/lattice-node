@@ -35,6 +35,17 @@ public actor MinerLoop {
     private var cachedTipBlock: Block?
     private var cachedTipCID: String?
     private var cachedChildTips: [String: (cid: String, block: Block)] = [:]
+    /// Miner's own account-trie slice as of `cachedTipCID`: resolved paths
+    /// for the nonce-tracking key and the balance key. Reused across miner
+    /// iterations so `buildCoinbaseTransaction` skips the trie walk + fetch
+    /// hops, and by `minerBalance()` so dashboards can read the miner's
+    /// balance without an extra resolve. Paired lifecycle with
+    /// `cachedTipCID` — any path that drops the tip cache must drop this
+    /// too, and the reorg handler calls `invalidateAccountCache()`
+    /// explicitly since a reorg that replaces our block with one containing
+    /// a different set of miner-signed txs makes this value silently wrong
+    /// (every subsequent coinbase would `nonceGap` until restart otherwise).
+    private var cachedMinerAccountTrie: AccountState?
     public weak var delegate: MinerDelegate?
 
     // Stall watchdog guards against nonce-search hangs only; it must not
@@ -108,6 +119,54 @@ public actor MinerLoop {
         cachedTipBlock = nil
         cachedTipCID = nil
         cachedChildTips.removeAll()
+        cachedMinerAccountTrie = nil
+    }
+
+    /// Drop the miner's cached account-trie slice. Called from
+    /// `processBlockAndRecoverReorg` when a reorg is detected so the next
+    /// iteration re-reads from the new canonical tip's frontier, instead of
+    /// using paths resolved against an ancestor that is no longer on the
+    /// main chain.
+    public func invalidateAccountCache() {
+        cachedMinerAccountTrie = nil
+    }
+
+    /// Miner's balance as of the current cached tip, or nil if no identity
+    /// / cached tip / resolution fails. Uses the same cached trie slice as
+    /// the coinbase builder, so dashboards can read this without forcing
+    /// an extra resolve.
+    public func minerBalance() async -> UInt64? {
+        guard let identity else { return nil }
+        guard let tip = cachedTipBlock else { return nil }
+        guard let trie = await minerAccountTrie(tip: tip, identity: identity) else { return nil }
+        return try? trie.get(key: identity.address)
+    }
+
+    /// Resolve (or reuse) the miner's account-trie slice for `tip`. Cached
+    /// after the first successful call after a tip change; subsequent
+    /// callers share the same resolved paths. When `tip` is `cachedTipBlock`
+    /// straight off the submit path, `frontier.node` is already populated
+    /// by BlockBuilder — we extract the trie directly without re-fetching.
+    private func minerAccountTrie(tip: Block, identity: MinerIdentity) async -> AccountState? {
+        if let cached = cachedMinerAccountTrie { return cached }
+        let nonceKey = AccountStateHeader.nonceTrackingKey(identity.address)
+        // Happy path: freshly-mined block has its frontier fully resolved
+        // already (BlockBuilder ran proveAndUpdateState on both paths).
+        if let frontier = tip.frontier.node,
+           let trie = frontier.accountState.node,
+           (try? trie.get(key: nonceKey)) != nil || (try? trie.get(key: identity.address)) != nil {
+            cachedMinerAccountTrie = trie
+            return trie
+        }
+        // Gossip-advance or cold start: resolve both paths in one shot.
+        guard let frontierNode = try? await tip.frontier.resolve(fetcher: fetcher).node else { return nil }
+        guard let resolved = try? await frontierNode.accountState.resolve(
+            paths: [[nonceKey]: .targeted, [identity.address]: .targeted],
+            fetcher: fetcher
+        ) else { return nil }
+        guard let trie = resolved.node else { return nil }
+        cachedMinerAccountTrie = trie
+        return trie
     }
 
     private func spawnMineTask() {
@@ -217,6 +276,7 @@ public actor MinerLoop {
                 do {
                     if let coinbase = try await buildCoinbaseTransaction(
                         previousBlock: previousBlock,
+                        previousBlockHash: previousBlockHash,
                         mempoolTransactions: transactions
                     ) {
                         // Coinbase goes AFTER user txs so its nonce doesn't
@@ -346,6 +406,12 @@ public actor MinerLoop {
                         // analogously for their respective chains.
                         cachedTipBlock = mined
                         cachedTipCID = hash
+                        // BlockBuilder's proveAndUpdateState already resolved
+                        // the miner's account paths inside `mined.frontier`;
+                        // extract the trie directly so the next iteration's
+                        // coinbase (and any dashboard balance read) skips
+                        // the fetch + resolve entirely.
+                        cachedMinerAccountTrie = mined.frontier.node?.accountState.node
                         for (dir, childBlock) in childResult.allBlocksByDirectory {
                             let childCID = VolumeImpl<Block>(node: childBlock).rawCID
                             cachedChildTips[dir] = (cid: childCID, block: childBlock)
@@ -466,7 +532,8 @@ public actor MinerLoop {
         chainPath: [String],
         previousBlock: Block,
         mempoolTransactions: [Transaction],
-        fetcher: Fetcher
+        fetcher: Fetcher,
+        cachedLatestNonce: UInt64? = nil
     ) async throws -> Transaction? {
         let reward = spec.rewardAtBlock(previousBlock.index + 1)
         var totalFees: UInt64 = 0
@@ -482,9 +549,20 @@ public actor MinerLoop {
 
         // Coinbase nonce must follow the miner's latest nonce in the state
         // PLUS any miner-signed mempool txs that precede the coinbase in the block.
-        let latestNonce = await resolveLatestMinerNonce(
-            previousBlock: previousBlock, identity: identity, fetcher: fetcher
-        )
+        // `cachedLatestNonce` short-circuits the targeted frontier resolve
+        // when the caller (MinerLoop) knows `previousBlock` is the same tip
+        // it just mined on — we are the sole writer of our own nonce, so
+        // the last coinbase we produced IS the current frontier value.
+        // Skipping the resolve drops the fetch round-trips per trie level
+        // to zero on cache hit.
+        let latestNonce: UInt64?
+        if let cached = cachedLatestNonce {
+            latestNonce = cached
+        } else {
+            latestNonce = await resolveLatestMinerNonce(
+                previousBlock: previousBlock, identity: identity, fetcher: fetcher
+            )
+        }
         let minerTxsInBlock = mempoolTransactions.filter { tx in
             tx.body.node?.signers.contains(identity.address) == true
         }.count
@@ -532,16 +610,30 @@ public actor MinerLoop {
 
     private func buildCoinbaseTransaction(
         previousBlock: Block,
+        previousBlockHash: String,
         mempoolTransactions: [Transaction]
     ) async throws -> Transaction? {
         guard let identity = identity else { return nil }
+        // Only use the cached account trie when the tip we're about to
+        // mine on is exactly the one our cache was derived from. Any CID
+        // mismatch means a reorg/gossip advance arrived between iterations
+        // and the cached paths are stale.
+        let cachedNonce: UInt64?
+        if cachedTipCID == previousBlockHash,
+           let trie = await minerAccountTrie(tip: previousBlock, identity: identity) {
+            let nonceKey = AccountStateHeader.nonceTrackingKey(identity.address)
+            cachedNonce = try? trie.get(key: nonceKey)
+        } else {
+            cachedNonce = nil
+        }
         return try await Self.buildCoinbaseTransaction(
             spec: spec,
             identity: identity,
             chainPath: chainPath,
             previousBlock: previousBlock,
             mempoolTransactions: mempoolTransactions,
-            fetcher: fetcher
+            fetcher: fetcher,
+            cachedLatestNonce: cachedNonce
         )
     }
 
@@ -851,6 +943,7 @@ public actor MinerLoop {
         // Tip changed (reorg or gossip advance) — drop stale cache
         cachedTipBlock = nil
         cachedTipCID = nil
+        cachedMinerAccountTrie = nil
         let tipData = try await fetcher.fetch(rawCid: tipHash)
         guard let block = Block(data: tipData) else {
             NodeLogger("miner").warn("Tip block decode failed for \(String(tipHash.prefix(16)))… (\(tipData.count) bytes)")
