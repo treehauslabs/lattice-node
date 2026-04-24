@@ -28,6 +28,18 @@ public final class NodeMetrics: Sendable {
         }
     }
 
+    /// Drop every counter/gauge/histogram whose name contains `substring`.
+    /// Used to clear per-chain label series when a chain is torn down, so the
+    /// metrics map doesn't grow forever as chains are deployed and destroyed.
+    public func removeKeys(containing substring: String) {
+        storage.withLock { s in
+            s.counters = s.counters.filter { !$0.key.contains(substring) }
+            s.gauges = s.gauges.filter { !$0.key.contains(substring) }
+            s.histogramSums = s.histogramSums.filter { !$0.key.contains(substring) }
+            s.histogramCounts = s.histogramCounts.filter { !$0.key.contains(substring) }
+        }
+    }
+
     public func prometheus() -> String {
         let snap = storage.withLock { $0 }
         var lines: [String] = []

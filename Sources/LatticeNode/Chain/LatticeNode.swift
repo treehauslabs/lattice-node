@@ -326,6 +326,46 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         try await network.start()
     }
 
+    /// Tear down every per-chain resource registered under `directory` — stop the
+    /// network, release the StateStore / persister / caches, unregister the
+    /// chain's protection policy from the shared CAS, and drop any per-chain
+    /// metric series. Without this, every deploy-then-destroy cycle leaks one
+    /// entry in each map (UNSTOPPABLE_LATTICE P1 #14,#15).
+    /// Refuses to tear down the nexus — it's load-bearing and cannot be
+    /// recreated without re-initializing the node.
+    public func destroyChainNetwork(directory: String) async {
+        let nexusDir = genesisConfig.spec.directory
+        guard directory != nexusDir else { return }
+        guard let network = networks[directory] else { return }
+
+        // Persist one last time so a subsequent redeploy can restore cleanly.
+        await persistChainState(directory: directory)
+        await persistMempool(directory: directory, network: network)
+        await network.stop()
+
+        networks.removeValue(forKey: directory)
+        persisters.removeValue(forKey: directory)
+        blocksSinceLastPersist.removeValue(forKey: directory)
+        parentDirectoryByChain.removeValue(forKey: directory)
+        stateStores.removeValue(forKey: directory)
+        tipCaches.removeValue(forKey: directory)
+        frontierCaches.removeValue(forKey: directory)
+        feeEstimators.removeValue(forKey: directory)
+
+        await unionProtection.unregister(chain: directory)
+
+        // Per-chain Prometheus label form is {chain="<directory>"}; strip every
+        // series carrying that exact label value.
+        metrics.removeKeys(containing: "chain=\"\(directory)\"")
+
+        // Drop the subscription so the nexus miner stops trying to build child
+        // contexts for this directory.
+        if let path = await chainPath(for: directory),
+           config.isSubscribed(chainPath: path) {
+            config = config.removingSubscription(chainPath: path)
+        }
+    }
+
     public func registerChainNetworkUsingNodeConfig(directory: String) async throws {
         let port = deterministicPort(basePort: self.config.listenPort, directory: directory)
         let ivyConfig = IvyConfig(
