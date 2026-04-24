@@ -261,7 +261,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         }
         try? await sharedDisk.persistState()
         let currentPeers = await connectedPeerEndpoints()
-        await anchorPeers.update(peers: currentPeers)
+        let scoring = await nexusReputationScoring()
+        await anchorPeers.update(peers: currentPeers, scoring: scoring)
         for (_, network) in networks {
             await network.stop()
         }
@@ -381,6 +382,30 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             if removed > 0 {
                 NodeLogger("gc").info("Pruned \(removed) tx_history rows on \(dir) below height \(below)")
             }
+        }
+    }
+
+    /// Capture a scoring closure bound to the nexus network's Tally ledger so
+    /// `AnchorPeers` can evict peers that have degraded since they were
+    /// promoted. Returns nil when the nexus network hasn't started yet (the
+    /// caller should skip scoring in that case and accept raw endpoints).
+    func nexusReputationScoring() async -> ReputationScoring? {
+        let nexusDir = genesisConfig.spec.directory
+        guard let network = networks[nexusDir] else { return nil }
+        let tally = await network.ivy.tally
+        return { endpoint in
+            tally.reputation(for: PeerID(publicKey: endpoint.publicKey))
+        }
+    }
+
+    /// Drop anchor peers whose Tally reputation has fallen at or below zero.
+    /// Called on the same cadence as pin re-announcement so a Byzantine
+    /// bootstrap peer doesn't linger across restarts (UNSTOPPABLE_LATTICE S9).
+    public func demoteLowScoringAnchors() async {
+        guard let scoring = await nexusReputationScoring() else { return }
+        let removed = await anchorPeers.evictLowScoring(scoring: scoring)
+        if removed > 0 {
+            NodeLogger("anchor").info("Demoted \(removed) anchor peers below reputation floor")
         }
     }
 

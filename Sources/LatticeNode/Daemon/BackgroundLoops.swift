@@ -91,6 +91,10 @@ func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
                     await network.protectionPolicy.pruneExpiredAnnounces()
                 }
             }
+            // Same cadence: drop anchor peers that went Byzantine after we
+            // saved them. Without this, a bootstrap peer that now serves
+            // stale tips remains pinned across restarts forever (S9).
+            await node.demoteLowScoringAnchors()
         }
     }
 }

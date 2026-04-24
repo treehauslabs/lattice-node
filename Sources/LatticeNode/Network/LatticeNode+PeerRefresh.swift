@@ -1,6 +1,7 @@
 import Lattice
 import Foundation
 import Ivy
+import Tally
 
 extension LatticeNode {
 
@@ -83,7 +84,11 @@ extension LatticeNode {
 
             if connected >= 2 {
                 let bestPeers = Array(connectedEndpoints.prefix(6))
-                await anchorPeers.update(peers: bestPeers)
+                let tally = await network.ivy.tally
+                let scoring: ReputationScoring = { endpoint in
+                    tally.reputation(for: PeerID(publicKey: endpoint.publicKey))
+                }
+                await anchorPeers.update(peers: bestPeers, scoring: scoring)
             }
         }
     }
