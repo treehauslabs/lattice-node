@@ -916,7 +916,7 @@ extension LatticeNode {
         let fee = await network.ivy.config.relayFee * 2
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
         for cid in cidsToPin {
-            await network.ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+            await network.announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
         }
     }
 

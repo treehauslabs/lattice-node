@@ -183,6 +183,15 @@ public actor ChainNetwork: IvyDelegate {
         }
     }
 
+    /// Publish a pin announce AND record the expiry with our local protection policy.
+    /// This is the only pathway that should ever announce — routing through here
+    /// guarantees the eviction policy respects our announced retention window.
+    public func announce(cid: String, selector: String, expiry: UInt64, fee: UInt64) async {
+        guard !cid.isEmpty else { return }
+        await protectionPolicy.recordAnnounce(cid: cid, expirySecsSinceEpoch: expiry)
+        await ivy.publishPinAnnounce(rootCID: cid, selector: selector, expiry: expiry, signature: Data(), fee: fee)
+    }
+
     /// Publish pin announcements for each Volume boundary root in the block.
     /// Each announcement includes a selector describing what subtree the pin covers.
     /// Light clients can discover pinners for specific subtrees (e.g., /accountState).
@@ -190,28 +199,25 @@ public actor ChainNetwork: IvyDelegate {
         let fee = await ivy.config.relayFee * 3
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
 
-        // State trees — full nodes announce "/" (entire state), also specific subtrees
         let frontierCID = block.frontier.rawCID
         if !frontierCID.isEmpty {
-            await ivy.publishPinAnnounce(rootCID: frontierCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
-            await ivy.publishPinAnnounce(rootCID: frontierCID, selector: "/accountState", expiry: expiry, signature: Data(), fee: fee)
-            await ivy.publishPinAnnounce(rootCID: frontierCID, selector: "/generalState", expiry: expiry, signature: Data(), fee: fee)
+            await announce(cid: frontierCID, selector: "/", expiry: expiry, fee: fee)
+            await announce(cid: frontierCID, selector: "/accountState", expiry: expiry, fee: fee)
+            await announce(cid: frontierCID, selector: "/generalState", expiry: expiry, fee: fee)
         }
         let homesteadCID = block.homestead.rawCID
         if !homesteadCID.isEmpty {
-            await ivy.publishPinAnnounce(rootCID: homesteadCID, selector: "/accountState", expiry: expiry, signature: Data(), fee: fee)
+            await announce(cid: homesteadCID, selector: "/accountState", expiry: expiry, fee: fee)
         }
 
-        // Transaction tree
         let txCID = block.transactions.rawCID
         if !txCID.isEmpty {
-            await ivy.publishPinAnnounce(rootCID: txCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+            await announce(cid: txCID, selector: "/", expiry: expiry, fee: fee)
         }
 
-        // Child blocks
         let childCID = block.childBlocks.rawCID
         if !childCID.isEmpty {
-            await ivy.publishPinAnnounce(rootCID: childCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+            await announce(cid: childCID, selector: "/", expiry: expiry, fee: fee)
         }
     }
 
@@ -233,17 +239,17 @@ public actor ChainNetwork: IvyDelegate {
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
 
         // Announce the block itself
-        await ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+        await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
 
         // Announce Volume boundaries so state/tx subtrees are discoverable
         if let block = Block(data: data) {
             let frontierCID = block.frontier.rawCID
             if !frontierCID.isEmpty {
-                await ivy.publishPinAnnounce(rootCID: frontierCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+                await announce(cid: frontierCID, selector: "/", expiry: expiry, fee: fee)
             }
             let txCID = block.transactions.rawCID
             if !txCID.isEmpty {
-                await ivy.publishPinAnnounce(rootCID: txCID, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+                await announce(cid: txCID, selector: "/", expiry: expiry, fee: fee)
             }
         }
     }
@@ -327,7 +333,7 @@ public actor ChainNetwork: IvyDelegate {
         if await localCAS.has(cid: cidObj) {
             let fee = await ivy.config.relayFee * 2
             let expiry = UInt64(Date().timeIntervalSince1970) + 86400
-            await ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+            await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
             return
         }
 
@@ -338,7 +344,7 @@ public actor ChainNetwork: IvyDelegate {
 
         let fee = await ivy.config.relayFee * 2
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
-        await ivy.publishPinAnnounce(rootCID: cid, selector: "/", expiry: expiry, signature: Data(), fee: fee)
+        await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
     }
 
     // MARK: - Chain Announce (Tip Exchange)

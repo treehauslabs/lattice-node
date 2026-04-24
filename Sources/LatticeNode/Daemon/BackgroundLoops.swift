@@ -52,6 +52,7 @@ func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
                 await node.reannounceChainTip(directory: directory)
                 if let network = await node.network(for: directory) {
                     await network.advertiseStorage()
+                    await network.protectionPolicy.pruneExpiredAnnounces()
                 }
             }
         }

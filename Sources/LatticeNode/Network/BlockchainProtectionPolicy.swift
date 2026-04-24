@@ -23,6 +23,14 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
     private var recentBlockExpiry: [String: ContinuousClock.Instant] = [:]
     private let recentBlockTTL: Duration
 
+    /// Seconds-since-epoch at which each live pin announce expires. An entry here
+    /// means: we told the network we pin this CID until at least `announceExpiry[cid]`.
+    /// Eviction MUST NOT drop the bytes before that moment, or peers routed here
+    /// will see 404s and Ivy reputation will drop. Coupling the two lifetimes here
+    /// makes any future LRU cap on other sets (pinnedCIDs, accountCIDs) safe by
+    /// default — see P0 #4a in UNSTOPPABLE_LATTICE.md.
+    private var announceExpiry: [String: UInt64] = [:]
+
     public init(
         maxPinnedCount: Int = 10_000,
         recentBlockTTL: Duration = .seconds(3600)
@@ -112,6 +120,26 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
         recentBlockExpiry = recentBlockExpiry.filter { $0.value > now }
     }
 
+    // MARK: - Announce coupling
+
+    /// Record that we have announced `cid` to the network with an expiry of
+    /// `expirySecsSinceEpoch`. Retains the *latest* expiry seen for this CID
+    /// so overlapping reannounces extend (never shorten) the protection window.
+    public func recordAnnounce(cid: String, expirySecsSinceEpoch: UInt64) {
+        guard !cid.isEmpty else { return }
+        if let existing = announceExpiry[cid], existing >= expirySecsSinceEpoch { return }
+        announceExpiry[cid] = expirySecsSinceEpoch
+    }
+
+    /// Drop announce entries that have already expired. Called opportunistically
+    /// by the reannounce loop so the map doesn't grow unbounded across restart.
+    public func pruneExpiredAnnounces() {
+        let now = UInt64(Date().timeIntervalSince1970)
+        announceExpiry = announceExpiry.filter { $0.value > now }
+    }
+
+    public var announcedCount: Int { announceExpiry.count }
+
     // MARK: - EvictionProtectionPolicy
 
     public func isProtected(_ cid: String) async -> Bool {
@@ -119,6 +147,7 @@ public actor BlockchainProtectionPolicy: EvictionProtectionPolicy {
         if pinnedCIDs.contains(cid) { return true }
         if stateRootCIDs.contains(cid) { return true }
         if let expiry = recentBlockExpiry[cid], expiry > .now { return true }
+        if let expiry = announceExpiry[cid], expiry > UInt64(Date().timeIntervalSince1970) { return true }
         return false
     }
 
