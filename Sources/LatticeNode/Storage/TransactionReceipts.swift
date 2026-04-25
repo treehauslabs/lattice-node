@@ -53,8 +53,8 @@ public actor TransactionReceiptStore {
     }
 
     private func deriveFromCAS(txCID: String, index: ReceiptIndex) async -> TransactionReceipt? {
-        guard let blockData = try? await fetcher.fetch(rawCid: index.blockHash),
-              let block = Block(data: blockData) else { return nil }
+        let stub = VolumeImpl<Block>(rawCID: index.blockHash, node: nil, encryptionInfo: nil)
+        guard let block = try? await stub.resolve(fetcher: fetcher).node else { return nil }
 
         // Dict keys are sequential indices, not CIDs — resolve all and match by rawCID
         guard let txDict = try? await block.transactions.resolveRecursive(fetcher: fetcher).node,

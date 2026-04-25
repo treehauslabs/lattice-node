@@ -1,6 +1,7 @@
 import Lattice
 import Foundation
 import Ivy
+import VolumeBroker
 
 func deterministicPort(basePort: UInt16, directory: String) -> UInt16 {
     let hash = directory.utf8.reduce(0) { ($0 &* 31) &+ UInt16($1) }
@@ -44,13 +45,9 @@ func startMempoolLoop(node: LatticeNode) -> Task<Void, Never> {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(60))
             await node.pruneExpiredTransactions()
-            // Prune expired reorg-retention entries on every chain. Without this
-            // the recentBlockExpiry map grew unbounded and the protected set held
-            // CIDs past their TTL, pinning bytes the LRU should have been free to
-            // evict (UNSTOPPABLE_LATTICE P0 #2).
             for directory in await node.allDirectories() {
                 if let network = await node.network(for: directory) {
-                    await network.protectionPolicy.pruneExpiredRecentBlocks()
+                    let _ = try? await network.diskBroker.evictUnpinned()
                 }
             }
             tickCount += 1
@@ -86,10 +83,6 @@ func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
             try? await Task.sleep(for: .seconds(21600)) // 6 hours
             for directory in await node.allDirectories() {
                 await node.reannounceChainTip(directory: directory)
-                if let network = await node.network(for: directory) {
-                    await network.advertiseStorage()
-                    await network.protectionPolicy.pruneExpiredAnnounces()
-                }
             }
             // Same cadence: drop anchor peers that went Byzantine after we
             // saved them. Without this, a bootstrap peer that now serves

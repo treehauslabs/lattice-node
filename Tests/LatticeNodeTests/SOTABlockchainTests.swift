@@ -4,9 +4,7 @@ import XCTest
 @testable import Ivy
 import UInt256
 import cashew
-import Acorn
 import Tally
-import AcornDiskWorker
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -498,33 +496,19 @@ final class MempoolManipulationTests: XCTestCase {
 final class CASIntegrityTests: XCTestCase {
 
     func testCIDv1FormatConsistency() {
-        let data = Data("hello world".utf8)
-        let cid1 = ContentIdentifier(for: data)
-        let cid2 = ContentIdentifier(for: data)
-        XCTAssertEqual(cid1, cid2, "Same data must produce same CID")
-        XCTAssertTrue(cid1.rawValue.hasPrefix("b"), "CIDv1 should start with base32 prefix 'b'")
-    }
-
-    func testWorkerChainTraversal() async throws {
-        let memory = TestCASWorker()
-        let disk = TestCASWorker()
-        let composite = await CompositeCASWorker(workers: ["mem": memory, "disk": disk], order: ["mem", "disk"])
-
-        let cid = ContentIdentifier(for: Data("test".utf8))
-        let data = Data("test".utf8)
-
-        await disk.storeLocal(cid: cid, data: data)
-
-        let memBefore = await memory.getLocal(cid: cid)
-        XCTAssertNil(memBefore)
-
-        let result = await composite.get(cid: cid)
-        XCTAssertNotNil(result, "Composite should find data in disk")
-        XCTAssertEqual(result, data)
-
-        // Upward warming: a hit in disk populates memory.
-        let memAfter = await memory.getLocal(cid: cid)
-        XCTAssertNotNil(memAfter, "Memory should be warmed from disk")
+        // Verify cashew CID computation is deterministic: same node always produces same CID.
+        let spec1 = ChainSpec(directory: "Test", maxNumberOfTransactionsPerBlock: 1,
+                              maxStateGrowth: 1, maxBlockSize: 1, premine: 0,
+                              targetBlockTime: 1, initialReward: 1, halvingInterval: 1,
+                              difficultyAdjustmentWindow: 1)
+        let spec2 = ChainSpec(directory: "Test", maxNumberOfTransactionsPerBlock: 1,
+                              maxStateGrowth: 1, maxBlockSize: 1, premine: 0,
+                              targetBlockTime: 1, initialReward: 1, halvingInterval: 1,
+                              difficultyAdjustmentWindow: 1)
+        let cid1 = HeaderImpl<ChainSpec>(node: spec1).rawCID
+        let cid2 = HeaderImpl<ChainSpec>(node: spec2).rawCID
+        XCTAssertEqual(cid1, cid2, "Same node must produce same CID")
+        XCTAssertTrue(cid1.hasPrefix("b"), "CIDv1 should start with base32 prefix 'b'")
     }
 
     func testDiskCASShardingUniform() {

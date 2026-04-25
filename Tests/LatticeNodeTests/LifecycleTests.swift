@@ -4,8 +4,7 @@ import XCTest
 @testable import Ivy
 import UInt256
 import cashew
-import Acorn
-import AcornDiskWorker
+import VolumeBroker
 import ArrayTrie
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -299,65 +298,6 @@ final class LifecycleTests: XCTestCase {
         await node2.stop()
     }
 
-    // MARK: - DiskCASWorker Restart Scan
-
-    /// Write CIDv1 files to disk, restart DiskCASWorker, verify they're found by bloom filter.
-    func testDiskCASWorkerScansFindsCIDv1Files() async throws {
-        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: tmpDir) }
-
-        let fs = DefaultFileSystem()
-
-        // First worker: store some data
-        let worker1 = try DiskCASWorker(directory: tmpDir, capacity: 1000, fileSystem: fs)
-        let testData = "hello world".data(using: .utf8)!
-        let cid = ContentIdentifier(for: testData)
-        await worker1.storeLocal(cid: cid, data: testData)
-        let hasBeforePersist = await worker1.has(cid: cid)
-        XCTAssertTrue(hasBeforePersist, "Should find data in first worker")
-
-        // Do NOT persist .bloom/.sizes — simulating ungraceful shutdown
-
-        // Second worker: boot from same directory, relies on scan
-        let worker2 = try DiskCASWorker(directory: tmpDir, capacity: 1000, fileSystem: fs)
-        let hasAfterRestart = await worker2.has(cid: cid)
-        XCTAssertTrue(hasAfterRestart, "Scan should find CIDv1 file after restart without .bloom/.sizes")
-
-        let retrieved = await worker2.getLocal(cid: cid)
-        XCTAssertEqual(retrieved, testData, "Data should be readable after restart")
-    }
-
-    // MARK: - DiskCASWorker Persist/Restore
-
-    /// Persist .bloom/.sizes, restart, verify fast path loads correctly.
-    func testDiskCASWorkerPersistAndRestore() async throws {
-        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: tmpDir) }
-
-        let fs = DefaultFileSystem()
-
-        let worker1 = try DiskCASWorker(directory: tmpDir, capacity: 1000, fileSystem: fs)
-        let testData = "persist test".data(using: .utf8)!
-        let cid = ContentIdentifier(for: testData)
-        await worker1.storeLocal(cid: cid, data: testData)
-
-        // Persist state (simulating graceful shutdown)
-        try await worker1.persistState()
-        XCTAssertTrue(FileManager.default.fileExists(atPath: tmpDir.appendingPathComponent(".bloom").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: tmpDir.appendingPathComponent(".sizes").path))
-
-        // Restart — should use fast path (load .bloom/.sizes)
-        let worker2 = try DiskCASWorker(directory: tmpDir, capacity: 1000, fileSystem: fs)
-        let has = await worker2.has(cid: cid)
-        XCTAssertTrue(has, "Should find data via persisted bloom filter")
-
-        let retrieved = await worker2.getLocal(cid: cid)
-        XCTAssertEqual(retrieved, testData)
-
-        let bytes = await worker2.totalBytes
-        XCTAssertGreaterThan(bytes, 0, "totalBytes should be restored from .sizes")
-    }
-
     // MARK: - Block Transaction Dict Keys vs CIDs
 
     /// Directly verify that receipt indexing uses rawCID, not the dict key,
@@ -472,6 +412,18 @@ final class LifecycleTests: XCTestCase {
         XCTAssertGreaterThan(heightAfterFirstRun, 0)
         await node1.stop()
 
+        // Debug: check SQLite contents
+        // Debug: check SQLite contents after stop
+        do {
+            let dbPath = storagePath.appendingPathComponent("Nexus/volumes.sqlite").path
+            let broker = try DiskBroker(path: dbPath)
+            let tipCID = await node1.lattice.nexus.chain.getMainChainTip()
+            let hasTip = await broker.hasVolume(root: tipCID)
+            print("[DEBUG] After node1 stop: dbPath=\(dbPath) hasTip=\(hasTip) tip=\(String(tipCID.prefix(16)))…")
+        } catch {
+            print("[DEBUG] Failed to open SQLite: \(error)")
+        }
+
         // Second run: verify state preserved AND mine more blocks
         let p2 = nextTestPort()
         let config2 = LatticeNodeConfig(
@@ -524,7 +476,7 @@ final class LifecycleTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(actualHeight, persistedHeight + 2)
 
         // Simulate ungraceful shutdown: do NOT call stop().
-        // CAS files are already on disk (DiskCASWorker writes immediately).
+        // CAS data is already persisted (broker writes immediately).
         // chain_state.json is stale (persisted at height 1, now at height 3).
         // SQLite state.db is crash-safe and has the real tip.
 
@@ -573,27 +525,19 @@ final class LifecycleTests: XCTestCase {
         try await node1.start()
         try await mineBlocks(2, on: node1)
 
-        // Verify account pins exist
-        let network1 = await node1.network(for: "Nexus")!
-        let accountPinCount1 = await network1.protectionPolicy.accountPinnedCount
-        XCTAssertGreaterThan(accountPinCount1, 0, "Should have account pins after mining")
-
         // Verify tx_history has entries for our address
         let store1 = await node1.stateStore(for: "Nexus")!
         let history = store1.getAllTransactionCIDs(address: nodeAddress)
         XCTAssertGreaterThan(history.count, 0, "tx_history should contain our coinbase transactions")
         guard !history.isEmpty else { return }
 
-        // Verify the block hash from tx_history is account-pinned
         let firstEntry = history[0]
-        let isPinned = await network1.protectionPolicy.isAccountPinned(firstEntry.blockHash)
-        XCTAssertTrue(isPinned, "Block containing our tx should be account-pinned")
-        let isTxPinned = await network1.protectionPolicy.isAccountPinned(firstEntry.txCID)
-        XCTAssertTrue(isTxPinned, "Our transaction CID should be account-pinned")
+        XCTAssertFalse(firstEntry.blockHash.isEmpty, "Block hash should be recorded in tx_history")
+        XCTAssertFalse(firstEntry.txCID.isEmpty, "Transaction CID should be recorded in tx_history")
 
         await node1.stop()
 
-        // Second run: account pins should be rebuilt from tx_history
+        // Second run: tx_history should survive restart
         let p2 = nextTestPort()
         let config2 = LatticeNodeConfig(
             publicKey: kp.publicKey, privateKey: kp.privateKey,
@@ -603,13 +547,9 @@ final class LifecycleTests: XCTestCase {
         let node2 = try await LatticeNode(config: config2, genesisConfig: genesis)
         try await node2.start()
 
-        let network2 = await node2.network(for: "Nexus")!
-        let accountPinCount2 = await network2.protectionPolicy.accountPinnedCount
-        XCTAssertGreaterThanOrEqual(accountPinCount2, history.count * 2, "Should rebuild account pins from tx_history (txCID + blockHash per entry)")
-
-        // Verify specific CIDs are pinned after restart
-        let isPinnedAfterRestart = await network2.protectionPolicy.isAccountPinned(firstEntry.blockHash)
-        XCTAssertTrue(isPinnedAfterRestart, "Account pin should survive restart")
+        let store2 = await node2.stateStore(for: "Nexus")!
+        let historyAfterRestart = store2.getAllTransactionCIDs(address: nodeAddress)
+        XCTAssertEqual(historyAfterRestart.count, history.count, "tx_history should survive restart")
 
         await node2.stop()
     }
@@ -1240,9 +1180,10 @@ final class LifecycleTests: XCTestCase {
         guard let childNet = await node.network(for: "Child") else {
             XCTFail("Child network not registered"); throw CancellationError()
         }
-        let storer = BufferedStorer()
+        let disk = await childNet.diskBroker
+        let storer = BrokerStorer(broker: disk)
         try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: storer)
-        await storer.flush(to: childNet)
+        try await storer.flush()
 
         // Apply child genesis block state (premine balances, receipts) to the child StateStore.
         // Genesis is never embedded in a nexus block, so applyChildBlockStates won't cover it.
@@ -1266,7 +1207,7 @@ final class LifecycleTests: XCTestCase {
     func testChildChainInfoAndBlocks() async throws {
         let minerKp = CryptoUtils.generateKeyPair()
         let demanderKp = CryptoUtils.generateKeyPair()
-        let env = try await bootCrossChainNode(minerKp: minerKp, demanderKp: demanderKp)
+        let env = try await bootCrossChainNode(minerKp: minerKp, demanderKp: demanderKp, blockCount: 3)
         defer { env.rpcTask.cancel(); Task { await env.node.stop(); try? FileManager.default.removeItem(at: env.tmpDir) } }
         let base = "http://127.0.0.1:\(env.rpcPort)/api"
 
@@ -1543,5 +1484,118 @@ final class LifecycleTests: XCTestCase {
         let withdrawalDelta = (depositAmount - 1)
         XCTAssertGreaterThanOrEqual(postBal - preBal, withdrawalDelta,
             "Withdrawer balance should have grown by at least deposit amount minus fee on child")
+    }
+
+    func testGenesisStatePersistsToDiskBroker() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+
+        let genesis = testGenesis()
+        let fetcher = cas()
+        let genesisBlock = try await BlockBuilder.buildGenesis(
+            spec: genesis.spec, timestamp: genesis.timestamp, difficulty: genesis.difficulty, fetcher: fetcher
+        )
+
+        let dbPath = tmp.appendingPathComponent("test.sqlite").path
+        let disk1 = try DiskBroker(path: dbPath)
+        let storer = BrokerStorer(broker: disk1)
+        let header = VolumeImpl<Block>(node: genesisBlock)
+        try header.storeRecursively(storer: storer)
+        try await storer.flush()
+
+        // Verify the block itself
+        let hasBlock = await disk1.hasVolume(root: header.rawCID)
+        XCTAssertTrue(hasBlock, "Block should be stored as volume root")
+
+        // Verify frontier
+        let hasFrontier = await disk1.hasVolume(root: genesisBlock.frontier.rawCID)
+        XCTAssertTrue(hasFrontier, "Frontier should be stored as volume root")
+
+        // Verify accountState
+        let acctCID = genesisBlock.frontier.node!.accountState.rawCID
+        let hasAcct = await disk1.hasVolume(root: acctCID)
+        XCTAssertTrue(hasAcct, "AccountState should be stored as volume root")
+
+        // Open a NEW DiskBroker on the same file
+        let disk2 = try DiskBroker(path: dbPath)
+        let hasFrontier2 = await disk2.hasVolume(root: genesisBlock.frontier.rawCID)
+        XCTAssertTrue(hasFrontier2, "Frontier should persist in new DiskBroker")
+
+        // Try to resolve the frontier via IvyFetcher backed by disk2
+        let memory = MemoryBroker()
+        await memory.setNear(disk2)
+        let testIvy = Ivy(config: IvyConfig(publicKey: kp.publicKey, listenPort: 0, bootstrapPeers: [], enableLocalDiscovery: false, stunServers: []))
+        let ivyFetcher = IvyFetcher(ivy: testIvy, broker: memory)
+
+        let frontierStub = genesisBlock.frontier
+        let strippedFrontier = VolumeImpl<LatticeState>(rawCID: frontierStub.rawCID, node: nil, encryptionInfo: nil)
+        let resolved = try? await strippedFrontier.resolve(fetcher: ivyFetcher)
+        XCTAssertNotNil(resolved?.node, "Frontier should resolve from DiskBroker after restart")
+    }
+
+    func testMinedBlockStatePersistsToDiskBroker() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let minerAddr = addr(kp.publicKey)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+
+        let spec = testSpec()
+        let genesis = testGenesis(spec: spec)
+        let dbPath = tmp.appendingPathComponent("test.sqlite").path
+        let disk = try DiskBroker(path: dbPath)
+
+        // Store genesis
+        let fetcher = cas()
+        let genesisBlock = try await BlockBuilder.buildGenesis(
+            spec: spec, timestamp: genesis.timestamp, difficulty: genesis.difficulty, fetcher: fetcher
+        )
+        let genesisStorer = BrokerStorer(broker: disk)
+        try VolumeImpl<Block>(node: genesisBlock).storeRecursively(storer: genesisStorer)
+        try await genesisStorer.flush()
+
+        // Build and store block 1 (coinbase for miner)
+        let coinbase = TransactionBody(
+            accountActions: [AccountAction(owner: minerAddr, delta: Int64(spec.rewardAtBlock(0)))],
+            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            receiptActions: [], withdrawalActions: [],
+            signers: [minerAddr], fee: 0, nonce: 0
+        )
+        let block1 = try await BlockBuilder.buildBlock(
+            previous: genesisBlock, transactions: [sign(coinbase, kp)],
+            timestamp: genesis.timestamp + 1000, difficulty: UInt256.max, fetcher: fetcher
+        )
+        let block1Storer = BrokerStorer(broker: disk)
+        try VolumeImpl<Block>(node: block1).storeRecursively(storer: block1Storer)
+        try await block1Storer.flush()
+
+        // Now open a fresh DiskBroker and try to resolve block1's frontier accountState
+        let disk2 = try DiskBroker(path: dbPath)
+        let memory = MemoryBroker()
+        await memory.setNear(disk2)
+        let testIvy = Ivy(config: IvyConfig(publicKey: kp.publicKey, listenPort: 0, bootstrapPeers: [], enableLocalDiscovery: false, stunServers: []))
+        let ivyFetcher = IvyFetcher(ivy: testIvy, broker: memory)
+
+        // Resolve block1
+        let block1Stub = VolumeImpl<Block>(rawCID: VolumeImpl<Block>(node: block1).rawCID, node: nil, encryptionInfo: nil)
+        let resolvedBlock = try await block1Stub.resolve(fetcher: ivyFetcher)
+        XCTAssertNotNil(resolvedBlock.node, "Block 1 should resolve")
+
+        // Resolve frontier
+        let frontierStub = VolumeImpl<LatticeState>(rawCID: block1.frontier.rawCID, node: nil, encryptionInfo: nil)
+        let resolvedFrontier = try await frontierStub.resolve(fetcher: ivyFetcher)
+        XCTAssertNotNil(resolvedFrontier.node, "Block 1 frontier should resolve")
+
+        // Resolve accountState with targeted path for miner address
+        let acctStub = resolvedFrontier.node!.accountState
+        let resolvedAcct = try await acctStub.resolve(
+            paths: [[minerAddr]: .targeted],
+            fetcher: ivyFetcher
+        )
+        XCTAssertNotNil(resolvedAcct.node, "AccountState should resolve")
+        let balance: UInt64? = try? resolvedAcct.node?.get(key: minerAddr)
+        XCTAssertEqual(balance, spec.rewardAtBlock(0), "Miner should have coinbase balance")
     }
 }

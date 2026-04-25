@@ -1,9 +1,7 @@
 import Lattice
 import Foundation
 import Ivy
-import Acorn
-import AcornDiskWorker
-import AcornMemoryWorker
+import VolumeBroker
 import Tally
 import cashew
 import UInt256
@@ -16,16 +14,15 @@ public protocol ChainNetworkDelegate: AnyObject, Sendable {
     func chainNetwork(_ network: ChainNetwork, didConnectPeer peer: PeerID) async
 }
 
-public actor ChainNetwork: IvyDelegate {
+public actor ChainNetwork: IvyDelegate, IvyDataSource {
     public let directory: String
     public let ivy: Ivy
     public let ivyFetcher: IvyFetcher
     public let nodeMempool: NodeMempool
-    /// Shared node-level content-addressed store (one LRU across all chains).
-    /// Owned by LatticeNode; every ChainNetwork references the same instance.
-    public let sharedStore: ProfitWeightedStore
-    public let protectionPolicy: BlockchainProtectionPolicy
-    let localCAS: any AcornCASWorker
+    /// Per-chain broker cascade: MemoryBroker -> DiskBroker -> IvyBroker (shared)
+    public let broker: any VolumeBroker
+    /// Direct reference to the per-chain DiskBroker for durable writes.
+    public let diskBroker: DiskBroker
     private let resources: NodeResourceConfig
     public weak var delegate: ChainNetworkDelegate?
     private var subscribedChains: Set<String>
@@ -33,46 +30,31 @@ public actor ChainNetwork: IvyDelegate {
     private static let maxRecentTxCIDs = 8192
     private static let txDeduplicationWindow: Duration = .seconds(60)
 
-    /// CIDs known to be in CAS from the most recent block stores on this chain.
-    /// Used as a skipSet for BufferedStorer so structurally-shared merkle nodes
-    /// don't get re-serialized and re-batched on every block. Bounded so it
-    /// can't grow without limit across a long mining session.
-    private var lastStoredCIDs: Set<String> = []
-    private static let maxLastStoredCIDs = 200_000
-
     public init(
         directory: String,
         config: IvyConfig,
         resources: NodeResourceConfig = .default,
         chainCount: Int = 1,
         maxPeerConnections: Int = BootstrapPeers.maxPeerConnections,
-        sharedStore: ProfitWeightedStore,
-        protectionPolicy: BlockchainProtectionPolicy
+        sharedDiskBroker: DiskBroker,
+        ivyBroker: IvyBroker? = nil
     ) async throws {
         self.directory = directory
         self.subscribedChains = Set([directory])
         self.resources = resources
-        self.sharedStore = sharedStore
-        self.protectionPolicy = protectionPolicy
         let mempoolSize = resources.mempoolSizePerChain(chainCount: chainCount)
         self.nodeMempool = NodeMempool(maxSize: mempoolSize)
 
+        self.diskBroker = sharedDiskBroker
+
         let memoryBytes = resources.memoryBytesPerChain(chainCount: chainCount)
         let memoryEntries = max(memoryBytes / 4096, 100)
-        let memory = MemoryCASWorker(
-            capacity: memoryEntries,
-            maxBytes: memoryBytes
-        )
-
-        // Local CAS: per-chain memory cache in front of the shared node-level store.
-        // Reads consult memory first, then the shared LRU-backed disk. Ivy can serve
-        // from either — every subscribed chain's protection policy contributes to
-        // what stays resident in the shared store.
-        let local = await CompositeCASWorker(
-            workers: ["mem": memory, "shared": sharedStore],
-            order: ["mem", "shared"]
-        )
-        self.localCAS = local
+        let memory = MemoryBroker(capacity: memoryEntries)
+        await memory.setNear(sharedDiskBroker)
+        if let ivyBroker {
+            await sharedDiskBroker.setFar(ivyBroker as any VolumeBroker)
+        }
+        self.broker = memory
 
         let tallyWithMaxPeers = TallyConfig(maxPeers: maxPeerConnections)
         let ivyConfig = IvyConfig(
@@ -93,23 +75,34 @@ public actor ChainNetwork: IvyDelegate {
         )
         let ivy = Ivy(config: ivyConfig)
 
-        // Connect Ivy's internal worker to the local CAS so it can serve
-        // sub-node data (state trie entries, tx bodies, radix nodes) to
-        // remote peers via fee-based dhtForward.
-        let ivyWorker = await ivy.worker()
-        await ivyWorker.setNear(local)
-
         self.ivy = ivy
-        self.ivyFetcher = IvyFetcher(ivy: ivy, localWorker: local)
+        self.ivyFetcher = IvyFetcher(ivy: ivy, broker: memory)
     }
 
     public func start() async throws {
         await ivy.setDelegate(self)
+        await ivy.setDataSource(self)
         try await ivy.start()
     }
 
     public func stop() async {
         await ivy.stop()
+    }
+
+    // MARK: - IvyDataSource
+
+    nonisolated public func data(for cid: String) async -> Data? {
+        if let payload = await diskBroker.fetchVolumeLocal(root: cid) {
+            return payload.entries[cid]
+        }
+        return nil
+    }
+
+    nonisolated public func volumeData(for rootCID: String, cids: [String]) async -> [(cid: String, data: Data)] {
+        guard let payload = await diskBroker.fetchVolumeLocal(root: rootCID) else { return [] }
+        return cids.compactMap { cid in
+            payload.entries[cid].map { (cid: cid, data: $0) }
+        }
     }
 
     // MARK: - Fetcher (unified read path)
@@ -122,74 +115,40 @@ public actor ChainNetwork: IvyDelegate {
 
     /// Store data locally and publish to the network via Ivy.
     public func storeAndPublish(cid: String, data: Data) async {
-        await protectionPolicy.pin(cid)
-        await sharedStore.storeVerified(cid: ContentIdentifier(rawValue: cid), data: data)
-        await ivy.save(cid: cid, data: data, pin: true)
+        let payload = VolumePayload(root: cid, entries: [cid: data])
+        try? await diskBroker.storeVolumeLocal(payload)
+        try? await diskBroker.pin(root: cid, owner: directory)
     }
 
     /// Store data locally only (no network publish).
     public func storeLocally(cid: String, data: Data) async {
-        let contentId = ContentIdentifier(rawValue: cid)
-        await localCAS.store(cid: contentId, data: data)
+        let payload = VolumePayload(root: cid, entries: [cid: data])
+        try? await diskBroker.storeVolumeLocal(payload)
     }
 
     public func storeBatch(_ entries: [(String, Data)]) async {
         guard !entries.isEmpty else { return }
-        let mapped: [(ContentIdentifier, Data)] = entries.map {
-            (ContentIdentifier(rawValue: $0.0), $0.1)
+        for (cid, data) in entries {
+            let payload = VolumePayload(root: cid, entries: [cid: data])
+            try? await diskBroker.storeVolumeLocal(payload)
         }
-        await localCAS.storeLocalBatch(mapped)
     }
 
-    /// Store a batch that comprises a single Volume's merkle subtree and
-    /// register its members with the shared store so volume-granularity
-    /// eviction can pick the whole group as a unit. The chain directory is
-    /// passed as the volume owner so the shared CAS can bias eviction
-    /// against chains that exceed their per-owner quota (S4).
+    /// Store a batch that comprises a single Volume's merkle subtree.
     public func storeBlockBatch(rootCID: String, entries: [(String, Data)]) async {
-        await storeBatch(entries)
         guard !rootCID.isEmpty else { return }
-        let memberCIDs = entries.map(\.0)
-        await sharedStore.registerVolume(rootCID: rootCID, childCIDs: memberCIDs, owner: directory)
-    }
-
-    /// Register a block's root as a volume anchor without walking or writing
-    /// any bytes. Used by the child-block fast path where the subtree has
-    /// already landed in the shared CAS via the parent's recursive pass.
-    public func registerBlockVolume(rootCID: String) async {
-        guard !rootCID.isEmpty else { return }
-        await sharedStore.registerVolume(rootCID: rootCID, childCIDs: [], owner: directory)
-        lastStoredCIDs.insert(rootCID)
-        if lastStoredCIDs.count > Self.maxLastStoredCIDs {
-            lastStoredCIDs.removeFirst()
+        var dict: [String: Data] = [:]
+        dict.reserveCapacity(entries.count)
+        for (cid, data) in entries {
+            dict[cid] = data
         }
+        let payload = VolumePayload(root: rootCID, entries: dict)
+        try? await diskBroker.storeVolumeLocal(payload)
     }
 
-    /// True iff the shared CAS already has bytes for `cid`. Used to pick the
-    /// storeBlockRecursively fast path when a child block's subtree was
-    /// already persisted by the parent's walk.
+    /// True iff the disk broker already has bytes for `cid`.
     public func hasCID(_ cid: String) async -> Bool {
-        await sharedStore.has(cid: ContentIdentifier(rawValue: cid))
-    }
-
-    /// Snapshot the set of CIDs known to be resident in CAS from recent stores.
-    /// Callers pass this into BufferedStorer so the merkle walk short-circuits
-    /// on already-written subtrees instead of re-serializing them.
-    public func snapshotLastStoredCIDs() -> Set<String> {
-        lastStoredCIDs
-    }
-
-    /// Update the last-stored set after a successful block walk + batch store.
-    /// Capped so a long-running miner can't grow this set without bound.
-    public func updateLastStoredCIDs(_ cids: Set<String>) {
-        if cids.count >= Self.maxLastStoredCIDs {
-            // The new walk alone exceeds the cap — keep only the new set,
-            // trimmed. We don't care which subset we keep since the next block
-            // will refill it from its own walk.
-            lastStoredCIDs = Set(cids.prefix(Self.maxLastStoredCIDs))
-            return
-        }
-        lastStoredCIDs = cids
+        await diskBroker.hasVolume(root: cid)
     }
 
     // MARK: - Block Operations (backward compat aliases)
@@ -197,19 +156,23 @@ public actor ChainNetwork: IvyDelegate {
     public func publishBlock(cid: String, data: Data) async {
         await storeAndPublish(cid: cid, data: data)
 
-        // Announce Volume sub-tree roots so peers can discover and fetch sub-trees independently.
-        // Light clients query state CIDs, not block CIDs — they need to find pinners for state.
+        // Gossip block with inline data via topic so receivers don't need a round-trip fetch.
+        var payload = Data()
+        let cidBytes = Data(cid.utf8)
+        var cidLen = UInt16(cidBytes.count).littleEndian
+        payload.append(Data(bytes: &cidLen, count: 2))
+        payload.append(cidBytes)
+        payload.append(data)
+        await ivy.broadcastMessage(topic: "newBlock", payload: payload)
+
         if let block = Block(data: data) {
             await announceVolumeBoundaries(block: block)
         }
     }
 
-    /// Publish a pin announce AND record the expiry with our local protection policy.
-    /// This is the only pathway that should ever announce — routing through here
-    /// guarantees the eviction policy respects our announced retention window.
+    /// Publish a pin announce via Ivy and record the CID with the disk broker.
     public func announce(cid: String, selector: String, expiry: UInt64, fee: UInt64) async {
         guard !cid.isEmpty else { return }
-        await protectionPolicy.recordAnnounce(cid: cid, expirySecsSinceEpoch: expiry)
         await ivy.publishPinAnnounce(rootCID: cid, selector: selector, expiry: expiry, signature: Data(), fee: fee)
     }
 
@@ -277,14 +240,12 @@ public actor ChainNetwork: IvyDelegate {
 
     // MARK: - Chain Tip Management
 
-    /// Register the tip of this chain for eviction protection.
-    /// `stateRoots` should contain the Volume boundaries that must remain resolvable
-    /// to answer queries at this tip (frontier, homestead, tx, childBlocks).
-    /// The tip block itself is added to both the state-root set (permanent while
-    /// subscribed) and the recent-blocks set (TTL-protected for reorg safety).
+    /// Register the tip of this chain for pin protection via the disk broker.
     public func setChainTip(tipCID: String, stateRoots: [String]) async {
-        await protectionPolicy.setStateRoots(chain: directory, roots: stateRoots + [tipCID])
-        await protectionPolicy.addRecentBlock(tipCID)
+        let allRoots = stateRoots + [tipCID]
+        for root in allRoots where !root.isEmpty {
+            try? await diskBroker.pin(root: root, owner: directory)
+        }
     }
 
     // MARK: - Chain Subscription
@@ -321,51 +282,6 @@ public actor ChainNetwork: IvyDelegate {
 
     public func allMempoolTransactions() async -> [Transaction] {
         await nodeMempool.allTransactions()
-    }
-
-    // MARK: - Storage Advertising
-
-    /// Available storage capacity: unused headroom in the shared node-level disk budget.
-    /// Per-chain protection pins occupy space; evictable LRU entries count as free.
-    public var availableStorageCapacity: Int {
-        get async {
-            let total = resources.totalDiskBytes()
-            let used = await sharedStore.entryCount * 4096  // ~4KB avg entry size
-            return Swift.max(total - used, 0)
-        }
-    }
-
-    /// Broadcast available storage capacity so peers discover us as a pinner.
-    public func advertiseStorage() async {
-        let capacity = await availableStorageCapacity
-        guard capacity > 0 else { return }
-        var payload = Data()
-        var cap = UInt32(min(capacity, Int(UInt32.max)))
-        payload.append(Data(bytes: &cap, count: 4))
-        await ivy.broadcastMessage(topic: "storage", payload: payload)
-    }
-
-    /// Accept a remote pin request: fetch the CID, store it in the shared store,
-    /// pin it via this chain's protection policy, and announce.
-    /// Earning pins ride on the same LRU as blockchain data — they compete on merit;
-    /// unpinned / unprofitable entries age out naturally.
-    private func handlePinRequest(cid: String, from peer: PeerID) async {
-        let cidObj = ContentIdentifier(rawValue: cid)
-        if await localCAS.has(cid: cidObj) {
-            let fee = await ivy.config.relayFee * 2
-            let expiry = UInt64(Date().timeIntervalSince1970) + 86400
-            await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
-            return
-        }
-
-        guard let data = await ivy.get(cid: cid, target: peer) else { return }
-
-        await protectionPolicy.pin(cid)
-        await sharedStore.storeVerified(cid: cidObj, data: data)
-
-        let fee = await ivy.config.relayFee * 2
-        let expiry = UInt64(Date().timeIntervalSince1970) + 86400
-        await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
     }
 
     // MARK: - Chain Announce (Tip Exchange)
@@ -449,7 +365,18 @@ public actor ChainNetwork: IvyDelegate {
     private func handlePeerMessage(topic: String, payload: Data, from peer: PeerID) async {
         switch topic {
         case "newBlock":
-            if let cid = String(data: payload, encoding: .utf8) {
+            if payload.count > 2 {
+                let cidLen = Int(payload[0]) | (Int(payload[1]) << 8)
+                if payload.count >= 2 + cidLen + 1,
+                   let cid = String(data: payload[2..<(2 + cidLen)], encoding: .utf8) {
+                    let blockData = payload[(2 + cidLen)...]
+                    if blockData.isEmpty {
+                        await delegate?.chainNetwork(self, didReceiveBlockAnnouncement: cid, from: peer)
+                    } else {
+                        await delegate?.chainNetwork(self, didReceiveBlock: cid, data: Data(blockData), from: peer)
+                    }
+                }
+            } else if let cid = String(data: payload, encoding: .utf8) {
                 await delegate?.chainNetwork(self, didReceiveBlockAnnouncement: cid, from: peer)
             }
         case "mempool-full":
@@ -507,10 +434,46 @@ public actor ChainNetwork: IvyDelegate {
         }
     }
 
+    /// Accept a remote pin request: fetch the CID, store it, pin it, and announce.
+    private func handlePinRequest(cid: String, from peer: PeerID) async {
+        if await diskBroker.hasVolume(root: cid) {
+            let fee = await ivy.config.relayFee * 2
+            let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+            await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
+            return
+        }
+
+        guard let data = await ivy.get(cid: cid, target: peer) else { return }
+
+        let payload = VolumePayload(root: cid, entries: [cid: data])
+        try? await diskBroker.storeVolumeLocal(payload)
+        try? await diskBroker.pin(root: cid, owner: directory)
+
+        let fee = await ivy.config.relayFee * 2
+        let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+        await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
+    }
+
 }
 
 extension Ivy {
     func setDelegate(_ delegate: IvyDelegate) {
         self.delegate = delegate
+    }
+
+    func setDataSource(_ ds: IvyDataSource) {
+        self.dataSource = ds
+    }
+}
+
+extension MemoryBroker {
+    func setNear(_ broker: any VolumeBroker) {
+        self.near = broker
+    }
+}
+
+extension DiskBroker {
+    func setFar(_ broker: any VolumeBroker) {
+        self.far = broker
     }
 }

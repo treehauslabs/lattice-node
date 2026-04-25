@@ -2,9 +2,13 @@ import Foundation
 import cashew
 import ArrayTrie
 import Ivy
-import Acorn
+import VolumeBroker
 import Tally
 import OrderedCollections
+
+public enum FetcherError: Error {
+    case notFound(String)
+}
 
 /// A VolumeAwareFetcher that bridges Cashew's resolution system to Ivy's
 /// fee-based retrieval protocol.
@@ -13,12 +17,13 @@ import OrderedCollections
 /// discovers pinners for that Volume via Ivy's DHT. Subsequent `fetch()` calls
 /// route toward the discovered pinner for that subtree.
 ///
-/// Falls back to the local composite CAS (memory + disk) before hitting the network.
+/// Falls back to the broker cascade (memory -> disk -> network) before hitting the DHT.
 public actor IvyFetcher: VolumeAwareFetcher {
     private let ivy: Ivy
-    private let localWorker: any AcornCASWorker
+    private let broker: any VolumeBroker
+    private var cache: [String: Data] = [:]
 
-    /// Maps rootCID → discovered pinner for targeted retrieval.
+    /// Maps rootCID -> discovered pinner for targeted retrieval.
     /// OrderedDictionary maintains insertion order for LRU eviction.
     private var volumePinners: OrderedDictionary<String, PeerID> = [:]
     private let maxPinnerCacheSize = 512
@@ -34,9 +39,9 @@ public actor IvyFetcher: VolumeAwareFetcher {
     /// extra round-trip to a connected node that almost certainly has the data.
     private var recentPinner: PeerID?
 
-    public init(ivy: Ivy, localWorker: any AcornCASWorker) {
+    public init(ivy: Ivy, broker: any VolumeBroker) {
         self.ivy = ivy
-        self.localWorker = localWorker
+        self.broker = broker
     }
 
     private func touchPinnerCache(_ key: String) {
@@ -69,38 +74,37 @@ public actor IvyFetcher: VolumeAwareFetcher {
     // MARK: - Fetcher
 
     public func fetch(rawCid: String) async throws -> Data {
-        // 1. Check local storage (memory + node-level shared CAS; merged-mining child
-        //    state written by the nexus miner lives in the same store).
-        let cid = ContentIdentifier(rawValue: rawCid)
-        if let data = await localWorker.get(cid: cid) {
-            return data
+        if let data = cache[rawCid] { return data }
+
+        // 1. Check broker cascade (memory -> disk -> ivy network)
+        if let payload = await broker.fetchVolume(root: rawCid) {
+            for (cid, data) in payload.entries { cache[cid] = data }
+            if let data = payload.entries[rawCid] { return data }
         }
 
         let volumePinner = activeVolumeRoot.flatMap { volumePinners[$0] }
         let pinner = volumePinner ?? recentPinner
 
         // 2. Route directly to a known pinner (one hop) via the fee-less direct
-        //    path — gossip follow-up, not a cold DHT query. Prefer the active
-        //    volume's specific pinner; fall back to `recentPinner` (the most
-        //    recent peer bound for any volume) so sub-volumes encountered mid
-        //    block-resolution still hop to the announcing peer instead of
-        //    waiting 15s on DHT discovery. The fee path's debtPressure throttle
-        //    would otherwise drop these requests once our balance with the
-        //    announcing peer exceeded the (tiny) initial credit-line threshold.
+        //    path — gossip follow-up, not a cold DHT query.
         if let pinner = pinner {
             if let root = activeVolumeRoot, volumePinner != nil { touchPinnerCache(root) }
             if let data = await ivy.getDirect(cid: rawCid, from: pinner) {
-                await localWorker.store(cid: cid, data: data)
+                // Store back into broker cascade for future reads
+                let payload = VolumePayload(root: rawCid, entries: [rawCid: data])
+                try? await broker.storeVolumeLocal(payload)
                 return data
             }
         }
 
         // 3. Fall back to untargeted DHT walk
         if let data = await ivy.get(cid: rawCid) {
-            await localWorker.store(cid: cid, data: data)
+            let payload = VolumePayload(root: rawCid, entries: [rawCid: data])
+            try? await broker.storeVolumeLocal(payload)
             return data
         }
 
+        NodeLogger("fetcher").error("notFound: \(String(rawCid.prefix(20)))… activeVolume=\(activeVolumeRoot?.prefix(20) ?? "nil") cacheSize=\(cache.count)")
         throw FetcherError.notFound(rawCid)
     }
 
@@ -112,7 +116,11 @@ public actor IvyFetcher: VolumeAwareFetcher {
     public func provide(rootCID: String, paths: ArrayTrie<ResolutionStrategy>) async throws {
         activeVolumeRoot = rootCID
 
-        // Use cached pinner if we already know one
+        if let payload = await broker.fetchVolume(root: rootCID) {
+            for (cid, data) in payload.entries { cache[cid] = data }
+            return
+        }
+
         if volumePinners[rootCID] != nil {
             touchPinnerCache(rootCID)
             return
@@ -137,9 +145,9 @@ public actor IvyFetcher: VolumeAwareFetcher {
 
     /// Convert Cashew's ArrayTrie<ResolutionStrategy> into an Ivy selector string.
     /// Uses the top-level keys of the trie as the selector path. Examples:
-    ///   paths with single child "accountState" → "/accountState"
-    ///   paths with multiple children → "/" (needs everything)
-    ///   empty paths → "/"
+    ///   paths with single child "accountState" -> "/accountState"
+    ///   paths with multiple children -> "/" (needs everything)
+    ///   empty paths -> "/"
     static func selectorFromPaths(_ paths: ArrayTrie<ResolutionStrategy>) -> String {
         let topKeys = paths.childKeys()
         guard topKeys.count == 1, let key = topKeys.first else { return "/" }
@@ -179,12 +187,9 @@ public actor IvyFetcher: VolumeAwareFetcher {
 
     // MARK: - Store
 
-    /// Store data locally and optionally announce to the network.
+    /// Store data locally via the broker cascade.
     public func store(rawCid: String, data: Data, pin: Bool = false) async {
-        let cid = ContentIdentifier(rawValue: rawCid)
-        await localWorker.store(cid: cid, data: data)
-        if pin {
-            await ivy.save(cid: rawCid, data: data, pin: true)
-        }
+        let payload = VolumePayload(root: rawCid, entries: [rawCid: data])
+        try? await broker.storeVolumeLocal(payload)
     }
 }

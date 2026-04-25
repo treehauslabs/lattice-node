@@ -52,15 +52,23 @@ extension LatticeNode {
         return try await getAccount(address: address, directory: dir).balance
     }
 
-    public func getNonce(address: String, directory: String? = nil) async throws -> UInt64 {
+    public func getNextNonce(address: String, directory: String? = nil) async throws -> UInt64 {
         let dir = directory ?? genesisConfig.spec.directory
-        return try await getAccount(address: address, directory: dir).nonce
+        guard let tip = try await resolveTipFrontier(directory: dir) else { return 0 }
+        let nonceKey = AccountStateHeader.nonceTrackingKey(address)
+        let accountResolved = try await tip.state.accountState.resolve(
+            paths: [[nonceKey]: .targeted],
+            fetcher: tip.fetcher
+        )
+        guard let dict = accountResolved.node else { return 0 }
+        let stored: UInt64? = try? dict.get(key: nonceKey)
+        return stored.map { $0 + 1 } ?? 0
     }
 
-    /// Canonical account read: hits the tip's `accountState` Merkle tree.
-    /// Balance and nonce resolve in one call so both leaves come back on a
-    /// single round trip. FrontierCache memoizes the resolved top-level
-    /// `LatticeState` by CID to avoid redundant Merkle walks during bursts.
+    public func getNonce(address: String, directory: String? = nil) async throws -> UInt64 {
+        try await getNextNonce(address: address, directory: directory)
+    }
+
     public func getAccount(address: String, directory: String? = nil) async throws -> (balance: UInt64, nonce: UInt64) {
         let dir = directory ?? genesisConfig.spec.directory
         guard let tip = try await resolveTipFrontier(directory: dir) else { return (0, 0) }
@@ -71,7 +79,8 @@ extension LatticeNode {
         )
         guard let dict = accountResolved.node else { return (0, 0) }
         let balance: UInt64 = (try? dict.get(key: address)) ?? 0
-        let nonce: UInt64 = (try? dict.get(key: nonceKey)) ?? 0
+        let stored: UInt64? = try? dict.get(key: nonceKey)
+        let nonce = stored.map { $0 + 1 } ?? 0
         return (balance, nonce)
     }
 

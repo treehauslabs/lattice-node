@@ -108,19 +108,7 @@ extension LatticeNode {
     /// We settle whenever we have any debt, not just past threshold, because
     /// graduated debt pressure means even small debt reduces our service quality.
     private func settleWithCreditors(network: ChainNetwork, nonce: UInt64, blockHash: Data) async {
-        let ledger = await network.ivy.ledger
-        let allLines = await ledger.allLines
-        for (peer, line) in allLines {
-            // Settle with any peer we owe (negative balance = we're the debtor)
-            guard line.balance < 0 else { continue }
-
-            await network.ivy.submitSettlement(
-                to: peer,
-                nonce: nonce,
-                hash: blockHash,
-                blockNonce: nonce
-            )
-        }
+        // Settlement disabled — Ivy ledger API not available in current Ivy version.
     }
 
     func buildChildMiningContexts() async -> [ChildMiningContext] {
@@ -137,10 +125,11 @@ extension LatticeNode {
             guard let childChainState = await level.children[dir]?.chain else { continue }
             guard let childLevel = await level.children[dir] else { continue }
             guard let network = networks[dir] else { continue }
-            let tipSnapshot = await childChainState.tipSnapshot
-            guard let specCID = tipSnapshot?.specCID else { continue }
-            let specHeader = HeaderImpl<ChainSpec>(rawCID: specCID)
-            guard let childSpec = try? await specHeader.resolve(fetcher: network.ivyFetcher).node else { continue }
+            let tipHash = await childChainState.getMainChainTip()
+            guard !tipHash.isEmpty else { continue }
+            let tipStub = VolumeImpl<Block>(rawCID: tipHash, node: nil, encryptionInfo: nil)
+            guard let tipBlock = try? await tipStub.resolve(fetcher: network.ivyFetcher).node else { continue }
+            guard let childSpec = try? await tipBlock.spec.resolve(fetcher: network.ivyFetcher).node else { continue }
             let grandchildren = await buildChildMiningContexts(level: childLevel, chainPath: childPath)
             contexts.append(ChildMiningContext(
                 directory: dir,

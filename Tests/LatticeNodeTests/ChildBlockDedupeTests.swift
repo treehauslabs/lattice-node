@@ -45,38 +45,4 @@ final class ChildBlockDedupeTests: XCTestCase {
         XCTAssertFalse(hasBogus, "hasCID must not report presence for unknown CIDs")
     }
 
-    func testRegisterBlockVolumeIdempotent() async throws {
-        let kp = CryptoUtils.generateKeyPair()
-        let port = nextTestPort()
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: tmp) }
-
-        let genesis = testGenesis()
-        let config = LatticeNodeConfig(
-            publicKey: kp.publicKey, privateKey: kp.privateKey,
-            listenPort: port, storagePath: tmp,
-            enableLocalDiscovery: false
-        )
-        let node = try await LatticeNode(config: config, genesisConfig: genesis)
-        try await node.start()
-        defer { Task { await node.stop() } }
-
-        try await mineBlocks(1, on: node)
-        guard let network = await node.network(for: "Nexus"),
-              let chain = await node.chain(for: "Nexus") else {
-            XCTFail("nexus network missing"); return
-        }
-        let tipCID = await chain.getMainChainTip()
-
-        // Calling twice must not crash or corrupt bookkeeping — the fast
-        // path may re-register on gossip echo of a block we already saw.
-        await network.registerBlockVolume(rootCID: tipCID)
-        await network.registerBlockVolume(rootCID: tipCID)
-        let stillPresent = await network.hasCID(tipCID)
-        XCTAssertTrue(stillPresent, "re-registering must not evict live CAS bytes")
-
-        // Empty CID must be a no-op — guard against callers passing through
-        // an unfilled field (e.g. missing `childBlockHeader.rawCID`).
-        await network.registerBlockVolume(rootCID: "")
-    }
 }

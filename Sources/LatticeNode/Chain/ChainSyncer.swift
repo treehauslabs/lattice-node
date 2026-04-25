@@ -177,7 +177,7 @@ public actor ChainSyncer {
         if walk.cumulativeWork < localCumulativeWork { throw SyncError.insufficientWork }
 
         if let tip = walk.tipBlock {
-            let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher)) ?? false
+            let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher))?.0 ?? false
             if !valid {
                 let fullValid = try await verifyTipFrontier(tip)
                 if !fullValid { throw SyncError.invalidStateRoot(tip.index) }
@@ -211,7 +211,7 @@ public actor ChainSyncer {
         if walk.cumulativeWork < localCumulativeWork { throw SyncError.insufficientWork }
 
         if let tip = walk.tipBlock {
-            let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher)) ?? false
+            let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher))?.0 ?? false
             if !valid {
                 let fullValid = try await verifyTipFrontier(tip)
                 if !fullValid { throw SyncError.invalidStateRoot(tip.index) }
@@ -231,7 +231,7 @@ public actor ChainSyncer {
             return false
         }
         let bodies = txKeysAndValues.values.compactMap { $0.node?.body.node }
-        return try await block.validateFrontierState(transactionBodies: bodies, fetcher: fetcher)
+        return try await block.validateFrontierState(transactionBodies: bodies, fetcher: fetcher).0
     }
 
     // MARK: - Build Result

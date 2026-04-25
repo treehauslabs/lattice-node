@@ -1,6 +1,7 @@
 import Lattice
 import Foundation
 import cashew
+import VolumeBroker
 import UInt256
 
 extension LatticeNode {
@@ -125,8 +126,8 @@ extension LatticeNode {
             )
 
             if let tipHeader = headers.last {
-                let tipData = try await fetcher.fetch(rawCid: tipHeader.cid)
-                if let tipBlock = Block(data: tipData) {
+                let tipStub = VolumeImpl<Block>(rawCID: tipHeader.cid, node: nil, encryptionInfo: nil)
+                if let tipBlock = try? await tipStub.resolve(fetcher: fetcher).node {
                     let stateValid = await verifyTipStateRoot(tipBlock, fetcher: fetcher)
                     if !stateValid {
                         log.warn("Tip block state root verification failed, falling back to standard sync")
@@ -163,7 +164,7 @@ extension LatticeNode {
     private func verifyTipStateRoot(_ block: Block, fetcher: Fetcher) async -> Bool {
         let basicValid = (try? await block.validateFrontierState(
             transactionBodies: [], fetcher: fetcher
-        )) ?? false
+        ))?.0 ?? false
         if basicValid { return true }
 
         guard let transactionsNode = try? await block.transactions.resolveRecursive(fetcher: fetcher).node else {
@@ -173,7 +174,7 @@ extension LatticeNode {
             return false
         }
         let bodies = txKeysAndValues.values.compactMap { $0.node?.body.node }
-        return (try? await block.validateFrontierState(transactionBodies: bodies, fetcher: fetcher)) ?? false
+        return (try? await block.validateFrontierState(transactionBodies: bodies, fetcher: fetcher))?.0 ?? false
     }
 
     private func reprocessSyncedBlocksForChildChains(
@@ -182,13 +183,13 @@ extension LatticeNode {
         network: ChainNetwork
     ) async {
         for blockMeta in persisted.blocks {
-            guard let blockData = try? await fetcher.fetch(rawCid: blockMeta.blockHash),
-                  let block = Block(data: blockData) else { continue }
+            let stub = VolumeImpl<Block>(rawCID: blockMeta.blockHash, node: nil, encryptionInfo: nil)
+            guard let block = try? await stub.resolve(fetcher: fetcher).node else { continue }
             let header = VolumeImpl<Block>(node: block)
 
-            let storer = BufferedStorer()
+            let storer = BrokerStorer(broker: network.diskBroker)
             try? header.storeRecursively(storer: storer)
-            await network.storeBlockBatch(rootCID: header.rawCID, entries: storer.entryList)
+            try? await storer.flush()
 
             let _ = await lattice.processBlockHeader(header, fetcher: fetcher)
         }
@@ -205,14 +206,15 @@ extension LatticeNode {
             // StateStore is now only a local index for receipts/tx_history/block_index.
             // Account state lives in the AccountState tree; no replay needed for balances or nonces.
             let sortedBlocks = result.persisted.blocks.sorted { $0.blockIndex < $1.blockIndex }
-            if let tipMeta = sortedBlocks.last,
-               let tipData = try? await fetcher.fetch(rawCid: tipMeta.blockHash),
-               let tipBlock = Block(data: tipData) {
-                await store.setChainTip(
-                    hash: tipMeta.blockHash,
-                    height: tipBlock.index,
-                    stateRoot: tipBlock.frontier.rawCID
-                )
+            if let tipMeta = sortedBlocks.last {
+                let tipStub = VolumeImpl<Block>(rawCID: tipMeta.blockHash, node: nil, encryptionInfo: nil)
+                if let tipBlock = try? await tipStub.resolve(fetcher: fetcher).node {
+                    await store.setChainTip(
+                        hash: tipMeta.blockHash,
+                        height: tipBlock.index,
+                        stateRoot: tipBlock.frontier.rawCID
+                    )
+                }
             }
         }
 
@@ -228,8 +230,8 @@ extension LatticeNode {
             return
         }
 
-        if let data = try? await network.ivyFetcher.fetch(rawCid: tipCID),
-           let block = Block(data: data) {
+        let verifyStub = VolumeImpl<Block>(rawCID: tipCID, node: nil, encryptionInfo: nil)
+        if let block = try? await verifyStub.resolve(fetcher: network.ivyFetcher).node {
             let valid = block.index == tipHeight
             if valid {
                 log.info("Sync verified: tip at height \(tipHeight) with \(peerCount) connected peers")

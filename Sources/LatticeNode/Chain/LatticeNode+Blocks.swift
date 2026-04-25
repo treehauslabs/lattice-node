@@ -1,6 +1,7 @@
 import Lattice
 import Foundation
 import Ivy
+import VolumeBroker
 import Tally
 import cashew
 
@@ -47,18 +48,95 @@ extension LatticeNode {
 
     // MARK: - Recursive Block Storage
 
-    func storeBlockRecursively(_ block: Block, network: ChainNetwork) async {
+    func storeBlockRecursively(_ block: Block, network: ChainNetwork, directory: String? = nil, stateDiff: StateDiff = .empty) async {
+        let dir = directory ?? network.directory
         let header = VolumeImpl<Block>(node: block)
-        let skipSet = await network.snapshotLastStoredCIDs()
-        let storer = BufferedStorer(skipSet: skipSet)
+        let storer = BrokerStorer(broker: network.diskBroker)
         do {
             try header.storeRecursively(storer: storer)
+            try await storer.flush()
+
+            let owner = "\(dir):\(block.index)"
+            for root in storer.storedRoots {
+                try await network.diskBroker.pin(root: root, owner: owner)
+            }
+            if let store = stateStores[dir] {
+                await store.persistStoredRoots(height: block.index, roots: storer.storedRoots)
+                if !stateDiff.replaced.isEmpty {
+                    await store.persistReplacedRoots(height: block.index, roots: stateDiff.replaced)
+                }
+            }
+
+            try await pruneBlocks(block: block, directory: dir, network: network)
+            try await pruneState(block: block, directory: dir, network: network)
         } catch {
             let log = NodeLogger("blocks")
             log.error("Failed to store block recursively: \(error)")
         }
-        await network.storeBlockBatch(rootCID: header.rawCID, entries: storer.entryList)
-        await network.updateLastStoredCIDs(storer.touchedCIDs)
+    }
+
+    private func pruneBlocks(block: Block, directory: String, network: ChainNetwork) async throws {
+        switch config.blockRetention {
+        case .tip:
+            if block.index > 0 {
+                let prevOwner = "\(directory):\(block.index - 1)"
+                try await network.diskBroker.unpinAll(owner: prevOwner)
+            }
+
+        case .retention:
+            if block.index > config.retentionDepth {
+                let pruneHeight = block.index - config.retentionDepth
+                let pruneOwner = "\(directory):\(pruneHeight)"
+                try await network.diskBroker.unpinAll(owner: pruneOwner)
+                if let store = stateStores[directory] {
+                    await store.deleteStoredRoots(height: pruneHeight)
+                    await store.deleteReplacedRoots(height: pruneHeight)
+                }
+            }
+
+        case .historical:
+            if block.index > config.retentionDepth {
+                let pruneHeight = block.index - config.retentionDepth
+                guard let chain = await chain(for: directory) else { return }
+                guard let blockHash = stateStores[directory]?.getBlockHash(atHeight: pruneHeight) else { return }
+                let onMainChain = await chain.isOnMainChain(hash: blockHash)
+                if !onMainChain {
+                    let pruneOwner = "\(directory):\(pruneHeight)"
+                    try await network.diskBroker.unpinAll(owner: pruneOwner)
+                }
+            }
+        }
+    }
+
+    private func pruneState(block: Block, directory: String, network: ChainNetwork) async throws {
+        guard block.index > config.retentionDepth else { return }
+        let pruneHeight = block.index - config.retentionDepth
+        let pruneOwner = "\(directory):\(pruneHeight)"
+        guard let store = stateStores[directory] else { return }
+
+        switch config.storageMode {
+        case .stateful:
+            let replacedRoots = store.getReplacedRoots(height: pruneHeight)
+            for (root, count) in replacedRoots {
+                try await network.diskBroker.unpin(root: root, owner: pruneOwner, count: count)
+            }
+            await store.deleteReplacedRoots(height: pruneHeight)
+
+        case .historical:
+            guard let chain = await chain(for: directory) else { return }
+            guard let blockHash = store.getBlockHash(atHeight: pruneHeight) else { return }
+            let onMainChain = await chain.isOnMainChain(hash: blockHash)
+            if !onMainChain {
+                let replacedRoots = store.getReplacedRoots(height: pruneHeight)
+                for (root, count) in replacedRoots {
+                    try await network.diskBroker.unpin(root: root, owner: pruneOwner, count: count)
+                }
+                await store.deleteReplacedRoots(height: pruneHeight)
+            }
+
+        case .stateless:
+            break
+        }
     }
 
     /// Fast path invoked from `applyChildBlockStates`: when the parent's
@@ -76,7 +154,6 @@ extension LatticeNode {
     func registerChildBlockVolume(childBlock: Block, header: VolumeImpl<Block>, network: ChainNetwork) async {
         let rootCID = header.rawCID
         if await network.hasCID(rootCID) {
-            await network.registerBlockVolume(rootCID: rootCID)
             return
         }
         await storeBlockRecursively(childBlock, network: network)
@@ -93,7 +170,7 @@ extension LatticeNode {
         guard depth < Self.maxCopyDepth else { return }
         guard !cid.isEmpty, !visited.contains(cid) else { return }
         visited.insert(cid)
-        guard let data = try? await source.fetcher.fetch(rawCid: cid) else { return }
+        guard let data = try? await source.ivyFetcher.fetch(rawCid: cid) else { return }
         await dest.storeLocally(cid: cid, data: data)
 
         if let block = Block(data: data) {
@@ -112,17 +189,15 @@ extension LatticeNode {
     func storeReceivedBlockRecursively(cid: String, data: Data, network: ChainNetwork) async {
         await network.storeLocally(cid: cid, data: data)
         guard let block = Block(data: data) else { return }
-        let skipSet = await network.snapshotLastStoredCIDs()
-        let storer = BufferedStorer(skipSet: skipSet)
+        let storer = BrokerStorer(broker: network.diskBroker)
         let header = VolumeImpl<Block>(node: block)
         do {
             try header.storeRecursively(storer: storer)
+            try await storer.flush()
         } catch {
             let log = NodeLogger("blocks")
             log.error("Failed to store received block \(cid) recursively: \(error)")
         }
-        await network.storeBlockBatch(rootCID: cid, entries: storer.entryList)
-        await network.updateLastStoredCIDs(storer.touchedCIDs)
     }
 
     // MARK: - Block Processing with Reorg Recovery
@@ -175,7 +250,7 @@ extension LatticeNode {
         }
         let phLog = NodeLogger("blocks")
         let phShort = String(header.rawCID.prefix(16))
-        let accepted = await lattice.processBlockHeader(header, fetcher: validationFetcher, skipValidation: skipValidation)
+        let (accepted, stateDiff) = await lattice.processBlockHeader(header, fetcher: validationFetcher, skipValidation: skipValidation)
         guard accepted else {
             phLog.warn("\(directory): block \(phShort)… rejected by processBlockHeader")
             return .rejected
@@ -319,8 +394,8 @@ extension LatticeNode {
 
         var orphanedBlockTxs: [(block: Block, txEntries: [String: VolumeImpl<Transaction>])] = []
         for blockHash in orphanedBlockHashes {
-            guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
-                  let block = Block(data: blockData) else {
+            let stub = VolumeImpl<Block>(rawCID: blockHash, node: nil, encryptionInfo: nil)
+            guard let block = try? await stub.resolve(fetcher: fetcher).node else {
                 log.error("Missing CAS data for orphaned block \(blockHash) — skipping")
                 continue
             }
@@ -333,8 +408,8 @@ extension LatticeNode {
         let newChainTxCIDs: Set<String> = await withTaskGroup(of: Set<String>.self) { group in
             for newBlockHash in newChainHashes {
                 group.addTask {
-                    guard let blockData = try? await fetcher.fetch(rawCid: newBlockHash),
-                          let block = Block(data: blockData),
+                    let stub = VolumeImpl<Block>(rawCID: newBlockHash, node: nil, encryptionInfo: nil)
+                    guard let block = try? await stub.resolve(fetcher: fetcher).node,
                           let txDict = try? await block.transactions.resolve(
                               paths: [[""]: .list], fetcher: fetcher
                           ).node,
@@ -396,8 +471,8 @@ extension LatticeNode {
     private func rollbackChildChains(orphanedBlockHashes: [String], fetcher: Fetcher) async {
         let log = NodeLogger("reorg")
         for blockHash in orphanedBlockHashes {
-            guard let blockData = try? await fetcher.fetch(rawCid: blockHash),
-                  let block = Block(data: blockData),
+            let stub = VolumeImpl<Block>(rawCID: blockHash, node: nil, encryptionInfo: nil)
+            guard let block = try? await stub.resolve(fetcher: fetcher).node,
                   let childDict = try? await block.childBlocks.resolve(
                       paths: [[""]: .list], fetcher: fetcher
                   ).node,
@@ -469,10 +544,9 @@ extension LatticeNode {
         data: Data,
         from peer: PeerID
     ) async {
-        let tally = await network.ivy.tally
-        guard tally.shouldAllow(peer: peer) else { return }
         if await isPeerBlockRateLimited(peer) { return }
 
+        let tally = await network.ivy.tally
         if data.count > genesisConfig.spec.maxBlockSize {
             tally.recordFailure(peer: peer)
             return
@@ -542,7 +616,7 @@ extension LatticeNode {
         await blockFetcher.bindBlockRoots(block, peer: peer)
         let outcome = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: blockFetcher,
-            resolvedBlock: block
+            resolvedBlock: block, skipValidation: true
         )
         switch outcome {
         case .accepted:
@@ -563,8 +637,6 @@ extension LatticeNode {
         didReceiveBlockAnnouncement cid: String,
         from peer: PeerID
     ) async {
-        let tally = await network.ivy.tally
-        guard tally.shouldAllow(peer: peer) else { return }
         if await isPeerBlockRateLimited(peer) { return }
 
         let now = ContinuousClock.Instant.now
@@ -576,10 +648,8 @@ extension LatticeNode {
         guard !(await isSyncing) else { return }
 
         let directory = await network.directory
-        // Short-circuit known blocks before the expensive CAS resolve.
-        // hashToBlock is an in-memory O(1) index of BlockMeta; resolving
-        // would otherwise pull the full radix-trie state from CAS on every
-        // duplicate announcement and pin it in RAM.
+        let tally = await network.ivy.tally
+
         if let chainState = await chain(for: directory),
            await chainState.contains(blockHash: cid) {
             tally.recordSuccess(peer: peer)
@@ -898,13 +968,12 @@ extension LatticeNode {
             }
         }
 
-        await network.protectionPolicy.pinAccountBatch(cidsToPin)
+        // Pin via the disk broker so the data survives eviction
+        for cid in cidsToPin {
+            try? await network.diskBroker.pin(root: cid, owner: "account:\(directory)")
+        }
 
         // Announce so peers can discover us as a provider of our own tx data.
-        // Overlap awaits inside ivy.publishPinAnnounce via a task group — the
-        // announce call itself is actor-isolated, but the inner network
-        // publish yields long enough to benefit from concurrent issuance
-        // rather than running serially per-CID (P1 #7).
         let fee = await network.ivy.config.relayFee * 2
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
         await withTaskGroup(of: Void.self) { group in

@@ -3,13 +3,13 @@ import XCTest
 @testable import LatticeNode
 import UInt256
 import cashew
-import Acorn
+import VolumeBroker
 import ArrayTrie
 
 // Helpers in TestHelpers.swift: cas(), testSpec(), sign(), addr(), now()
-private func fetcher() -> AcornFetcher { cas() }
+private func fetcher() -> TestBrokerFetcher { cas() }
 
-private func deepCopyCID(_ cid: String, from source: AcornFetcher, to dest: AcornFetcher, visited: inout Set<String>) async {
+private func deepCopyCID(_ cid: String, from source: TestBrokerFetcher, to dest: TestBrokerFetcher, visited: inout Set<String>) async {
     guard !cid.isEmpty, !visited.contains(cid) else { return }
     visited.insert(cid)
     guard let data = try? await source.fetch(rawCid: cid) else { return }
@@ -890,7 +890,7 @@ final class AcornStorageTests: XCTestCase {
 // ============================================================================
 
 private struct MultiChainEnv {
-    let f: AcornFetcher
+    let f: TestBrokerFetcher
     let t: Int64
     let nexusSpec: ChainSpec
     let childSpec: ChainSpec

@@ -3,8 +3,7 @@ import XCTest
 import Lattice
 import cashew
 import UInt256
-import AcornMemoryWorker
-import Acorn
+import VolumeBroker
 import Ivy
 
 // MARK: - Test Infrastructure
@@ -331,17 +330,7 @@ final class SQLiteDatabaseTests: XCTestCase {
 final class GenesisDeterminismTests: XCTestCase {
 
     func testGenesisIsDeterministic() async throws {
-        let memory = MemoryCASWorker(capacity: 100_000)
-        struct TestFetcher: Fetcher {
-            let worker: MemoryCASWorker
-            func fetch(rawCid: String) async throws -> Data {
-                guard let data = await worker.getLocal(cid: ContentIdentifier(rawValue: rawCid)) else {
-                    throw NSError(domain: "NotFound", code: 404)
-                }
-                return data
-            }
-        }
-        let fetcher = TestFetcher(worker: memory)
+        let fetcher = BrokerFetcher(broker: MemoryBroker())
         let r1 = try await NexusGenesis.create(fetcher: fetcher)
         let r2 = try await NexusGenesis.create(fetcher: fetcher)
         XCTAssertEqual(r1.blockHash, r2.blockHash, "Genesis must be deterministic")

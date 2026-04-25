@@ -197,9 +197,13 @@ enum RPCRoutes {
         if dir == node.genesisConfig.spec.directory {
             s = node.genesisConfig.spec
         } else if let chainState = await node.chain(for: dir),
-                  let snapshot = await chainState.tipSnapshot,
-                  let network = await node.network(for: dir),
-                  let resolved = try? await HeaderImpl<ChainSpec>(rawCID: snapshot.specCID).resolve(fetcher: network.ivyFetcher).node {
+                  let network = await node.network(for: dir) {
+            let tipHash = await chainState.getMainChainTip()
+            let tipStub = VolumeImpl<Block>(rawCID: tipHash, node: nil, encryptionInfo: nil)
+            guard let tipBlock = try? await tipStub.resolve(fetcher: network.ivyFetcher).node,
+                  let resolved = try? await tipBlock.spec.resolve(fetcher: network.ivyFetcher).node else {
+                return jsonError("Chain not found: \(dir)", status: .notFound)
+            }
             s = resolved
         } else {
             return jsonError("Chain not found: \(dir)", status: .notFound)
@@ -249,9 +253,9 @@ enum RPCRoutes {
             h = found
         }
         let header = VolumeImpl<Block>(rawCID: h)
-        guard let b = try? await header.resolve(fetcher: network.fetcher).node else { return jsonError("Block not found", status: .notFound) }
-        let txCount = (try? await b.transactions.resolve(fetcher: network.fetcher).node?.count) ?? 0
-        let childCount = (try? await b.childBlocks.resolve(fetcher: network.fetcher).node?.count) ?? 0
+        guard let b = try? await header.resolve(fetcher: network.ivyFetcher).node else { return jsonError("Block not found", status: .notFound) }
+        let txCount = (try? await b.transactions.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
+        let childCount = (try? await b.childBlocks.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
         struct R: Encodable {
             let hash: String; let index: UInt64; let timestamp: Int64
             let previousBlock: String?; let difficulty: String; let nextDifficulty: String
@@ -279,9 +283,9 @@ enum RPCRoutes {
     static func getBlockTransactions(node: LatticeNode, id: String, request: Request) async throws -> Response {
         let dir = resolveChain(node: node, request: request)
         guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
-        let block = try await resolveBlock(id: id, dir: dir, node: node, fetcher: network.fetcher)
+        let block = try await resolveBlock(id: id, dir: dir, node: node, fetcher: network.ivyFetcher)
         guard let b = block else { return jsonError("Block not found", status: .notFound) }
-        guard let txNode = try? await b.transactions.resolve(paths: [[""]: .list], fetcher: network.fetcher).node else {
+        guard let txNode = try? await b.transactions.resolve(paths: [[""]: .list], fetcher: network.ivyFetcher).node else {
             return jsonError("Failed to resolve transactions", status: .internalServerError)
         }
         guard let entries = try? txNode.sortedKeysAndValues() else {
@@ -294,8 +298,8 @@ enum RPCRoutes {
         }
         var txs: [TxSummary] = []
         for (_, txHeader) in entries {
-            guard let tx = try? await txHeader.resolve(fetcher: network.fetcher).node else { continue }
-            let body = try? await tx.body.resolve(fetcher: network.fetcher).node
+            guard let tx = try? await txHeader.resolve(fetcher: network.ivyFetcher).node else { continue }
+            let body = try? await tx.body.resolve(fetcher: network.ivyFetcher).node
             txs.append(TxSummary(
                 txCID: txHeader.rawCID, bodyCID: tx.body.rawCID,
                 fee: body?.fee ?? 0, nonce: body?.nonce ?? 0,
@@ -313,9 +317,9 @@ enum RPCRoutes {
     static func getBlockChildren(node: LatticeNode, id: String, request: Request) async throws -> Response {
         let dir = resolveChain(node: node, request: request)
         guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
-        let block = try await resolveBlock(id: id, dir: dir, node: node, fetcher: network.fetcher)
+        let block = try await resolveBlock(id: id, dir: dir, node: node, fetcher: network.ivyFetcher)
         guard let b = block else { return jsonError("Block not found", status: .notFound) }
-        guard let cbNode = try? await b.childBlocks.resolve(paths: [[""]: .list], fetcher: network.fetcher).node else {
+        guard let cbNode = try? await b.childBlocks.resolve(paths: [[""]: .list], fetcher: network.ivyFetcher).node else {
             struct R: Encodable { let children: [String]; let count: Int }
             return json(R(children: [], count: 0))
         }
@@ -329,8 +333,8 @@ enum RPCRoutes {
         }
         var children: [ChildEntry] = []
         for (key, blockHeader) in entries {
-            guard let childBlock = try? await blockHeader.resolve(fetcher: network.fetcher).node else { continue }
-            let txCount = (try? await childBlock.transactions.resolve(fetcher: network.fetcher).node?.count) ?? 0
+            guard let childBlock = try? await blockHeader.resolve(fetcher: network.ivyFetcher).node else { continue }
+            let txCount = (try? await childBlock.transactions.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
             children.append(ChildEntry(
                 directory: key, blockHash: blockHeader.rawCID,
                 index: childBlock.index, timestamp: childBlock.timestamp,
@@ -734,7 +738,7 @@ enum RPCRoutes {
               let network = await node.network(for: dir) else {
             return jsonError("State store not available", status: .internalServerError)
         }
-        let receiptStore = await TransactionReceiptStore(store: store, fetcher: network.fetcher)
+        let receiptStore = await TransactionReceiptStore(store: store, fetcher: network.ivyFetcher)
         guard let receipt = await receiptStore.getReceipt(txCID: txCID) else {
             return jsonError("Receipt not found", status: .notFound)
         }
@@ -754,7 +758,7 @@ enum RPCRoutes {
         let blockHeight: UInt64
         let blockTimestamp: Int64
         if let explicitHash = request.uri.queryParameters["blockHash"].map(String.init) {
-            guard let data = try? await network.fetcher.fetch(rawCid: explicitHash),
+            guard let data = try? await network.ivyFetcher.fetch(rawCid: explicitHash),
                   let b = Block(data: data) else {
                 return jsonError("Block not found", status: .notFound)
             }
@@ -765,7 +769,7 @@ enum RPCRoutes {
             guard let store = await node.stateStore(for: dir) else {
                 return jsonError("State store not available", status: .internalServerError)
             }
-            let receiptStore = await TransactionReceiptStore(store: store, fetcher: network.fetcher)
+            let receiptStore = await TransactionReceiptStore(store: store, fetcher: network.ivyFetcher)
             guard let receipt = await receiptStore.getReceipt(txCID: txCID) else {
                 return jsonError("Transaction not found", status: .notFound)
             }
@@ -777,18 +781,18 @@ enum RPCRoutes {
         // Resolve the full transaction body from the block.
         // Transaction dict keys are sequential indices ("0","1",...), not CIDs,
         // so we resolve all entries and match by rawCID.
-        guard let blockData = try? await network.fetcher.fetch(rawCid: blockHash),
+        guard let blockData = try? await network.ivyFetcher.fetch(rawCid: blockHash),
               let block = Block(data: blockData) else {
             return jsonError("Block not found", status: .notFound)
         }
-        guard let txDict = try? await block.transactions.resolve(paths: [[""]: .list], fetcher: network.fetcher).node,
+        guard let txDict = try? await block.transactions.resolve(paths: [[""]: .list], fetcher: network.ivyFetcher).node,
               let entries = try? txDict.allKeysAndValues() else {
             return jsonError("Transaction not found in block", status: .notFound)
         }
         var matchedTx: Transaction?
         for (_, txHeader) in entries {
             guard txHeader.rawCID == txCID else { continue }
-            matchedTx = try? await txHeader.resolve(fetcher: network.fetcher).node
+            matchedTx = try? await txHeader.resolve(fetcher: network.ivyFetcher).node
             break
         }
         guard let tx = matchedTx else {
@@ -797,7 +801,7 @@ enum RPCRoutes {
         let body: TransactionBody
         if let n = tx.body.node {
             body = n
-        } else if let resolved = try? await tx.body.resolve(fetcher: network.fetcher).node {
+        } else if let resolved = try? await tx.body.resolve(fetcher: network.ivyFetcher).node {
             body = resolved
         } else {
             return jsonError("Failed to resolve transaction body", status: .internalServerError)
@@ -938,12 +942,12 @@ enum RPCRoutes {
     static func getBlockState(node: LatticeNode, blockId: String, request: Request) async throws -> Response {
         let dir = resolveChain(node: node, request: request)
         guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
-        guard let block = try await resolveBlock(id: blockId, dir: dir, node: node, fetcher: network.fetcher) else {
+        guard let block = try await resolveBlock(id: blockId, dir: dir, node: node, fetcher: network.ivyFetcher) else {
             return jsonError("Block not found", status: .notFound)
         }
 
         // Resolve the frontier (post-block state) to get sub-tree CIDs
-        let state = try? await block.frontier.resolve(fetcher: network.fetcher).node
+        let state = try? await block.frontier.resolve(fetcher: network.ivyFetcher).node
 
         struct StateSection: Encodable { let name: String; let cid: String }
         var sections: [StateSection] = []
@@ -976,15 +980,15 @@ enum RPCRoutes {
     static func getBlockAccountState(node: LatticeNode, blockId: String, address: String, request: Request) async throws -> Response {
         let dir = resolveChain(node: node, request: request)
         guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
-        guard let block = try await resolveBlock(id: blockId, dir: dir, node: node, fetcher: network.fetcher) else {
+        guard let block = try await resolveBlock(id: blockId, dir: dir, node: node, fetcher: network.ivyFetcher) else {
             return jsonError("Block not found", status: .notFound)
         }
 
         // Resolve the frontier's account state with targeted path for this address
-        guard let state = try? await block.frontier.resolve(fetcher: network.fetcher).node else {
+        guard let state = try? await block.frontier.resolve(fetcher: network.ivyFetcher).node else {
             return jsonError("Failed to resolve block state", status: .internalServerError)
         }
-        let resolved = try? await state.accountState.resolve(paths: [[address]: .targeted], fetcher: network.fetcher)
+        let resolved = try? await state.accountState.resolve(paths: [[address]: .targeted], fetcher: network.ivyFetcher)
         let balance: UInt64 = resolved?.node.flatMap({ try? $0.get(key: address) }) ?? 0
 
         struct R: Encodable {

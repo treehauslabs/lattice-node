@@ -5,6 +5,18 @@ import ArrayTrie
 
 public let DEFAULT_RETENTION_DEPTH: UInt64 = 1000
 
+public enum StorageMode: String, Sendable {
+    case stateless
+    case stateful
+    case historical
+}
+
+public enum BlockRetention: String, Sendable {
+    case tip
+    case retention
+    case historical
+}
+
 public struct LatticeNodeConfig: Sendable {
     public let publicKey: String
     public let privateKey: String
@@ -20,6 +32,8 @@ public struct LatticeNodeConfig: Sendable {
     public let finality: FinalityConfig
     public let maxPeerConnections: Int
     public let discoveryOnly: Bool
+    public let storageMode: StorageMode
+    public let blockRetention: BlockRetention
 
     public init(
         publicKey: String,
@@ -39,7 +53,9 @@ public struct LatticeNodeConfig: Sendable {
         resources: NodeResourceConfig = .default,
         finality: FinalityConfig = FinalityConfig(),
         maxPeerConnections: Int = BootstrapPeers.maxPeerConnections,
-        discoveryOnly: Bool = false
+        discoveryOnly: Bool = false,
+        storageMode: StorageMode = .stateful,
+        blockRetention: BlockRetention = .retention
     ) {
         self.publicKey = publicKey
         self.privateKey = privateKey
@@ -57,6 +73,8 @@ public struct LatticeNodeConfig: Sendable {
         self.finality = finality
         self.maxPeerConnections = maxPeerConnections
         self.discoveryOnly = discoveryOnly
+        self.storageMode = storageMode
+        self.blockRetention = blockRetention
     }
 
     public func isSubscribed(chainPath: [String]) -> Bool {
@@ -80,7 +98,9 @@ public struct LatticeNodeConfig: Sendable {
             resources: resources,
             finality: finality,
             maxPeerConnections: maxPeerConnections,
-            discoveryOnly: discoveryOnly
+            discoveryOnly: discoveryOnly,
+            storageMode: storageMode,
+            blockRetention: blockRetention
         )
     }
 
@@ -102,7 +122,9 @@ public struct LatticeNodeConfig: Sendable {
             resources: resources,
             finality: finality,
             maxPeerConnections: maxPeerConnections,
-            discoveryOnly: discoveryOnly
+            discoveryOnly: discoveryOnly,
+            storageMode: storageMode,
+            blockRetention: blockRetention
         )
     }
 }

@@ -1,5 +1,5 @@
 {
-  "originHash" : "837c030f9d5d6ed17a48fa0a9c82a16f06a45b58559d80202bd0dda9c899cd41",
+  "originHash" : "782c133ba561bbeaeb55946990d5cee382603de36fbb5dcb66034610fc4fd6b4",
   "pins" : [
     {
       "identity" : "acorn",
@@ -7,24 +7,6 @@
       "location" : "https://github.com/treehauslabs/Acorn.git",
       "state" : {
         "revision" : "a685a022b88dfb7be479e89d91c61f65c6478520",
-        "version" : "2.1.0"
-      }
-    },
-    {
-      "identity" : "acorndiskworker",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/treehauslabs/AcornDiskWorker.git",
-      "state" : {
-        "revision" : "2519f6fb41f29f898bef9e5818bd1014c9cb02ac",
-        "version" : "2.2.0"
-      }
-    },
-    {
-      "identity" : "acornmemoryworker",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/treehauslabs/AcornMemoryWorker.git",
-      "state" : {
-        "revision" : "7c68da94a2491167c1f7dd1eac4449af4d63c129",
         "version" : "2.1.0"
       }
     },
@@ -51,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/cashew.git",
       "state" : {
-        "revision" : "bb7bf9f1b9e26db7911723def7373336906829af",
-        "version" : "1.4.1"
+        "revision" : "a38dc49c637d2eb3b5cc101513ccfe8a64d97079",
+        "version" : "1.9.0"
       }
     },
     {
@@ -69,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/krzyzanowskim/CryptoSwift.git",
       "state" : {
-        "revision" : "e45a26384239e028ec87fbcc788f513b67e10d8f",
-        "version" : "1.9.0"
+        "revision" : "f2a627b84c1ff96f21ac2fcb623ab36142dd5512",
+        "version" : "1.10.0"
       }
     },
     {
@@ -87,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Ivy.git",
       "state" : {
-        "revision" : "ab7f45ba20575f59ad801374a5367ec112f3afb6",
-        "version" : "3.7.0"
+        "revision" : "beb8ce60276662ccd1d8e0c38dc94e248e5bd42c",
+        "version" : "5.1.0"
       }
     },
     {
@@ -105,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
-        "revision" : "6130ca5b062d058d871eb114e08bce8de3d79b7f",
-        "version" : "7.13.0"
+        "revision" : "eb36fc54bb076cdb605c2dbebd4a37350eba3b35",
+        "version" : "8.0.0"
       }
     },
     {
@@ -364,7 +346,7 @@
     {
       "identity" : "swift-system",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-system",
+      "location" : "https://github.com/apple/swift-system.git",
       "state" : {
         "revision" : "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
         "version" : "1.6.4"
@@ -404,6 +386,15 @@
       "state" : {
         "revision" : "7d387beb657e5288d6b41891886f1800f2c4529e",
         "version" : "1.1.0"
+      }
+    },
+    {
+      "identity" : "volumebroker",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/treehauslabs/VolumeBroker.git",
+      "state" : {
+        "revision" : "a1bb12b70d2ee95b073a583cccddb96757a4b15e",
+        "version" : "2.0.0"
       }
     }
   ],

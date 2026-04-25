@@ -49,6 +49,13 @@ struct DevnetCommand: AsyncParsableCommand {
             try fm.createDirectory(atPath: storagePath, withIntermediateDirectories: true)
         }
 
+        let latticeDir = NSHomeDirectory() + "/.lattice"
+        if !fm.fileExists(atPath: latticeDir) {
+            try fm.createDirectory(atPath: latticeDir, withIntermediateDirectories: true)
+        }
+        let identityJSON = "{\"publicKey\":\"\(keyPair.publicKey)\",\"privateKey\":\"\(keyPair.privateKey)\"}"
+        try identityJSON.write(toFile: latticeDir + "/identity.json", atomically: true, encoding: .utf8)
+
         let spec = ChainSpec(
             directory: "Nexus",
             maxNumberOfTransactionsPerBlock: maxTx,

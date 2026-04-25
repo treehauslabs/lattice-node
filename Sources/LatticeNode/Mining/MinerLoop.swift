@@ -740,8 +740,8 @@ public actor MinerLoop {
             if let cached = cachedTips[ctx.directory], cached.cid == childTipHash {
                 childTip = cached.block
             } else {
-                let childTipData = try await ctx.fetcher.fetch(rawCid: childTipHash)
-                guard let childTipRaw = Block(data: childTipData) else { return nil }
+                let childStub = VolumeImpl<Block>(rawCID: childTipHash, node: nil, encryptionInfo: nil)
+                guard let childTipRaw = try? await childStub.resolve(fetcher: ctx.fetcher).node else { return nil }
                 childTip = childTipRaw.set(properties: [
                     "spec": try await childTipRaw.spec.resolve(fetcher: ctx.fetcher),
                     "frontier": try await childTipRaw.frontier.resolve(fetcher: ctx.fetcher),
@@ -944,12 +944,9 @@ public actor MinerLoop {
         cachedTipBlock = nil
         cachedTipCID = nil
         cachedMinerAccountTrie = nil
-        let tipData = try await fetcher.fetch(rawCid: tipHash)
-        guard let block = Block(data: tipData) else {
-            NodeLogger("miner").warn("Tip block decode failed for \(String(tipHash.prefix(16)))… (\(tipData.count) bytes)")
-            return nil
-        }
-        return block
+        let stub = VolumeImpl<Block>(rawCID: tipHash, node: nil, encryptionInfo: nil)
+        let resolved = try await stub.resolve(fetcher: fetcher)
+        return resolved.node
     }
 
     private func withNonce(_ block: Block, startNonce: UInt64) -> Block {

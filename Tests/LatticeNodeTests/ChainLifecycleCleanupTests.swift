@@ -58,8 +58,6 @@ final class ChainLifecycleCleanupTests: XCTestCase {
         XCTAssertNotNil(childNetBefore)
         let childStoreBefore = await node.stateStore(for: "Child")
         XCTAssertNotNil(childStoreBefore)
-        let childPolicyBefore = await node.unionProtection.policy(for: "Child")
-        XCTAssertNotNil(childPolicyBefore)
         XCTAssertTrue(metrics.prometheus().contains("chain=\"Child\""))
 
         await node.destroyChainNetwork(directory: "Child")
@@ -69,9 +67,6 @@ final class ChainLifecycleCleanupTests: XCTestCase {
         XCTAssertNil(childNetAfter, "networks entry should be dropped")
         let childStoreAfter = await node.stateStore(for: "Child")
         XCTAssertNil(childStoreAfter, "stateStores entry should be dropped")
-        let childPolicyAfter = await node.unionProtection.policy(for: "Child")
-        XCTAssertNil(childPolicyAfter, "UnionProtectionPolicy should no longer include Child")
-
         let dirsAfter = await node.allDirectories()
         XCTAssertFalse(dirsAfter.contains("Child"), "allDirectories should no longer list Child")
         XCTAssertTrue(dirsAfter.contains("Nexus"), "Nexus should survive the child teardown")

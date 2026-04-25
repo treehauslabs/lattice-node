@@ -33,29 +33,26 @@ extension LatticeNode {
         }
         if let sender = transaction.body.node?.signers.first,
            let tipNonce = try? await getNonce(address: sender, directory: directory) {
-            await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: tipNonce)
+            await network.nodeMempool.updateConfirmedNonce(sender: sender, nonce: tipNonce)
         }
-        let added = await network.submitTransaction(transaction)
-        if added {
-            metrics.increment("lattice_transactions_submitted_total")
-            // Gossip with body inline so receivers can reconstruct body.node — HeaderImpl's
-            // Codable only emits rawCID, so without inline body the receiver's validator
-            // trips its missingBody guard and drops the tx.
-            if let bodyData = transaction.body.node?.toData(),
-               let txData = transaction.toData() {
-                await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
-                await network.gossipTransaction(cid: transaction.body.rawCID, bodyData: bodyData, transactionData: txData)
-            }
-            let fee = transaction.body.node?.fee ?? 0
-            let sender = transaction.body.node?.signers.first ?? ""
-            await subscriptions.emit(.newTransaction(
-                cid: transaction.body.rawCID,
-                fee: fee,
-                sender: sender
-            ))
-            return .success
+        let addResult = await network.nodeMempool.addTransaction(transaction)
+        if case .rejected(let reason) = addResult {
+            return .failure("Transaction rejected by mempool: \(reason)")
         }
-        return .failure("Transaction rejected by mempool")
+        metrics.increment("lattice_transactions_submitted_total")
+        if let bodyData = transaction.body.node?.toData(),
+           let txData = transaction.toData() {
+            await network.storeLocally(cid: transaction.body.rawCID, data: bodyData)
+            await network.gossipTransaction(cid: transaction.body.rawCID, bodyData: bodyData, transactionData: txData)
+        }
+        let fee = transaction.body.node?.fee ?? 0
+        let sender = transaction.body.node?.signers.first ?? ""
+        await subscriptions.emit(.newTransaction(
+            cid: transaction.body.rawCID,
+            fee: fee,
+            sender: sender
+        ))
+        return .success
     }
 
     func describeValidationError(_ error: TransactionValidationError) -> String {
@@ -119,7 +116,7 @@ extension LatticeNode {
         guard case .success = result else { return false }
         if let sender = transaction.body.node?.signers.first,
            let tipNonce = try? await getNonce(address: sender, directory: directory) {
-            await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: tipNonce)
+            await network.nodeMempool.updateConfirmedNonce(sender: sender, nonce: tipNonce)
         }
         return true
     }

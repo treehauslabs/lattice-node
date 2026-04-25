@@ -68,16 +68,14 @@ struct InitCommand: ParsableCommand {
             platforms: [.macOS(.v15)],
             dependencies: [
                 .package(url: "https://github.com/treehauslabs/lattice.git", branch: "master"),
-                .package(url: "https://github.com/treehauslabs/AcornMemoryWorker.git", branch: "master"),
-                .package(url: "https://github.com/treehauslabs/AcornDiskWorker.git", branch: "master"),
+                .package(url: "https://github.com/treehauslabs/VolumeBroker.git", from: "1.0.0"),
             ],
             targets: [
                 .executableTarget(
                     name: "\(name)",
                     dependencies: [
                         .product(name: "Lattice", package: "lattice"),
-                        .product(name: "AcornMemoryWorker", package: "AcornMemoryWorker"),
-                        .product(name: "AcornDiskWorker", package: "AcornDiskWorker"),
+                        .product(name: "VolumeBroker", package: "VolumeBroker"),
                     ]),
             ]
         )
@@ -95,23 +93,13 @@ struct InitCommand: ParsableCommand {
     var basicTemplate: String {
         """
         import Lattice
-        import AcornMemoryWorker
-        import Acorn
+        import VolumeBroker
+        import cashew
         import Foundation
         import UInt256
 
-        struct InMemoryFetcher: Fetcher {
-            let worker: MemoryCASWorker
-            func fetch(rawCid: String) async throws -> Data {
-                guard let data = await worker.getLocal(cid: ContentIdentifier(rawValue: rawCid)) else {
-                    throw NSError(domain: "NotFound", code: 404)
-                }
-                return data
-            }
-        }
-
-        let memory = MemoryCASWorker(capacity: 100_000)
-        let fetcher = InMemoryFetcher(worker: memory)
+        let broker = MemoryBroker(capacity: 100_000)
+        let fetcher = BrokerFetcher(broker: broker)
 
         let spec = ChainSpec(
             directory: "Nexus",
@@ -168,20 +156,10 @@ struct InitCommand: ParsableCommand {
     var tokenTemplate: String {
         """
         import Lattice
-        import AcornMemoryWorker
-        import Acorn
+        import VolumeBroker
+        import cashew
         import Foundation
         import UInt256
-
-        struct InMemoryFetcher: Fetcher {
-            let worker: MemoryCASWorker
-            func fetch(rawCid: String) async throws -> Data {
-                guard let data = await worker.getLocal(cid: ContentIdentifier(rawValue: rawCid)) else {
-                    throw NSError(domain: "NotFound", code: 404)
-                }
-                return data
-            }
-        }
 
         let keyPair = CryptoUtils.generateKeyPair()
         let address = CryptoUtils.createAddress(from: keyPair.publicKey)
@@ -191,8 +169,8 @@ struct InitCommand: ParsableCommand {
         print("  Public Key: \\(String(keyPair.publicKey.prefix(16)))...")
         print("")
 
-        let memory = MemoryCASWorker(capacity: 100_000)
-        let fetcher = InMemoryFetcher(worker: memory)
+        let broker = MemoryBroker(capacity: 100_000)
+        let fetcher = BrokerFetcher(broker: broker)
 
         let spec = ChainSpec(
             directory: "TokenChain",
@@ -221,23 +199,13 @@ struct InitCommand: ParsableCommand {
     var multiChainTemplate: String {
         """
         import Lattice
-        import AcornMemoryWorker
-        import Acorn
+        import VolumeBroker
+        import cashew
         import Foundation
         import UInt256
 
-        struct InMemoryFetcher: Fetcher {
-            let worker: MemoryCASWorker
-            func fetch(rawCid: String) async throws -> Data {
-                guard let data = await worker.getLocal(cid: ContentIdentifier(rawValue: rawCid)) else {
-                    throw NSError(domain: "NotFound", code: 404)
-                }
-                return data
-            }
-        }
-
-        let memory = MemoryCASWorker(capacity: 100_000)
-        let fetcher = InMemoryFetcher(worker: memory)
+        let broker = MemoryBroker(capacity: 100_000)
+        let fetcher = BrokerFetcher(broker: broker)
 
         let nexusSpec = ChainSpec(
             directory: "Nexus",

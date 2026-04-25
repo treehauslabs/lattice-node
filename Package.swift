@@ -7,12 +7,10 @@ let package = Package(
         .macOS(.v15)
     ],
     dependencies: [
-        .package(url: "https://github.com/treehauslabs/Lattice.git", exact: "7.13.0"),
-        .package(url: "https://github.com/treehauslabs/Acorn.git", from: "2.1.0"),
-        .package(url: "https://github.com/treehauslabs/AcornDiskWorker.git", from: "2.2.0"),
-        .package(url: "https://github.com/treehauslabs/AcornMemoryWorker.git", from: "2.1.0"),
+        .package(url: "https://github.com/treehauslabs/Lattice.git", exact: "8.0.0"),
         .package(url: "https://github.com/treehauslabs/Tally.git", from: "1.3.0"),
-        .package(url: "https://github.com/treehauslabs/Ivy.git", from: "3.7.0"),
+        .package(url: "https://github.com/treehauslabs/Ivy.git", exact: "5.1.0"),
+        .package(url: "https://github.com/treehauslabs/VolumeBroker.git", exact: "2.0.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
@@ -29,11 +27,9 @@ let package = Package(
             dependencies: [
                 "CSQLite",
                 .product(name: "Lattice", package: "Lattice"),
-                .product(name: "Acorn", package: "Acorn"),
-                .product(name: "AcornDiskWorker", package: "AcornDiskWorker"),
-                .product(name: "AcornMemoryWorker", package: "AcornMemoryWorker"),
                 .product(name: "Tally", package: "Tally"),
                 .product(name: "Ivy", package: "Ivy"),
+                .product(name: "VolumeBroker", package: "VolumeBroker"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),

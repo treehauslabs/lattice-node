@@ -5,7 +5,7 @@ import XCTest
 import Tally
 import UInt256
 import cashew
-import Acorn
+import VolumeBroker
 
 // Helpers in TestHelpers.swift: cas(), testSpec(), sign(), addr(), now()
 
@@ -70,7 +70,7 @@ final class StateRootVerificationTests: XCTestCase {
         XCTAssertNil(oldMinerBalance, "Homestead should not have miner balance")
 
         // Verify: block validates its own frontier
-        let valid = try await block.validateFrontierState(
+        let (valid, _) = try await block.validateFrontierState(
             transactionBodies: [coinbaseBody], fetcher: f
         )
         XCTAssertTrue(valid, "Block should validate its own frontier state root")

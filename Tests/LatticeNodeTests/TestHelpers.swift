@@ -3,24 +3,44 @@ import XCTest
 @testable import LatticeNode
 import UInt256
 import cashew
-import Acorn
+import VolumeBroker
 import Foundation
 import Synchronization
 
-// MARK: - In-Memory CAS Worker
+// MARK: - In-Memory Broker for Tests
 
-actor TestCASWorker: AcornCASWorker {
-    var near: (any AcornCASWorker)?
-    var far: (any AcornCASWorker)?
-    var timeout: Duration? { nil }
-    private var store: [ContentIdentifier: Data] = [:]
-    func has(cid: ContentIdentifier) -> Bool { store[cid] != nil }
-    func getLocal(cid: ContentIdentifier) async -> Data? { store[cid] }
-    func storeLocal(cid: ContentIdentifier, data: Data) async { store[cid] = data }
-    var count: Int { store.count }
+/// A test-only fetcher that wraps a MemoryBroker and BrokerFetcher, providing
+/// both fetch and store capabilities for unit tests.
+actor TestBrokerFetcher: Fetcher {
+    let broker: MemoryBroker
+    let fetcher: BrokerFetcher
+
+    init() {
+        let broker = MemoryBroker()
+        self.broker = broker
+        self.fetcher = BrokerFetcher(broker: broker)
+    }
+
+    func fetch(rawCid: String) async throws -> Data {
+        try await fetcher.fetch(rawCid: rawCid)
+    }
+
+    /// Store a single CID→Data entry as a trivial volume payload.
+    func store(rawCid: String, data: Data) async {
+        try? await broker.storeVolumeLocal(VolumePayload(root: rawCid, entries: [rawCid: data]))
+    }
 }
 
-func cas() -> AcornFetcher { AcornFetcher(worker: TestCASWorker()) }
+func cas() -> TestBrokerFetcher { TestBrokerFetcher() }
+
+extension BufferedStorer {
+    /// Flush buffered entries to a TestBrokerFetcher for test convenience.
+    func flush(to fetcher: TestBrokerFetcher) async {
+        for (cid, data) in entries {
+            await fetcher.store(rawCid: cid, data: data)
+        }
+    }
+}
 
 // MARK: - Chain Spec & Genesis
 

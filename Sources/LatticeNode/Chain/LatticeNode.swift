@@ -1,8 +1,7 @@
 import Lattice
 import Foundation
 import Ivy
-import Acorn
-import AcornDiskWorker
+import VolumeBroker
 import Tally
 import cashew
 import UInt256
@@ -45,7 +44,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var inFlightBlockCIDs: Set<String> = []
     // The rate limiter exists to bound validation cost from a misbehaving
     // peer; it is not meant to throttle legitimate gossip. `validateNexus`
-    // costs ~25ms/block, so even 30/s is bounded (≈75% of one core). Setting
+    // costs ~25ms/block, so even 30/s is bounded (<=75% of one core). Setting
     // this below burst block-production rates silently strands catch-up sync.
     static let maxBlocksPerPeerPerWindow = 300
     static let peerRateWindow: Duration = .seconds(10)
@@ -62,15 +61,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var tipCaches: [String: TipCache]
     var frontierCaches: [String: FrontierCache]
     public let nodeAddress: String
-    /// Shared node-level content-addressed store — one LRU budget for all chains.
-    /// Per-chain protection policies (registered in `unionProtection`) decide what
-    /// survives eviction; nothing else is retention-obligated.
-    public let sharedStore: ProfitWeightedStore
-    /// Raw disk worker behind `sharedStore`, referenced only for `persistState` on shutdown.
-    private let sharedDisk: DiskCASWorker<DefaultFileSystem>
-    /// Aggregates every subscribed chain's BlockchainProtectionPolicy into one
-    /// EvictionProtectionPolicy that the shared store consults on eviction.
-    public let unionProtection: UnionProtectionPolicy
+    public let ivyBroker: IvyBroker
+    public let sharedDiskBroker: DiskBroker
 
     // MARK: - Initialization
 
@@ -87,28 +79,15 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         let resourcesWithIdentity = config.resources.withIdentity(publicKey: config.publicKey)
         let chainCount = max(config.subscribedChains.allValues().count, 1)
 
-        // Shared node-level content store. One disk budget, one LRU, consulted by every chain.
-        // Per-chain BlockchainProtectionPolicy registers its pins in `unionProtection`;
-        // eviction asks whether any chain protects a CID before dropping it.
-        let totalDiskBytes = resourcesWithIdentity.totalDiskBytes()
-        let sharedCASPath = config.storagePath.appendingPathComponent("shared-cas")
-        let sharedDisk = try DiskCASWorker(
-            directory: sharedCASPath,
-            maxBytes: totalDiskBytes
-        )
-        let unionProtection = UnionProtectionPolicy()
-        let sharedStore = ProfitWeightedStore(
-            inner: sharedDisk,
-            nodePublicKey: config.publicKey,
-            maxEntries: resourcesWithIdentity.maxStorageEntries,
-            protectionPolicy: unionProtection
-        )
-        self.sharedDisk = sharedDisk
-        self.sharedStore = sharedStore
-        self.unionProtection = unionProtection
+        let fm = FileManager.default
+        let volumesDir = config.storagePath
+        if !fm.fileExists(atPath: volumesDir.path) {
+            try fm.createDirectory(at: volumesDir, withIntermediateDirectories: true)
+        }
+        let dbPath = volumesDir.appendingPathComponent("volumes.sqlite").path
+        let disk = try DiskBroker(path: dbPath)
+        self.sharedDiskBroker = disk
 
-        let nexusProtection = BlockchainProtectionPolicy()
-        await unionProtection.register(chain: genesisConfig.spec.directory, policy: nexusProtection)
         let nexusNetwork = try await ChainNetwork(
             directory: genesisConfig.spec.directory,
             config: IvyConfig(
@@ -120,9 +99,12 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             resources: resourcesWithIdentity,
             chainCount: chainCount,
             maxPeerConnections: config.maxPeerConnections,
-            sharedStore: sharedStore,
-            protectionPolicy: nexusProtection
+            sharedDiskBroker: disk
         )
+
+        let sharedIvyBroker = IvyBroker(node: nexusNetwork.ivy)
+        self.ivyBroker = sharedIvyBroker
+        await disk.setFar(sharedIvyBroker as any VolumeBroker)
 
         let persister = ChainStatePersister(
             storagePath: config.storagePath,
@@ -152,26 +134,30 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             let restoredHeight = await restoredChain.getHighestBlockIndex()
             let restoredTipHash = await restoredChain.getMainChainTip()
             let tipBlockPresent = await restoredChain.getMainChainBlockHash(atIndex: restoredHeight) != nil
-            initLog.info("Restored chain: height=\(restoredHeight) tip=\(String(restoredTipHash.prefix(16)))… tipIndexPresent=\(tipBlockPresent)")
-            let genesisBlock = try await buildGenesisBlock(nexusNetwork.fetcher)
+            initLog.info("Restored chain: height=\(restoredHeight) tip=\(String(restoredTipHash.prefix(16)))... tipIndexPresent=\(tipBlockPresent)")
+            let genesisBlock = try await buildGenesisBlock(nexusNetwork.ivyFetcher)
             let blockHash = VolumeImpl<Block>(node: genesisBlock).rawCID
             genesis = GenesisResult(block: genesisBlock, blockHash: blockHash, chainState: restoredChain)
         } else {
-            let genesisBlock = try await buildGenesisBlock(nexusNetwork.fetcher)
+            let genesisBlock = try await buildGenesisBlock(nexusNetwork.ivyFetcher)
             let blockHash = VolumeImpl<Block>(node: genesisBlock).rawCID
             let chainState = ChainState.fromGenesis(block: genesisBlock, retentionDepth: config.retentionDepth)
             genesis = GenesisResult(block: genesisBlock, blockHash: blockHash, chainState: chainState)
         }
 
         let genesisHeader = VolumeImpl<Block>(node: genesis.block)
-        let storer = BufferedStorer()
+        let storer = BrokerStorer(broker: nexusNetwork.diskBroker)
         do {
             try genesisHeader.storeRecursively(storer: storer)
+            try await storer.flush()
+            let owner = "\(genesisConfig.spec.directory):0"
+            for root in storer.storedRoots {
+                try await nexusNetwork.diskBroker.pin(root: root, owner: owner)
+            }
         } catch {
             let log = NodeLogger("genesis")
             log.error("Failed to store genesis block recursively: \(error)")
         }
-        await nexusNetwork.storeBlockBatch(rootCID: genesisHeader.rawCID, entries: storer.entryList)
 
         self.genesisResult = genesis
         let nexusLevel = ChainLevel(chain: genesis.chainState, children: [:])
@@ -259,7 +245,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             await persistChainState(directory: dir)
             await persistMempool(directory: dir, network: network)
         }
-        try? await sharedDisk.persistState()
         let currentPeers = await connectedPeerEndpoints()
         let scoring = await nexusReputationScoring()
         await anchorPeers.update(peers: currentPeers, scoring: scoring)
@@ -295,15 +280,13 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         guard networks[directory] == nil else { return }
         let resourcesWithIdentity = self.config.resources.withIdentity(publicKey: self.config.publicKey)
         let chainCount = max(networks.count + 1, 1)
-        let chainProtection = BlockchainProtectionPolicy()
-        await unionProtection.register(chain: directory, policy: chainProtection)
         let network = try await ChainNetwork(
             directory: directory,
             config: config,
             resources: resourcesWithIdentity,
             chainCount: chainCount,
-            sharedStore: sharedStore,
-            protectionPolicy: chainProtection
+            sharedDiskBroker: sharedDiskBroker,
+            ivyBroker: ivyBroker
         )
         await network.setDelegate(self)
         networks[directory] = network
@@ -327,10 +310,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     }
 
     /// Tear down every per-chain resource registered under `directory` — stop the
-    /// network, release the StateStore / persister / caches, unregister the
-    /// chain's protection policy from the shared CAS, and drop any per-chain
-    /// metric series. Without this, every deploy-then-destroy cycle leaks one
-    /// entry in each map (UNSTOPPABLE_LATTICE P1 #14,#15).
+    /// network, release the StateStore / persister / caches, and drop any per-chain
+    /// metric series.
     /// Refuses to tear down the nexus — it's load-bearing and cannot be
     /// recreated without re-initializing the node.
     public func destroyChainNetwork(directory: String) async {
@@ -351,8 +332,6 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         tipCaches.removeValue(forKey: directory)
         frontierCaches.removeValue(forKey: directory)
         feeEstimators.removeValue(forKey: directory)
-
-        await unionProtection.unregister(chain: directory)
 
         // Per-chain Prometheus label form is {chain="<directory>"}; strip every
         // series carrying that exact label value.
@@ -456,6 +435,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         for (dir, store) in stateStores {
             await store.maintain()
             NodeLogger("gc").debug("Storage maintenance pass on \(dir)")
+        }
+        for (_, network) in networks {
+            await network.diskBroker.checkpoint()
         }
     }
 

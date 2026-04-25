@@ -92,8 +92,8 @@ extension LatticeNode {
         var currentCID = sqliteTipCID
 
         while currentCID != chainTipCID {
-            guard let data = try? await fetcher.fetch(rawCid: currentCID),
-                  let block = Block(data: data) else {
+            let stub = VolumeImpl<Block>(rawCID: currentCID, node: nil, encryptionInfo: nil)
+            guard let block = try? await stub.resolve(fetcher: fetcher).node else {
                 log.warn("Recovery: could not fetch block \(String(currentCID.prefix(16))) from CAS — stopping")
                 break
             }
@@ -112,12 +112,11 @@ extension LatticeNode {
             }
         }
 
-        // Replay in forward order (oldest first)
         blocksToReplay.reverse()
         var recovered = 0
         for (_, block) in blocksToReplay {
             let header = VolumeImpl<Block>(node: block)
-            let accepted = await lattice.processBlockHeader(header, fetcher: fetcher)
+            let accepted = await lattice.processBlockHeader(header, fetcher: fetcher, skipValidation: true).0
             if accepted {
                 recovered += 1
             }
@@ -191,7 +190,9 @@ extension LatticeNode {
             cids.append(entry.blockHash)
         }
 
-        await network.protectionPolicy.pinAccountBatch(cids)
+        for cid in cids {
+            try? await network.diskBroker.pin(root: cid, owner: "account:\(directory)")
+        }
 
         let log = NodeLogger("persistence")
         log.info("\(directory): rebuilt \(cids.count) account pin(s) from \(history.count) transaction(s)")

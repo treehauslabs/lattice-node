@@ -45,6 +45,24 @@ public actor StateStore {
             )
         """)
 
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS block_stored_roots (
+                height INTEGER NOT NULL,
+                root TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (height, root)
+            )
+        """)
+
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS block_replaced_roots (
+                height INTEGER NOT NULL,
+                root TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (height, root)
+            )
+        """)
+
         // Drop legacy tables/indexes from the old duplicated-state design.
         try db.execute("DROP TABLE IF EXISTS state_diffs")
         try db.execute("DROP INDEX IF EXISTS idx_diffs_height")
@@ -238,6 +256,80 @@ public actor StateStore {
             )
         }
         try? db.commit()
+    }
+
+    // MARK: - Block Stored Roots (Pin Lifecycle)
+
+    public func persistStoredRoots(height: UInt64, roots: [String]) {
+        guard !roots.isEmpty else { return }
+        var counts: [String: Int] = [:]
+        for root in roots { counts[root, default: 0] += 1 }
+        do {
+            try db.beginTransaction()
+            for (root, count) in counts {
+                try db.execute(
+                    "INSERT OR REPLACE INTO block_stored_roots (height, root, count) VALUES (?1, ?2, ?3)",
+                    params: [.int(Int64(height)), .text(root), .int(Int64(count))]
+                )
+            }
+            try db.commit()
+        } catch {
+            try? db.rollbackTransaction()
+        }
+    }
+
+    public nonisolated func getStoredRoots(height: UInt64) -> [(root: String, count: Int)] {
+        guard let rows = try? readDb.query(
+            "SELECT root, count FROM block_stored_roots WHERE height = ?1",
+            params: [.int(Int64(height))]
+        ) else { return [] }
+        return rows.compactMap { row in
+            guard let root = row["root"]?.textValue,
+                  let count = row["count"]?.intValue else { return nil }
+            return (root: root, count: Int(count))
+        }
+    }
+
+    public func deleteStoredRoots(height: UInt64) {
+        try? db.execute(
+            "DELETE FROM block_stored_roots WHERE height = ?1",
+            params: [.int(Int64(height))]
+        )
+    }
+
+    public func persistReplacedRoots(height: UInt64, roots: [String: Int]) {
+        guard !roots.isEmpty else { return }
+        do {
+            try db.beginTransaction()
+            for (root, count) in roots {
+                try db.execute(
+                    "INSERT OR REPLACE INTO block_replaced_roots (height, root, count) VALUES (?1, ?2, ?3)",
+                    params: [.int(Int64(height)), .text(root), .int(Int64(count))]
+                )
+            }
+            try db.commit()
+        } catch {
+            try? db.rollbackTransaction()
+        }
+    }
+
+    public nonisolated func getReplacedRoots(height: UInt64) -> [(root: String, count: Int)] {
+        guard let rows = try? readDb.query(
+            "SELECT root, count FROM block_replaced_roots WHERE height = ?1",
+            params: [.int(Int64(height))]
+        ) else { return [] }
+        return rows.compactMap { row in
+            guard let root = row["root"]?.textValue,
+                  let count = row["count"]?.intValue else { return nil }
+            return (root: root, count: Int(count))
+        }
+    }
+
+    public func deleteReplacedRoots(height: UInt64) {
+        try? db.execute(
+            "DELETE FROM block_replaced_roots WHERE height = ?1",
+            params: [.int(Int64(height))]
+        )
     }
 
     // MARK: - Batch Apply (Atomic)
