@@ -20,7 +20,14 @@ Child chains are not hardcoded. When a `GenesisAction` appears in a Nexus block,
 
 ### Content-addressed storage throughout
 
-Blocks and transactions are stored and referenced by their content hash (CID), not by location. This makes the storage layer naturally deduplicating and verifiable: if you have a CID, you can fetch the data from any peer and prove it's correct without trusting the source. The node uses a three-tier CAS hierarchy — memory, disk, then network — so hot data stays fast and cold data is still reachable.
+Blocks and transactions are stored and referenced by their content hash (CID), not by location. This makes the storage layer naturally deduplicating and verifiable: if you have a CID, you can fetch the data from any peer and prove it's correct without trusting the source.
+
+Storage uses a single shared DiskBroker (SQLite) for all chains, with per-chain MemoryBroker (LRU) caches cascading to it. Pins are ref-counted with owner tags, and retention is governed by two orthogonal axes:
+
+- **BlockRetention** (tip / retention / historical) -- controls when block data is unpinned as the chain advances.
+- **StorageMode** (stateless / stateful / historical) -- controls when replaced state roots are unpinned via StateDiff.
+
+Block gossip sends block data inline via topic messages, so peers accept blocks without a round-trip fetch.
 
 ### Actor-based concurrency
 
@@ -66,7 +73,7 @@ LatticeNode boots from a hardcoded Nexus genesis block and connects to the netwo
 
 4. **Synchronization.** When a peer is more than 2,000 blocks ahead, the node triggers a sync. Two strategies are available: full sync (download every block) and snapshot sync (download recent state only). Strategy selection is automatic based on how far behind the node is.
 
-5. **Persistence.** Chain state is serialized to `<data-dir>/<chain>/chain_state.json` every 100 blocks and on graceful shutdown. The SQLite state store (`state.db`) is updated on every block and is crash-safe via WAL. CAS files are written to disk immediately. On restart, the node walks the data directory and restores all chains — including children discovered in prior sessions. If the node crashed, CAS-based recovery detects any gap between the stale `chain_state.json` and the authoritative SQLite tip, then replays the missing blocks from CAS to bring the chain state current.
+5. **Persistence.** Chain state is serialized to `<data-dir>/<chain>/chain_state.json` every 100 blocks and on graceful shutdown. The SQLite state store (`state.db`) is updated on every block and is crash-safe via WAL. A shared DiskBroker (SQLite, Volume-granular) stores all block and state data across chains with ref-counted pins. Each pin carries an owner tag (e.g., `chain:height`) so that BlockRetention and StorageMode policies can unpin data independently as the chain advances. On restart, the node walks the data directory and restores all chains — including children discovered in prior sessions. If the node crashed, recovery detects any gap between the stale `chain_state.json` and the authoritative SQLite tip, then replays the missing blocks from the DiskBroker to bring the chain state current.
 
 6. **Peer sync on connect.** When a new peer connects, the node announces its chain tip for each subscribed chain. If the peer is behind, this triggers synchronization without waiting for the next mined block.
 
@@ -82,10 +89,10 @@ LatticeNode (CLI entry point)
        │              ├─ ChainLevel: Payments
        │              └─ ChainLevel: Identity
        ├─ ChainNetwork (actor — one per chain)
-       │    ├─ Ivy         — P2P gossip and DHT routing
-       │    ├─ AcornFetcher — CAS: memory → disk → network
-       │    ├─ Mempool     — pending transactions
-       │    └─ Tally       — peer reputation scoring
+       │    ├─ Ivy           — P2P gossip and DHT routing
+       │    ├─ MemoryBroker  — per-chain LRU cache → shared DiskBroker → IvyBroker
+       │    ├─ Mempool       — pending transactions
+       │    └─ Tally         — peer reputation scoring
        ├─ MinerLoop (actor — one per mined chain)
        └─ ChainStatePersister (one per chain)
 ```
@@ -224,9 +231,8 @@ All from [treehauslabs](https://github.com/treehauslabs):
 |---------|------|
 | **Lattice** | Core blockchain protocol — chain state, block validation, consensus rules, secp256k1 ECDSA |
 | **Ivy** | Trust-line DHT for peer discovery, gossip, and authenticated routing |
-| **Acorn** | Content-addressed storage interface |
-| **AcornDiskWorker** | Persistent on-disk CAS backend |
+| **VolumeBroker** | Content-addressed storage: DiskBroker (SQLite), MemoryBroker (LRU), ref-counted pins |
 | **Tally** | Peer reputation scoring and rate limiting |
-| **cashew** | Merkle tree and sparse Merkle proof construction |
+| **cashew** | Merkle tree and sparse Merkle proof construction (with BrokerStorer/BrokerFetcher integration) |
 
 Additional: [swift-nio](https://github.com/apple/swift-nio) for the HTTP transport layer.

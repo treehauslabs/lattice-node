@@ -55,6 +55,8 @@ Returns chain specification parameters.
 ```
 
 ### GET /api/nonce/{address}
+Returns the next valid nonce for the address. When the address has prior transactions, this is the stored nonce + 1. For fresh accounts with no history, returns 0.
+
 ```json
 {"address": "baguqeera...", "nonce": 0}
 ```

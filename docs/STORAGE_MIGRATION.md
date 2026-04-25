@@ -1,9 +1,29 @@
-# Storage Layer Migration: Decouple Warming, Batch at the Volume Boundary
+# Storage Layer Migration: Volume-Based Broker Architecture (Complete)
 
-**Status:** proposed
+**Status:** implemented
 **Owner:** jbao
 **Written:** 2026-04-20
-**Scope:** Acorn (`AcornCASWorker` default extension, `CompositeCASWorker`), Ivy (`ProfitWeightedStore`), LatticeNode (`BufferedStorer`, `ChainNetwork.storeBatch`, `IvyFetcher`)
+**Scope:** VolumeBroker (`DiskBroker`, `MemoryBroker`, `BrokerStorer`, `BrokerFetcher`), LatticeNode (ChainNetwork, storage integration)
+
+## Implementation Summary
+
+The migration described in this document is complete. The Acorn/CID-level storage system has been replaced with VolumeBroker:
+
+- **Shared DiskBroker (SQLite)** across all chains replaces the per-chain `DiskCASWorker` / `CompositeCASWorker` hierarchy. Volume-granular storage eliminates per-CID disk I/O in the hot path.
+- **Per-chain MemoryBroker (LRU)** cascades to the shared DiskBroker, replacing the old `AcornCASWorker` tiered warming model.
+- **IvyBroker** serves as the network tier (MemoryBroker -> DiskBroker -> IvyBroker).
+- **BrokerStorer / BrokerFetcher** integrate with cashew for merkle tree storage and retrieval, replacing `BufferedStorer` and `IvyFetcher`.
+- **Ref-counted pins** with owner tags (e.g., `chain:height`) replace the old unbounded CAS population model.
+- **StateDiff-based state pruning** unpins replaced state roots according to the chain's StorageMode.
+- **BlockRetention modes** (tip / retention / historical) control how long block data remains pinned as the chain advances.
+
+The root causes identified in sections 2.1-2.5 below (read-through warming, composite getLocal bug, O(N) eviction, no dedup) are no longer applicable -- they described the old Acorn/CID-level architecture that has been removed.
+
+---
+
+## Original Analysis (Historical)
+
+The sections below document the original problem analysis and proposed design that motivated this migration.
 
 ## 1. Problem
 
