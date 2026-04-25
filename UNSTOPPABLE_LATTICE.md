@@ -6,50 +6,71 @@ Findings are ranked by impact on "mining becomes unstoppable": things that event
 
 ---
 
-## Verification status — 2026-04-21
+## Major architecture change — 2026-04-25 (VolumeBroker migration)
 
-Every item below was re-verified against the current tree. Line numbers shift every few commits; code identity is checked by grep/read, not by line alone.
+The storage layer was completely replaced. Per-CID Acorn storage is gone. The new model:
+
+- **VolumeBroker** replaces Acorn. Storage is Volume-granular (root CID + all entry CIDs stored/evicted as a unit).
+- **Shared DiskBroker** — one SQLite database for all chains (was per-chain isolated). Eliminates cross-chain resolution failures.
+- **Per-chain MemoryBroker** — LRU cache per chain cascading to the shared DiskBroker.
+- **Ref-counted pins** with owner tags (`"Nexus:42"` = block 42 on Nexus). Pin/unpin carry a count. Data evictable only when all owners release all pins.
+- **Two orthogonal retention axes:**
+  - `BlockRetention` (tip/retention/historical) — controls when block data is unpinned
+  - `StorageMode` (stateless/stateful/historical) — controls when replaced state roots are unpinned via StateDiff
+- **StateDiff** threaded through the validation pipeline — `proveAndUpdateState` returns ref-counted maps of created/replaced CIDs, threaded from `validateFrontierState` through `processBlockHeader`.
+- **Inline block gossip** — mined blocks broadcast with data inline via topic messages (no round-trip fetch needed by peers).
+- **Tally gate removed** from block reception — PoW + timestamp + rate-limit are sufficient; tally was blocking legitimate consensus messages from fresh peers.
+
+**Deleted:** `BlockchainProtectionPolicy`, `UnionProtectionPolicy`, `AcornFetcher`, `BufferedStorer` (moved to tests), `AcornDiskWorker`, `AcornMemoryWorker`, per-chain `volumes.sqlite`.
+
+---
+
+## Verification status — 2026-04-25
 
 | Item | Status | Note |
 | --- | --- | --- |
-| P0 #1 diagLog | STILL VALID | `:18-29` unchanged |
-| P0 #2 recentBlockExpiry | STILL VALID | `pruneExpiredRecentBlocks` has zero callers (grep confirmed) |
-| P0 #3 accountCIDs LRU | STILL VALID | `pinAccountData` now at `:925-953` (was :921-949) |
-| P0 #4 `tx_history` pruner | STILL VALID | only `pruneDiffs` exists; no `tx_history` pruner |
-| P1 #5 double child-block CAS writes | **PARTIALLY FIXED** | `BufferedStorer(skipSet:)` from commits `d4e746a` + `0d33338` dedupes writes. Walks still redundant; `registerVolume` still runs twice |
-| P1 #6 mempool fetcherCache | STILL VALID | now at `:719-723` |
-| P1 #7 serial pin announces | STILL VALID | now at `:950-952` |
-| P1 #8 resolveLatestMinerNonce | STILL VALID | `:413-424` |
-| P1 #11 backfillBlockIndex | **DONE** | `LatticeNode+Persistence.swift:146` skips the scan when `StateStore.getBlockIndexCount() >= height+1`. Tests in `BackfillBlockIndexTests.swift`. |
-| P1 #12 finalizeSyncResult | STILL VALID — **intent shifted** | `resolveRecursive` on transactions is now required for sparse state replay (comment at `:209`), not redundant validation. Fix suggestion should cache txDict during sync, not skip the resolve |
-| P1 #13 recoverFromCAS | STILL VALID | `:73-132` unchanged |
-| P1 #14 per-chain maps on unsubscribe | STILL VALID | `stop()` at `:222` + `stopMining` at `Mining.swift:49` confirmed not to touch these maps |
-| P1 #15 NodeMetrics keys | STILL VALID | `Metrics.swift:5-9` |
-| P1 #16 stmtCache | STILL VALID | `:12` |
-| P2 #9 watchdog submit timeout | STILL VALID | `MinerLoop.swift:114-118` still just logs + `continue` — no hard ceiling. `stallThreshold=300s` is defined but explicitly skipped when `isSubmitting` |
-| P2 #10 inFlightBlockCIDs cap | STILL VALID | low-risk |
-| P2 #17 difficultyHashPrefixBytes | STILL VALID | `:340-368` |
-| E1–E11 | STILL VALID | `LatticeCLI.swift` registers 10 subcommands at `:10-19`; all extraneous items re-grepped |
-| L1 ChainSpec presets | STILL VALID | path corrected: `/Sources/Lattice/Block/ChainSpec.swift:231-262` |
-| L2 BlockBuilder | **WRONG — remove from cut list** | `BlockBuilder.buildGenesis` / `buildBlock` are called from `NexusGenesis.swift:93`, `RPCServer.swift:582`, `MinerLoop.swift:223,:238,:562`, `LatticeNode.swift:119`, `InitCommand.swift:126,:145,:207,:267,:277`. This is a production API, not dev-only. |
-| L3 validateDifficulty/etc. | STILL VALID | `/Sources/Lattice/Block/ChainSpec.swift:195-212`; grep shows only test callers |
-| L4 genesis helpers | STILL VALID | low-urgency |
-| L5 premineAmount / halving schedule | **PARTIALLY WRONG** | `premineAmount()` IS used in production (`RPCServer.swift:196,:560`, `NexusGenesis.swift:71`). `totalRewards`, `rewardRange`, `totalHalvings` are tests-only — those three are cut candidates. Keep `premineAmount`. |
-| L6 CollectionConcurrencyKit | STILL VALID | benchmark needed before cutting |
-| L7 Block.version | **PARTIALLY WRONG** | It IS read — `RPCServer.swift:260` serializes it, `MinerLoop.swift:625` + `BlockBuilder.swift:22` propagate it. It is NOT consulted in `Block+Validate.swift` (no consensus check). "Do not remove" conclusion is still correct; rationale is "propagated but never branched on" not "never read". |
-| I1 CASBridge | STILL VALID | 0 call sites in lattice-node |
-| I2 Volume fetching | STILL VALID | 0 call sites |
+| P0 #1 diagLog | **DONE** | Gated behind env flag; `[TIMING]` prints removed |
+| P0 #2 recentBlockExpiry | **OBSOLETE** | `BlockchainProtectionPolicy` deleted. Pin lifecycle now handled by VolumeBroker owner-based pins |
+| P0 #3 accountCIDs LRU | **OBSOLETE** | `BlockchainProtectionPolicy` deleted. Account pins use VolumeBroker ref-counted pins |
+| P0 #4 `tx_history` pruner | **DONE** | `pruneTransactionHistory(belowHeight:keepAddress:)` runs in GC loop |
+| P0 #4a pin/announce coupling | **OBSOLETE** | Old protection policy gone. Pin lifecycle is now explicit: owner tags + ref counts + evictUnpinned |
+| P1 #5 double child-block writes | **DONE** | Shared DiskBroker means all chains write to one store. No cross-broker copies needed |
+| P1 #6 mempool fetcherCache | **DONE** | Incremental cache in NodeMempool |
+| P1 #7 serial pin announces | **DONE** | Parallelized |
+| P1 #8 resolveLatestMinerNonce | **DONE** | Cached with reorg invalidation |
+| P1 #11 backfillBlockIndex | **DONE** | Skips when populated |
+| P1 #12 finalizeSyncResult | STILL VALID | Cache txDict during sync |
+| P1 #13 recoverFromCAS | **FIXED** | Uses `skipValidation: true` — CAS data is trusted (PoW already verified at accept time) |
+| P1 #14 per-chain maps | **DONE** | `destroyChainNetwork` cleans up all maps |
+| P1 #15 NodeMetrics keys | **DONE** | Cleaned up in destroyChainNetwork |
+| P1 #16 stmtCache | STILL VALID | Bounded by distinct SQL strings (finite) |
+| P2 #9 watchdog submit timeout | **DONE** | Inner timeout with `raceSubmitWithTimeout` |
+| P2 #10 inFlightBlockCIDs cap | STILL VALID | Low-risk |
+| P2 #17 difficultyHashPrefixBytes | STILL VALID | Allocation per iteration, not a leak |
+| S1 Mempool admission DoS | **DONE** | Per-sender nonce-gap cap, fee floor, RBF, fee-priority eviction |
+| S2 PoW-short-circuit ordering | **DONE** | Short-circuit before validate |
+| S3 Reorg vs retentionDepth | **DONE** | Fail-loud on deep reorg |
+| S4 Shared-CAS isolation | **REDESIGNED** | Shared DiskBroker is intentional. Pin owners provide per-chain isolation. No eviction quota needed — unpinned data is evictable regardless of chain |
+| S5 PinAnnounce verification | **DONE** | Tally demotion on fetch-failure |
+| S6 Block timestamp validation | **DONE** | MTP + future drift bounds in Lattice core |
+| S7 SQLite WAL/VACUUM | **DONE** | Checkpoint + incremental vacuum in maintenance loop |
+| S8 childBlocks serialization | STILL VALID | Needs golden-block round-trip test |
+| S9 Anchor-peer demotion | **DONE** | Score-based demotion |
+| S10 maybePersist cadence | **DONE** | Measured and tuned |
+| I1 CASBridge | **DELETED** | Ivy rewritten as stateless transport |
+| I2 Volume fetching | **NOW USED** | VolumeBroker provides Volume-level fetch/store |
 | I3 mining challenge | STILL VALID | 0 call sites |
 | I4 offerDirectConnect | STILL VALID | 0 call sites |
 | I5 PEX | STILL VALID | 0 call sites |
 | I6 Zone sync / replication | STILL VALID | 0 call sites |
-| I7 LocalDiscovery default-on | STILL VALID | `LatticeNodeConfig.swift:30` still defaults `enableLocalDiscovery: true` |
+| I7 LocalDiscovery default | **DONE** | Default flipped to `false` |
 | I8 STUN | STILL VALID (conditional) | |
 | I9 PeerHealthMonitor | STILL VALID (optional) | |
-| I10 SendBudget | STILL VALID (optional) | |
-| I11 Ivy `pendingRequests` / `pendingVolumeRequests` | STILL VALID | confirmed unbounded at `Ivy.swift:23` and `:54`. Note: many sibling Ivy dicts HAVE been bounded (`BoundedDictionary` at `:33,:44,:48,:49,:52,:53`) — these two are the holdouts. |
+| I10 SendBudget | **DELETED** | Removed from Ivy |
+| I11 pendingRequests | STILL VALID | Unbounded continuations |
+| L1-L7 | See original entries below | L2 confirmed keep; L5/L7 narrowed |
 
-**Net delta since the doc was first written:** P1 #5 is partially done (thanks to the shared-CAS + skipSet commits). L2 should come off the cut list. L5 and L7 need narrowing. Everything else is still on the table.
+**Net delta:** 25 of 40+ items resolved. The VolumeBroker migration eliminated the entire Acorn/BlockchainProtectionPolicy/UnionProtectionPolicy surface. Remaining open items are mostly Ivy cleanup (I3-I6, I11) and the serialization round-trip test (S8).
 
 ### Audit additions — items this doc was missing
 
