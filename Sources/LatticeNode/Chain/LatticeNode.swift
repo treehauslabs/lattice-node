@@ -207,7 +207,15 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             log.warn("No bootstrap peers configured and local discovery disabled — node may not find peers")
         }
         await lattice.setDelegate(self)
-        for (dir, network) in networks {
+        // Recover parents before children: a child block's `processBlockHeader`
+        // walks the lattice tree to its parent chain's level and rejects with
+        // `accepted=false` if the parent block isn't yet in the lattice.
+        // Dictionary iteration order is non-deterministic, so without an
+        // explicit topological order children frequently replay first and
+        // their CAS recovery silently fails — leaving in-memory chain state
+        // stuck at 0 even though SQLite holds the real tip.
+        for dir in topologicallyOrderedDirectories() {
+            guard let network = networks[dir] else { continue }
             await network.setDelegate(self)
             try await network.start()
             if !config.discoveryOnly {
@@ -261,6 +269,27 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
     public func allDirectories() -> [String] {
         Array(networks.keys.sorted())
+    }
+
+    /// Order registered chain directories so every parent appears before its
+    /// children. Used by `start()` so CAS recovery replays parent blocks
+    /// before the children that reference them. Falls back to alphabetical
+    /// order within each tier for stability.
+    func topologicallyOrderedDirectories() -> [String] {
+        let nexusDir = genesisConfig.spec.directory
+        var ordered: [String] = []
+        var visited: Set<String> = []
+        func visit(_ dir: String) {
+            guard !visited.contains(dir), networks[dir] != nil else { return }
+            if dir != nexusDir, let parent = parentDirectoryByChain[dir], parent != dir {
+                visit(parent)
+            }
+            visited.insert(dir)
+            ordered.append(dir)
+        }
+        visit(nexusDir)
+        for dir in networks.keys.sorted() { visit(dir) }
+        return ordered
     }
 
     public func isMining(directory: String) async -> Bool {
