@@ -15,7 +15,9 @@ public enum TransactionValidationError: Error, Sendable {
     case duplicateAccountOwner(String)
     case insufficientBalance(owner: String, balance: UInt64, required: UInt64)
     case noStateAvailable
-    case swapSignerMismatch
+    case depositActionInvalid
+    case receiptActionInvalid
+    case withdrawalActionInvalid
     case stateResolutionFailed
     case feeTooLow(actual: UInt64, minimum: UInt64)
     case feeTooHigh(actual: UInt64, maximum: UInt64)
@@ -55,7 +57,9 @@ public struct TransactionValidator: Sendable {
         if let err = validateFees(body) { return .failure(err) }
         if let err = await validateNonce(body) { return .failure(err) }
         if let err = validateChainPath(body) { return .failure(err) }
-        if let err = validateSwaps(body) { return .failure(err) }
+        if let err = validateDeposits(body) { return .failure(err) }
+        if let err = validateReceipts(body) { return .failure(err) }
+        if let err = validateWithdrawals(body) { return .failure(err) }
         if let err = validateUniqueOwners(body) { return .failure(err) }
         if let err = await validateBalances(body) { return .failure(err) }
         if let err = validateConservation(body) { return .failure(err) }
@@ -159,35 +163,41 @@ public struct TransactionValidator: Sendable {
         return nil
     }
 
-    private func validateSwaps(_ body: TransactionBody) -> TransactionValidationError? {
-        // Nexus cannot have deposit or withdrawal actions
-        if isNexus {
-            if !body.depositActions.isEmpty { return .depositOrWithdrawalOnNexus }
-            if !body.withdrawalActions.isEmpty { return .depositOrWithdrawalOnNexus }
-        }
-        // Receipts are valid on any non-leaf chain: a grandchild's withdrawal
-        // resolves `parentState.receiptState` on its DIRECT parent (which may
-        // itself be a non-nexus chain like Mid in a 3-level hierarchy). The
-        // validator can't cheaply tell whether the current chain has children,
-        // and correctness is enforced at block-application time via
-        // `TransactionBody.withdrawalsAreValid`, which checks the parent-chain
-        // receipt state. Allowing receipts on any chain makes 2+ level deep
-        // cross-chain swaps work.
+    private func validateDeposits(_ body: TransactionBody) -> TransactionValidationError? {
+        if isNexus, !body.depositActions.isEmpty { return .depositOrWithdrawalOnNexus }
         let signerSet = Set(body.signers)
         for deposit in body.depositActions {
-            if deposit.amountDeposited == 0 { return .swapSignerMismatch }
-            if deposit.amountDeposited != deposit.amountDemanded { return .swapSignerMismatch }
-            if !signerSet.contains(deposit.demander) { return .swapSignerMismatch }
+            if deposit.amountDeposited == 0 { return .depositActionInvalid }
+            if deposit.amountDemanded == 0 { return .depositActionInvalid }
+            if !signerSet.contains(deposit.demander) { return .depositActionInvalid }
         }
-        for withdrawal in body.withdrawalActions {
-            if withdrawal.amountWithdrawn == 0 { return .swapSignerMismatch }
-            if withdrawal.amountWithdrawn != withdrawal.amountDemanded { return .swapSignerMismatch }
-            if !signerSet.contains(withdrawal.withdrawer) { return .swapSignerMismatch }
-        }
-        // Receipt: withdrawer must sign (their nexus funds are debited to pay demander)
+        return nil
+    }
+
+    // Receipts are valid on any non-leaf chain: a grandchild's withdrawal
+    // resolves `parentState.receiptState` on its DIRECT parent (which may
+    // itself be a non-nexus chain like Mid in a 3-level hierarchy). The
+    // validator can't cheaply tell whether the current chain has children,
+    // and correctness is enforced at block-application time via
+    // `TransactionBody.withdrawalsAreValid`, which checks the parent-chain
+    // receipt state. Allowing receipts on any chain makes 2+ level deep
+    // cross-chain swaps work.
+    private func validateReceipts(_ body: TransactionBody) -> TransactionValidationError? {
+        let signerSet = Set(body.signers)
         for receipt in body.receiptActions {
-            if receipt.amountDemanded == 0 { return .swapSignerMismatch }
-            if !signerSet.contains(receipt.withdrawer) { return .swapSignerMismatch }
+            if receipt.amountDemanded == 0 { return .receiptActionInvalid }
+            if !signerSet.contains(receipt.withdrawer) { return .receiptActionInvalid }
+        }
+        return nil
+    }
+
+    private func validateWithdrawals(_ body: TransactionBody) -> TransactionValidationError? {
+        if isNexus, !body.withdrawalActions.isEmpty { return .depositOrWithdrawalOnNexus }
+        let signerSet = Set(body.signers)
+        for withdrawal in body.withdrawalActions {
+            if withdrawal.amountWithdrawn == 0 { return .withdrawalActionInvalid }
+            if withdrawal.amountDemanded == 0 { return .withdrawalActionInvalid }
+            if !signerSet.contains(withdrawal.withdrawer) { return .withdrawalActionInvalid }
         }
         return nil
     }

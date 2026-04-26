@@ -139,23 +139,18 @@ extension LatticeNode {
         }
     }
 
-    /// Fast path invoked from `applyChildBlockStates`: when the parent's
-    /// `storeBlockRecursively` pass walked the full Merkle tree, the child's
-    /// subtree is already resident in the shared CAS. Running another
-    /// recursive walk on the child network repeats O(child subtree size) of
-    /// serialize + batch work per nexus block for zero new bytes on disk.
-    ///
-    /// Skip the walk when the shared CAS already has the child root; just
-    /// `registerVolume` so the child network's eviction accounting owns its
-    /// root, and update `lastStoredCIDs` so a later same-child re-store (e.g.
-    /// gossip echo) short-circuits too. Fall back to the full walk only when
-    /// the root is genuinely missing — e.g. a child-chain block that arrived
-    /// via gossip before its parent nexus block.
+    /// Invoked from `applyChildBlockStates` after the parent's
+    /// `storeBlockRecursively` walked the merged-mined nexus block. The
+    /// shared CAS already holds the child subtree's bytes (pinned under the
+    /// parent's `<parentDir>:<parentIndex>` owner), but those pins are
+    /// released when the parent block falls past `retentionDepth`. The child
+    /// chain still references that data, so we re-walk on the child network
+    /// to install per-chain owner pins (`<childDir>:<childIndex>`) and
+    /// record the roots in the child's StateStore. Disk writes are
+    /// idempotent (`INSERT OR REPLACE`) and the broker's pin table is keyed
+    /// by (root, owner), so the walk is correct even when bytes already
+    /// exist locally.
     func registerChildBlockVolume(childBlock: Block, header: VolumeImpl<Block>, network: ChainNetwork) async {
-        let rootCID = header.rawCID
-        if await network.hasCID(rootCID) {
-            return
-        }
         await storeBlockRecursively(childBlock, network: network)
     }
 

@@ -6,8 +6,8 @@ import cashew
 /// Separate sets per state trie — no prefix disambiguation needed.
 public struct StateKeySet: Sendable {
     public var accounts: Set<String> = []
-    public var swaps: Set<String> = []
-    public var settles: Set<String> = []
+    public var deposits: Set<String> = []
+    public var receipts: Set<String> = []
     public var general: Set<String> = []
     public var genesis: Set<String> = []
     public var peers: Set<String> = []
@@ -15,10 +15,10 @@ public struct StateKeySet: Sendable {
     public static func from(_ body: TransactionBody) -> StateKeySet {
         var s = StateKeySet()
         for a in body.accountActions { s.accounts.insert(a.owner) }
-        for a in body.depositActions { s.swaps.insert(DepositKey(depositAction: a).description) }
-        for a in body.withdrawalActions { s.swaps.insert(DepositKey(withdrawalAction: a).description) }
+        for a in body.depositActions { s.deposits.insert(DepositKey(depositAction: a).description) }
+        for a in body.withdrawalActions { s.deposits.insert(DepositKey(withdrawalAction: a).description) }
         for a in body.receiptActions {
-            s.settles.insert(ReceiptKey(receiptAction: a).description)
+            s.receipts.insert(ReceiptKey(receiptAction: a).description)
         }
         for a in body.actions { s.general.insert(a.key) }
         for a in body.genesisActions { s.genesis.insert(a.directory) }
@@ -29,8 +29,8 @@ public struct StateKeySet: Sendable {
     public func isDisjoint(with other: StateKeySet) -> Bool {
         // accounts excluded: delta model aggregates per owner, so
         // multiple transactions touching the same account are safe
-        swaps.isDisjoint(with: other.swaps) &&
-        settles.isDisjoint(with: other.settles) &&
+        deposits.isDisjoint(with: other.deposits) &&
+        receipts.isDisjoint(with: other.receipts) &&
         general.isDisjoint(with: other.general) &&
         genesis.isDisjoint(with: other.genesis) &&
         peers.isDisjoint(with: other.peers)
@@ -38,8 +38,8 @@ public struct StateKeySet: Sendable {
 
     public mutating func formUnion(_ other: StateKeySet) {
         accounts.formUnion(other.accounts)
-        swaps.formUnion(other.swaps)
-        settles.formUnion(other.settles)
+        deposits.formUnion(other.deposits)
+        receipts.formUnion(other.receipts)
         general.formUnion(other.general)
         genesis.formUnion(other.genesis)
         peers.formUnion(other.peers)

@@ -26,10 +26,17 @@ final class MempoolAwareFetcher: VolumeAwareFetcher, @unchecked Sendable {
         return try await inner.fetch(rawCid: rawCid)
     }
 
-    func provide(rootCID: String, paths: ArrayTrie<ResolutionStrategy>) async throws {
+    func enterVolume(rootCID: String, paths: ArrayTrie<ResolutionStrategy>) async throws {
         if cache[rootCID] != nil { return }
         if let volumeAware = inner as? VolumeAwareFetcher {
-            try await volumeAware.provide(rootCID: rootCID, paths: paths)
+            try await volumeAware.enterVolume(rootCID: rootCID, paths: paths)
+        }
+    }
+
+    func exitVolume(rootCID: String) async {
+        if cache[rootCID] != nil { return }
+        if let volumeAware = inner as? VolumeAwareFetcher {
+            await volumeAware.exitVolume(rootCID: rootCID)
         }
     }
 }

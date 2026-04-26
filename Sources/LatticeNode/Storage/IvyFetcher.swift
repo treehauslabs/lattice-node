@@ -21,27 +21,34 @@ public enum FetcherError: Error {
 public actor IvyFetcher: VolumeAwareFetcher {
     private let ivy: Ivy
     private let broker: any VolumeBroker
-    private var cache: [String: Data] = [:]
 
-    /// Maps rootCID -> discovered pinner for targeted retrieval.
-    /// OrderedDictionary maintains insertion order for LRU eviction.
+    /// Stack of Volume boundary caches. Each provide() pushes a new layer.
+    /// leave() pops via removeSubrange (cascading cleanup). fetch() searches
+    /// top-down. Bounded by the provide/leave lifecycle — recursive resolves
+    /// leave after children complete, simple resolves are cleaned up by the
+    /// parent's leave.
+    private var cacheStack: [(root: String, entries: [String: Data])] = []
+
     private var volumePinners: OrderedDictionary<String, PeerID> = [:]
     private let maxPinnerCacheSize = 512
 
-    /// The currently active Volume root — set by provide(), used by fetch()
-    /// to route requests directly to the pinner instead of DHT-walking.
     private var activeVolumeRoot: String?
-
-    /// Most recently bound pinner, used as a fallback when `activeVolumeRoot`
-    /// has no explicit pinner. A peer that gave us a block transitively holds
-    /// every sub-volume it references, but DHT discovery for those sub-volumes
-    /// lags — falling back to this peer turns a 15s DHT-walk timeout into one
-    /// extra round-trip to a connected node that almost certainly has the data.
     private var recentPinner: PeerID?
 
     public init(ivy: Ivy, broker: any VolumeBroker) {
         self.ivy = ivy
         self.broker = broker
+    }
+
+    private func pushCache(root: String, entries: [String: Data]) {
+        cacheStack.append((root: root, entries: entries))
+    }
+
+    private func cacheLookup(_ cid: String) -> Data? {
+        for i in stride(from: cacheStack.count - 1, through: 0, by: -1) {
+            if let data = cacheStack[i].entries[cid] { return data }
+        }
+        return nil
     }
 
     private func touchPinnerCache(_ key: String) {
@@ -74,7 +81,7 @@ public actor IvyFetcher: VolumeAwareFetcher {
     // MARK: - Fetcher
 
     public func fetch(rawCid: String) async throws -> Data {
-        if let data = cache[rawCid] { return data }
+        if let data = cacheLookup(rawCid) { return data }
 
         if let payload = await broker.fetchVolume(root: rawCid) {
             if let data = payload.entries[rawCid] { return data }
@@ -83,40 +90,33 @@ public actor IvyFetcher: VolumeAwareFetcher {
         let volumePinner = activeVolumeRoot.flatMap { volumePinners[$0] }
         let pinner = volumePinner ?? recentPinner
 
-        // 2. Route directly to a known pinner (one hop) via the fee-less direct
-        //    path — gossip follow-up, not a cold DHT query.
         if let pinner = pinner {
             if let root = activeVolumeRoot, volumePinner != nil { touchPinnerCache(root) }
             if let data = await ivy.getDirect(cid: rawCid, from: pinner) {
-                // Store back into broker cascade for future reads
                 let payload = VolumePayload(root: rawCid, entries: [rawCid: data])
                 try? await broker.storeVolumeLocal(payload)
                 return data
             }
         }
 
-        // 3. Fall back to untargeted DHT walk
         if let data = await ivy.get(cid: rawCid) {
             let payload = VolumePayload(root: rawCid, entries: [rawCid: data])
             try? await broker.storeVolumeLocal(payload)
             return data
         }
 
-        NodeLogger("fetcher").error("notFound: \(String(rawCid.prefix(20)))… activeVolume=\(activeVolumeRoot?.prefix(20) ?? "nil") cacheSize=\(cache.count)")
+        let total = cacheStack.reduce(0) { $0 + $1.entries.count }
+        NodeLogger("fetcher").error("notFound: \(String(rawCid.prefix(20)))… activeVolume=\(activeVolumeRoot?.prefix(20) ?? "nil") stackDepth=\(cacheStack.count) totalCached=\(total)")
         throw FetcherError.notFound(rawCid)
     }
 
     // MARK: - VolumeAwareFetcher
 
-    /// Called by Cashew before resolving child blocks within a Volume.
-    /// Translates Cashew's resolution paths into an Ivy selector, discovers pinners
-    /// that cover the needed subtree, and targets subsequent fetch() calls at the best match.
-    public func provide(rootCID: String, paths: ArrayTrie<ResolutionStrategy>) async throws {
+    public func enterVolume(rootCID: String, paths: ArrayTrie<ResolutionStrategy>) async throws {
         activeVolumeRoot = rootCID
-        cache.removeAll(keepingCapacity: true)
 
         if let payload = await broker.fetchVolume(root: rootCID) {
-            for (cid, data) in payload.entries { cache[cid] = data }
+            pushCache(root: rootCID, entries: payload.entries)
             return
         }
 
@@ -137,6 +137,12 @@ public actor IvyFetcher: VolumeAwareFetcher {
             volumePinners[rootCID] = PeerID(publicKey: fallback.publicKey)
             touchPinnerCache(rootCID)
             evictPinnerCacheIfNeeded()
+        }
+    }
+
+    public func exitVolume(rootCID: String) {
+        if let idx = cacheStack.lastIndex(where: { $0.root == rootCID }) {
+            cacheStack.removeSubrange(idx...)
         }
     }
 

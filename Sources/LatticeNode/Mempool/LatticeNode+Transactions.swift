@@ -69,8 +69,12 @@ extension LatticeNode {
             return "Insufficient balance for \(owner): has \(balance), needs \(required)"
         case .noStateAvailable:
             return "Chain state not available"
-        case .swapSignerMismatch:
-            return "Swap action sender not in signers"
+        case .depositActionInvalid:
+            return "Deposit action invalid (zero amount or demander not in signers)"
+        case .receiptActionInvalid:
+            return "Receipt action invalid (zero amount or withdrawer not in signers)"
+        case .withdrawalActionInvalid:
+            return "Withdrawal action invalid (zero amount or withdrawer not in signers)"
         case .stateResolutionFailed:
             return "Failed to resolve chain state"
         case .feeTooLow(let actual, let minimum):
