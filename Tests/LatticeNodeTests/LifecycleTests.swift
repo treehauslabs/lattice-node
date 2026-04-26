@@ -1441,11 +1441,9 @@ final class LifecycleTests: XCTestCase {
         // ====== PHASE 3: WITHDRAWAL on child chain ======
         // Withdrawer (miner) claims the deposited funds on the child chain.
         // Conservation: 0 + withdrawn(200) = credits(199) + fee(1) + deposited(0)
-        // Child chain has coinbase txs signed by the miner — /nonce returns the
-        // last-used nonce, so next-to-use is that + 1.
+        // /nonce returns next-to-use (lastUsed+1), so use it directly.
         let wdNonceResp = try await rpcGet(base, "/nonce/\(minerAddr)?chain=Child")
-        let wdLastUsed = wdNonceResp["nonce"] as? Int ?? 0
-        let wdNonce = wdLastUsed + 1
+        let wdNonce = wdNonceResp["nonce"] as? Int ?? 0
         let preBalResp = try await rpcGet(base, "/balance/\(minerAddr)?chain=Child")
         let preBal = preBalResp["balance"] as? Int ?? 0
         let wdPrep = try await rpcPost(base, "/transaction/prepare", body: [

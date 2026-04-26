@@ -81,6 +81,7 @@ extension LatticeNode {
             if block.index > 0 {
                 let prevOwner = "\(directory):\(block.index - 1)"
                 try await network.diskBroker.unpinAll(owner: prevOwner)
+                await releaseValidatorPins(directory: directory, height: block.index - 1, network: network)
             }
 
         case .retention:
@@ -92,6 +93,7 @@ extension LatticeNode {
                     await store.deleteStoredRoots(height: pruneHeight)
                     await store.deleteReplacedRoots(height: pruneHeight)
                 }
+                await releaseValidatorPins(directory: directory, height: pruneHeight, network: network)
             }
 
         case .historical:
@@ -103,6 +105,7 @@ extension LatticeNode {
                 if !onMainChain {
                     let pruneOwner = "\(directory):\(pruneHeight)"
                     try await network.diskBroker.unpinAll(owner: pruneOwner)
+                    await releaseValidatorPins(directory: directory, height: pruneHeight, network: network)
                 }
             }
         }
@@ -268,7 +271,7 @@ extension LatticeNode {
             // The Lattice library processes child blocks into ChainState, but
             // LatticeNode-level state (deposits, balances, etc.) must be applied here.
             if directory == genesisConfig.spec.directory {
-                await applyChildBlockStates(nexusBlock: block, fetcher: fetcher)
+                await applyChildBlockStates(parentBlock: block, nexusBlockCID: header.rawCID, fetcher: fetcher)
             }
         }
 
@@ -818,14 +821,12 @@ extension LatticeNode {
         await persistChainState(directory: directory)
     }
 
-    /// Apply child block state changes for each child block embedded in a nexus block.
-    /// Stores the child block in the child CAS, applies state changes (StateStore,
-    /// mempool nonces, receipts), and prunes confirmed transactions from the child mempool.
-    /// Recurses into each child's own `childBlocks` so grandchildren get the same
-    /// treatment — without recursion, a grandchild's mempool never sees
-    /// `batchUpdateConfirmedNonces`, so miner-signed user txs there stay stuck.
-    private func applyChildBlockStates(nexusBlock: Block, fetcher: Fetcher) async {
-        guard let childBlocksNode = try? await nexusBlock.childBlocks.resolve(
+    /// Apply child block state changes for each child block embedded in `parentBlock`.
+    /// Threads `nexusBlockCID` UNCHANGED through recursion: every descendant at
+    /// any merged-mining depth pins the same topmost nexus block that admitted
+    /// it. One-hop, so prune and cross-chain sync don't need to walk a chain.
+    private func applyChildBlockStates(parentBlock: Block, nexusBlockCID: String, fetcher: Fetcher) async {
+        guard let childBlocksNode = try? await parentBlock.childBlocks.resolve(
             paths: [[""]: .list], fetcher: fetcher
         ).node,
               let childDirs = try? childBlocksNode.allKeys() else { return }
@@ -845,6 +846,21 @@ extension LatticeNode {
                     header: childBlockHeader,
                     network: childNet
                 )
+
+                // Install the validator pin: child block validates against
+                // the topmost nexus block whose PoW admitted this whole tree.
+                // Broker pin tag (`validates:<childCID>`) makes the relationship
+                // queryable from the network side; StateStore row makes it
+                // queryable for prune at retention.
+                let childCID = childBlockHeader.rawCID
+                try? await childNet.diskBroker.pin(root: nexusBlockCID, owner: "validates:\(childCID)")
+                if let store = stateStores[childDir] {
+                    await store.persistValidatorPin(
+                        height: childBlock.index,
+                        childCID: childCID,
+                        parentCID: nexusBlockCID
+                    )
+                }
             }
 
             // Use the child network's fetcher for resolving child transactions
@@ -869,9 +885,36 @@ extension LatticeNode {
                 await childNet.nodeMempool.removeAll(txCIDs: confirmedCIDs)
             }
 
-            // Recurse into grandchildren embedded in this child block.
-            await applyChildBlockStates(nexusBlock: childBlock, fetcher: childFetcher)
+            // Recurse with the SAME nexus CID — every descendant pins the
+            // topmost ancestor, not its immediate parent.
+            await applyChildBlockStates(parentBlock: childBlock, nexusBlockCID: nexusBlockCID, fetcher: childFetcher)
         }
+    }
+
+    /// Cross-store lookup: a child CID's validator pin row may live in any
+    /// chain's StateStore (whichever chain that childCID belongs to). Scan
+    /// all per-chain stores until one resolves.
+    public func validatorParent(forChildCID childCID: String) async -> String? {
+        for (_, store) in stateStores {
+            if let parent = store.getValidatorParent(childCID: childCID) {
+                return parent
+            }
+        }
+        return nil
+    }
+
+    /// Release validator pins at a height: removes both the broker pin
+    /// (`validates:<childCID>` owner on the nexus root) and the StateStore
+    /// row. Invoked from `pruneBlocks` at the retention boundary so the
+    /// nexus block can age out once no descendant references remain.
+    private func releaseValidatorPins(directory: String, height: UInt64, network: ChainNetwork) async {
+        guard let store = stateStores[directory] else { return }
+        let entries = store.getValidatorPins(height: height)
+        if entries.isEmpty { return }
+        for entry in entries {
+            try? await network.diskBroker.unpinAll(owner: "validates:\(entry.childCID)")
+        }
+        await store.deleteValidatorPins(height: height)
     }
 
     /// Apply an accepted block's state changes, receipts, fees, events, and metrics.

@@ -63,6 +63,19 @@ public actor StateStore {
             )
         """)
 
+        // One-hop merged-mining validator record: every child block (at any
+        // depth) pins the topmost nexus block that admitted it. Stored here
+        // (not on the broker alone) so prune at retention can release the
+        // broker pin in O(rows-at-height) without walking the chain.
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS validator_pins (
+                child_cid TEXT PRIMARY KEY,
+                parent_cid TEXT NOT NULL,
+                height INTEGER NOT NULL
+            )
+        """)
+        try db.execute("CREATE INDEX IF NOT EXISTS idx_validator_pins_height ON validator_pins(height)")
+
         // Drop legacy tables/indexes from the old duplicated-state design.
         try db.execute("DROP TABLE IF EXISTS state_diffs")
         try db.execute("DROP INDEX IF EXISTS idx_diffs_height")
@@ -328,6 +341,42 @@ public actor StateStore {
     public func deleteReplacedRoots(height: UInt64) {
         try? db.execute(
             "DELETE FROM block_replaced_roots WHERE height = ?1",
+            params: [.int(Int64(height))]
+        )
+    }
+
+    // MARK: - Validator Pins (Cross-Chain Merged Mining)
+
+    public func persistValidatorPin(height: UInt64, childCID: String, parentCID: String) {
+        try? db.execute(
+            "INSERT OR REPLACE INTO validator_pins (child_cid, parent_cid, height) VALUES (?1, ?2, ?3)",
+            params: [.text(childCID), .text(parentCID), .int(Int64(height))]
+        )
+    }
+
+    public nonisolated func getValidatorParent(childCID: String) -> String? {
+        guard let rows = try? readDb.query(
+            "SELECT parent_cid FROM validator_pins WHERE child_cid = ?1",
+            params: [.text(childCID)]
+        ), let row = rows.first else { return nil }
+        return row["parent_cid"]?.textValue
+    }
+
+    public nonisolated func getValidatorPins(height: UInt64) -> [(childCID: String, parentCID: String)] {
+        guard let rows = try? readDb.query(
+            "SELECT child_cid, parent_cid FROM validator_pins WHERE height = ?1",
+            params: [.int(Int64(height))]
+        ) else { return [] }
+        return rows.compactMap { row in
+            guard let c = row["child_cid"]?.textValue,
+                  let p = row["parent_cid"]?.textValue else { return nil }
+            return (childCID: c, parentCID: p)
+        }
+    }
+
+    public func deleteValidatorPins(height: UInt64) {
+        try? db.execute(
+            "DELETE FROM validator_pins WHERE height = ?1",
             params: [.int(Int64(height))]
         )
     }
