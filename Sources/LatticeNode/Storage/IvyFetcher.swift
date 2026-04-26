@@ -76,9 +76,7 @@ public actor IvyFetcher: VolumeAwareFetcher {
     public func fetch(rawCid: String) async throws -> Data {
         if let data = cache[rawCid] { return data }
 
-        // 1. Check broker cascade (memory -> disk -> ivy network)
         if let payload = await broker.fetchVolume(root: rawCid) {
-            for (cid, data) in payload.entries { cache[cid] = data }
             if let data = payload.entries[rawCid] { return data }
         }
 
@@ -115,6 +113,7 @@ public actor IvyFetcher: VolumeAwareFetcher {
     /// that cover the needed subtree, and targets subsequent fetch() calls at the best match.
     public func provide(rootCID: String, paths: ArrayTrie<ResolutionStrategy>) async throws {
         activeVolumeRoot = rootCID
+        cache.removeAll(keepingCapacity: true)
 
         if let payload = await broker.fetchVolume(root: rootCID) {
             for (cid, data) in payload.entries { cache[cid] = data }
