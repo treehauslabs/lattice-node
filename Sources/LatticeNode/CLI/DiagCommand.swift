@@ -32,7 +32,7 @@ struct DiagCommand: AsyncParsableCommand {
 
         // 2. ChainSpec
         let spec = NexusGenesis.spec
-        let specHeader = HeaderImpl<ChainSpec>(node: spec)
+        let specHeader = VolumeImpl<ChainSpec>(node: spec)
         let specJSON = spec.toData().flatMap { String(data: $0, encoding: .utf8) } ?? "ERROR"
         print("2. ChainSpec")
         print("   JSON: \(specJSON)")

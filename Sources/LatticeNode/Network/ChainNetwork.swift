@@ -98,8 +98,24 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
         return nil
     }
 
+    /// Volume responder.
+    ///
+    /// Volume payloads in the broker hold only the entries for one Volume —
+    /// stems plus the root, terminating at the next Volume boundary (its
+    /// leaves are themselves Volume roots, fetched separately). So serving
+    /// the whole payload returns exactly one Volume's worth, not its
+    /// transitive subtree.
+    ///
+    /// Empty `cids` means "everything you have under this root"; non-empty
+    /// `cids` filters to that subset (legacy callers that want a partial
+    /// response).
     nonisolated public func volumeData(for rootCID: String, cids: [String]) async -> [(cid: String, data: Data)] {
-        guard let payload = await diskBroker.fetchVolumeLocal(root: rootCID) else { return [] }
+        guard let payload = await diskBroker.fetchVolumeLocal(root: rootCID) else {
+            return []
+        }
+        if cids.isEmpty {
+            return payload.entries.map { (cid: $0.key, data: $0.value) }
+        }
         return cids.compactMap { cid in
             payload.entries[cid].map { (cid: cid, data: $0) }
         }

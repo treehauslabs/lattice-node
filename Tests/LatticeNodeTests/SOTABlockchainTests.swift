@@ -505,8 +505,8 @@ final class CASIntegrityTests: XCTestCase {
                               maxStateGrowth: 1, maxBlockSize: 1, premine: 0,
                               targetBlockTime: 1, initialReward: 1, halvingInterval: 1,
                               difficultyAdjustmentWindow: 1)
-        let cid1 = HeaderImpl<ChainSpec>(node: spec1).rawCID
-        let cid2 = HeaderImpl<ChainSpec>(node: spec2).rawCID
+        let cid1 = VolumeImpl<ChainSpec>(node: spec1).rawCID
+        let cid2 = VolumeImpl<ChainSpec>(node: spec2).rawCID
         XCTAssertEqual(cid1, cid2, "Same node must produce same CID")
         XCTAssertTrue(cid1.hasPrefix("b"), "CIDv1 should start with base32 prefix 'b'")
     }

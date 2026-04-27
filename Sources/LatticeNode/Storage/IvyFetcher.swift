@@ -11,29 +11,20 @@ public enum FetcherError: Error {
 }
 
 /// A VolumeAwareFetcher that bridges Cashew's resolution system to Ivy's
-/// fee-based retrieval protocol.
+/// Volume retrieval protocol.
 ///
-/// When Cashew enters a Volume during lazy resolution, `provide(rootCID:paths:)`
-/// discovers pinners for that Volume via Ivy's DHT. Subsequent `fetch()` calls
-/// route toward the discovered pinner for that subtree.
-///
-/// Falls back to the broker cascade (memory -> disk -> network) before hitting the DHT.
+/// `enterVolume(rootCID:)` pulls the entire Volume payload from a peer in one
+/// shot via `ivy.fetchVolume`; subsequent `fetch(cid:)` calls within that
+/// scope resolve from the cached entries. CID is not a network query
+/// abstraction — Volume root is.
 public actor IvyFetcher: VolumeAwareFetcher {
     private let ivy: Ivy
     private let broker: any VolumeBroker
 
-    /// Stack of Volume boundary caches. Each provide() pushes a new layer.
-    /// leave() pops via removeSubrange (cascading cleanup). fetch() searches
-    /// top-down. Bounded by the provide/leave lifecycle — recursive resolves
-    /// leave after children complete, simple resolves are cleaned up by the
-    /// parent's leave.
+    /// Stack of Volume boundary caches. Each enterVolume() pushes a new layer.
+    /// exitVolume() pops via removeSubrange (cascading cleanup). fetch()
+    /// searches top-down.
     private var cacheStack: [(root: String, entries: [String: Data])] = []
-
-    private var volumePinners: OrderedDictionary<String, PeerID> = [:]
-    private let maxPinnerCacheSize = 512
-
-    private var activeVolumeRoot: String?
-    private var recentPinner: PeerID?
 
     public init(ivy: Ivy, broker: any VolumeBroker) {
         self.ivy = ivy
@@ -51,31 +42,12 @@ public actor IvyFetcher: VolumeAwareFetcher {
         return nil
     }
 
-    private func touchPinnerCache(_ key: String) {
-        // Move to end (most recently used)
-        if let value = volumePinners.removeValue(forKey: key) {
-            volumePinners[key] = value
-        }
-    }
-
-    private func evictPinnerCacheIfNeeded() {
-        while volumePinners.count > maxPinnerCacheSize {
-            volumePinners.removeFirst()
-        }
-    }
-
-    /// Bind `peer` as a known source for `rootCID`, bypassing DHT discovery.
-    /// Call this when we receive data directly from a peer (e.g., a gossip
-    /// block announce) — the sender is by definition a pinner for the tree
-    /// and any tree it references. Subsequent `provide()` calls for this
-    /// rootCID short-circuit without hitting the DHT, and `fetch()` routes
-    /// misses to `peer` before falling back.
-    public func bindPinner(rootCID: String, peer: PeerID) {
+    /// Hint that `peer` is a known provider for `rootCID`. The next
+    /// `enterVolume(rootCID:)` will try `peer` first when fetching the Volume
+    /// from the network.
+    public func bindPinner(rootCID: String, peer: PeerID) async {
         guard !rootCID.isEmpty else { return }
-        volumePinners[rootCID] = peer
-        touchPinnerCache(rootCID)
-        evictPinnerCacheIfNeeded()
-        recentPinner = peer
+        await ivy.recordProvider(rootCID: rootCID, peer: peer)
     }
 
     // MARK: - Fetcher
@@ -83,61 +55,69 @@ public actor IvyFetcher: VolumeAwareFetcher {
     public func fetch(rawCid: String) async throws -> Data {
         if let data = cacheLookup(rawCid) { return data }
 
-        if let payload = await broker.fetchVolume(root: rawCid) {
-            if let data = payload.entries[rawCid] { return data }
-        }
-
-        let volumePinner = activeVolumeRoot.flatMap { volumePinners[$0] }
-        let pinner = volumePinner ?? recentPinner
-
-        if let pinner = pinner {
-            if let root = activeVolumeRoot, volumePinner != nil { touchPinnerCache(root) }
-            if let data = await ivy.getDirect(cid: rawCid, from: pinner) {
-                let payload = VolumePayload(root: rawCid, entries: [rawCid: data])
-                try? await broker.storeVolumeLocal(payload)
+        // Walk only the local near chain (Memory → Disk), never far. The far
+        // tier is the network (IvyBroker), and querying it with a stem CID
+        // treats that stem as a Volume root — peers can't satisfy it. Stems
+        // must come from the cache stack populated by an earlier enterVolume.
+        // The local fallback below is for legitimate single-entry payloads
+        // stored with their own CID as the root (storeAndPublish/storeLocally).
+        var current: (any VolumeBroker)? = broker
+        while let b = current {
+            if let payload = await b.fetchVolumeLocal(root: rawCid),
+               let data = payload.entries[rawCid] {
                 return data
             }
-        }
-
-        if let data = await ivy.get(cid: rawCid) {
-            let payload = VolumePayload(root: rawCid, entries: [rawCid: data])
-            try? await broker.storeVolumeLocal(payload)
-            return data
+            current = await b.near
         }
 
         let total = cacheStack.reduce(0) { $0 + $1.entries.count }
-        NodeLogger("fetcher").error("notFound: \(String(rawCid.prefix(20)))… activeVolume=\(activeVolumeRoot?.prefix(20) ?? "nil") stackDepth=\(cacheStack.count) totalCached=\(total)")
+        NodeLogger("fetcher").error("notFound: \(String(rawCid.prefix(20)))… stackDepth=\(cacheStack.count) totalCached=\(total)")
         throw FetcherError.notFound(rawCid)
     }
 
     // MARK: - VolumeAwareFetcher
 
     public func enterVolume(rootCID: String, paths: ArrayTrie<ResolutionStrategy>) async throws {
-        activeVolumeRoot = rootCID
+        if await tryEnterLocal(rootCID: rootCID) { return }
+        await enterFromNetwork(rootCID: rootCID)
+    }
 
-        if let payload = await broker.fetchVolume(root: rootCID) {
-            pushCache(root: rootCID, entries: payload.entries)
-            return
+    /// Local-only Volume entry: pushes a cache layer if (and only if) the
+    /// Volume is in this fetcher's local broker chain. Returns whether the
+    /// local store served the request. Walks `near` only (Memory → Disk),
+    /// never `far` — `far` is the IvyBroker network tier, and consulting it
+    /// here would short-circuit `enterFromNetwork`'s explicit disk writeback.
+    /// Used by `CompositeFetcher` to consult every per-chain broker before
+    /// paying for a network round-trip.
+    public func tryEnterLocal(rootCID: String) async -> Bool {
+        var current: (any VolumeBroker)? = broker
+        while let b = current {
+            if let payload = await b.fetchVolumeLocal(root: rootCID) {
+                pushCache(root: rootCID, entries: payload.entries)
+                return true
+            }
+            current = await b.near
         }
+        return false
+    }
 
-        if volumePinners[rootCID] != nil {
-            touchPinnerCache(rootCID)
-            return
+    /// Network-side of `enterVolume`: requests the Volume from peers, caches
+    /// it locally on hit, and always pushes a cache layer (possibly empty)
+    /// so the call pairs cleanly with `exitVolume`.
+    public func enterFromNetwork(rootCID: String) async {
+        let entries = await ivy.fetchVolume(rootCID: rootCID)
+        if !entries.isEmpty {
+            let payload = VolumePayload(root: rootCID, entries: entries)
+            try? await broker.storeVolumeLocal(payload)
         }
+        pushCache(root: rootCID, entries: entries)
+    }
 
-        let selector = Self.selectorFromPaths(paths)
-        let pinners = await ivy.discoverPinners(cid: rootCID)
-
-        // Prefer pinners whose selector covers our needs (prefix match)
-        if let best = Self.bestPinner(for: selector, from: pinners) {
-            volumePinners[rootCID] = PeerID(publicKey: best.publicKey)
-            touchPinnerCache(rootCID)
-            evictPinnerCacheIfNeeded()
-        } else if let fallback = pinners.first {
-            volumePinners[rootCID] = PeerID(publicKey: fallback.publicKey)
-            touchPinnerCache(rootCID)
-            evictPinnerCacheIfNeeded()
-        }
+    /// Number of entries cached at the topmost layer matching `root`.
+    /// Used by `CompositeFetcher` to detect a successful network entry.
+    public func cachedEntryCount(root: String) -> Int {
+        guard let layer = cacheStack.last(where: { $0.root == root }) else { return 0 }
+        return layer.entries.count
     }
 
     public func exitVolume(rootCID: String) {
@@ -146,53 +126,8 @@ public actor IvyFetcher: VolumeAwareFetcher {
         }
     }
 
-    // MARK: - Selector Translation
-
-    /// Convert Cashew's ArrayTrie<ResolutionStrategy> into an Ivy selector string.
-    /// Uses the top-level keys of the trie as the selector path. Examples:
-    ///   paths with single child "accountState" -> "/accountState"
-    ///   paths with multiple children -> "/" (needs everything)
-    ///   empty paths -> "/"
-    static func selectorFromPaths(_ paths: ArrayTrie<ResolutionStrategy>) -> String {
-        let topKeys = paths.childKeys()
-        guard topKeys.count == 1, let key = topKeys.first else { return "/" }
-        // Single top-level path — use it as selector
-        // Check if there's a deeper single path
-        if let child = paths.traverse(path: key) {
-            let subKeys = child.childKeys()
-            if subKeys.count == 1, let subKey = subKeys.first {
-                return "/\(key)/\(subKey)"
-            }
-        }
-        return "/\(key)"
-    }
-
-    /// Pick the pinner whose selector best covers the needed selector.
-    /// "/" covers everything. "/accountState" covers "/accountState/alice".
-    /// Prefer the most specific match (longest matching selector).
-    static func bestPinner(
-        for selector: String,
-        from pinners: [(publicKey: String, selector: String)]
-    ) -> (publicKey: String, selector: String)? {
-        var best: (publicKey: String, selector: String)?
-        var bestLen = -1
-
-        for pinner in pinners {
-            // Check if pinner's selector covers our needs
-            if selector.hasPrefix(pinner.selector) || pinner.selector == "/" {
-                let len = pinner.selector.count
-                if len > bestLen {
-                    best = pinner
-                    bestLen = len
-                }
-            }
-        }
-        return best
-    }
-
     // MARK: - Store
 
-    /// Store data locally via the broker cascade.
     public func store(rawCid: String, data: Data, pin: Bool = false) async {
         let payload = VolumePayload(root: rawCid, entries: [rawCid: data])
         try? await broker.storeVolumeLocal(payload)

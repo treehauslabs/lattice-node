@@ -184,18 +184,13 @@ extension LatticeNode {
         }
     }
 
+    /// Intentionally a no-op: a gossiped block decodes with all sub-Headers
+    /// having `node == nil`, so pre-storing would only register a stub
+    /// `[blockRoot: blockData]` payload that causes `tryEnterLocal` to push
+    /// a 1-entry cache layer during validation and short-circuit the network
+    /// walk that would have pulled the full Volume from the peer.
     func storeReceivedBlockRecursively(cid: String, data: Data, network: ChainNetwork) async {
-        await network.storeLocally(cid: cid, data: data)
-        guard let block = Block(data: data) else { return }
-        let storer = BrokerStorer(broker: network.diskBroker)
-        let header = VolumeImpl<Block>(node: block)
-        do {
-            try header.storeRecursively(storer: storer)
-            try await storer.flush()
-        } catch {
-            let log = NodeLogger("blocks")
-            log.error("Failed to store received block \(cid) recursively: \(error)")
-        }
+        _ = (cid, data, network)
     }
 
     // MARK: - Block Processing with Reorg Recovery
@@ -1202,13 +1197,13 @@ extension IvyFetcher {
     /// (and the 15s untargeted-walk timeout that follows when the pinner
     /// announcement hasn't yet reached us).
     func bindBlockRoots(_ block: Block, peer: PeerID) async {
-        if let prev = block.previousBlock?.rawCID { bindPinner(rootCID: prev, peer: peer) }
-        bindPinner(rootCID: block.spec.rawCID, peer: peer)
-        bindPinner(rootCID: block.transactions.rawCID, peer: peer)
-        bindPinner(rootCID: block.frontier.rawCID, peer: peer)
-        bindPinner(rootCID: block.homestead.rawCID, peer: peer)
-        bindPinner(rootCID: block.parentHomestead.rawCID, peer: peer)
-        bindPinner(rootCID: block.childBlocks.rawCID, peer: peer)
+        if let prev = block.previousBlock?.rawCID { await bindPinner(rootCID: prev, peer: peer) }
+        await bindPinner(rootCID: block.spec.rawCID, peer: peer)
+        await bindPinner(rootCID: block.transactions.rawCID, peer: peer)
+        await bindPinner(rootCID: block.frontier.rawCID, peer: peer)
+        await bindPinner(rootCID: block.homestead.rawCID, peer: peer)
+        await bindPinner(rootCID: block.parentHomestead.rawCID, peer: peer)
+        await bindPinner(rootCID: block.childBlocks.rawCID, peer: peer)
     }
 }
 
