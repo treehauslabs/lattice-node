@@ -609,7 +609,7 @@ extension LatticeNode {
         await blockFetcher.bindBlockRoots(block, peer: peer)
         let outcome = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: blockFetcher,
-            resolvedBlock: block, skipValidation: true
+            resolvedBlock: block
         )
         switch outcome {
         case .accepted:

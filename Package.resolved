@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/cashew.git",
       "state" : {
-        "revision" : "48762dc0fb257c916d371684e5e55fe45ea2d515",
-        "version" : "1.12.0"
+        "revision" : "7882c5679a55f52f9c1a62b58c0277d92022bfad",
+        "version" : "1.13.0"
       }
     },
     {
@@ -66,7 +66,7 @@
     },
     {
       "identity" : "ivy",
-      "kind" : "remoteSourceControl",
+      "kind" : "localSourceControl",
       "location" : "https://github.com/treehauslabs/Ivy.git",
       "state" : {
         "revision" : "555994177323771c25bf1fd80033136b66b46f3e",
