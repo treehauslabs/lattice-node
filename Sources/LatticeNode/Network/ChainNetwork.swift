@@ -30,6 +30,18 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
     private static let maxRecentTxCIDs = 8192
     private static let txDeduplicationWindow: Duration = .seconds(60)
 
+    /// Per-peer token bucket for mempool-full gossip admission. A peer that
+    /// floods distinct valid txs would otherwise saturate mempool capacity
+    /// and validation CPU; cap at ~100 sustained / 200 burst per peer.
+    private var mempoolGossipBuckets: [PeerID: TokenBucket] = [:]
+    /// Per-peer token bucket for pinRequest admission. Each pinRequest may
+    /// trigger a DHT fetch; cap at ~10 sustained / 30 burst per peer.
+    private var pinRequestBuckets: [PeerID: TokenBucket] = [:]
+    private static let mempoolGossipCapacity: Double = 200
+    private static let mempoolGossipRefillPerSec: Double = 100
+    private static let pinRequestCapacity: Double = 30
+    private static let pinRequestRefillPerSec: Double = 10
+
     public init(
         directory: String,
         config: IvyConfig,
@@ -132,21 +144,37 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
     /// Store data locally and publish to the network via Ivy.
     public func storeAndPublish(cid: String, data: Data) async {
         let payload = VolumePayload(root: cid, entries: [cid: data])
-        try? await diskBroker.storeVolumeLocal(payload)
-        try? await diskBroker.pin(root: cid, owner: directory)
+        do {
+            try await diskBroker.storeVolumeLocal(payload)
+        } catch {
+            NodeLogger("storage").error("\(directory): storeAndPublish/storeVolumeLocal cid=\(String(cid.prefix(16)))… failed: \(error)")
+        }
+        do {
+            try await diskBroker.pin(root: cid, owner: directory)
+        } catch {
+            NodeLogger("storage").error("\(directory): storeAndPublish/pin root=\(String(cid.prefix(16)))… failed: \(error)")
+        }
     }
 
     /// Store data locally only (no network publish).
     public func storeLocally(cid: String, data: Data) async {
         let payload = VolumePayload(root: cid, entries: [cid: data])
-        try? await diskBroker.storeVolumeLocal(payload)
+        do {
+            try await diskBroker.storeVolumeLocal(payload)
+        } catch {
+            NodeLogger("storage").error("\(directory): storeLocally cid=\(String(cid.prefix(16)))… failed: \(error)")
+        }
     }
 
     public func storeBatch(_ entries: [(String, Data)]) async {
         guard !entries.isEmpty else { return }
         for (cid, data) in entries {
             let payload = VolumePayload(root: cid, entries: [cid: data])
-            try? await diskBroker.storeVolumeLocal(payload)
+            do {
+                try await diskBroker.storeVolumeLocal(payload)
+            } catch {
+                NodeLogger("storage").error("\(directory): storeBatch entry cid=\(String(cid.prefix(16)))… failed: \(error)")
+            }
         }
     }
 
@@ -159,7 +187,11 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
             dict[cid] = data
         }
         let payload = VolumePayload(root: rootCID, entries: dict)
-        try? await diskBroker.storeVolumeLocal(payload)
+        do {
+            try await diskBroker.storeVolumeLocal(payload)
+        } catch {
+            NodeLogger("storage").error("\(directory): storeBlockBatch root=\(String(rootCID.prefix(16)))… (\(entries.count) entries) failed: \(error)")
+        }
     }
 
     /// True iff the disk broker already has bytes for `cid`.
@@ -260,7 +292,11 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
     public func setChainTip(tipCID: String, stateRoots: [String]) async {
         let allRoots = stateRoots + [tipCID]
         for root in allRoots where !root.isEmpty {
-            try? await diskBroker.pin(root: root, owner: directory)
+            do {
+                try await diskBroker.pin(root: root, owner: directory)
+            } catch {
+                NodeLogger("storage").error("\(directory): setChainTip pin root=\(String(root.prefix(16)))… failed: \(error)")
+            }
         }
     }
 
@@ -401,6 +437,12 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
             // without it, the decoded Transaction has body.node == nil and
             // TransactionValidator fails with .missingBody.
             guard payload.count >= 6 else { break }
+            var bucket = mempoolGossipBuckets[peer] ?? TokenBucket(
+                capacity: Self.mempoolGossipCapacity, refillPerSec: Self.mempoolGossipRefillPerSec
+            )
+            let admitted = bucket.tryConsume()
+            mempoolGossipBuckets[peer] = bucket
+            guard admitted else { break }
             let cidLen = Int(payload.withUnsafeBytes { $0.load(as: UInt16.self) })
             guard cidLen > 0, payload.count >= 2 + cidLen + 4 else { break }
             guard let cidStr = String(data: payload[2..<2+cidLen], encoding: .utf8) else { break }
@@ -443,7 +485,14 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
             }
         case "pinRequest":
             if let cid = String(data: payload, encoding: .utf8) {
-                await handlePinRequest(cid: cid, from: peer)
+                var bucket = pinRequestBuckets[peer] ?? TokenBucket(
+                    capacity: Self.pinRequestCapacity, refillPerSec: Self.pinRequestRefillPerSec
+                )
+                let admitted = bucket.tryConsume()
+                pinRequestBuckets[peer] = bucket
+                if admitted {
+                    await handlePinRequest(cid: cid, from: peer)
+                }
             }
         default:
             break
@@ -462,14 +511,53 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
         guard let data = await ivy.get(cid: cid, target: peer) else { return }
 
         let payload = VolumePayload(root: cid, entries: [cid: data])
-        try? await diskBroker.storeVolumeLocal(payload)
-        try? await diskBroker.pin(root: cid, owner: directory)
+        do {
+            try await diskBroker.storeVolumeLocal(payload)
+        } catch {
+            NodeLogger("storage").error("\(directory): handlePinRequest store cid=\(String(cid.prefix(16)))… failed: \(error)")
+            return
+        }
+        do {
+            try await diskBroker.pin(root: cid, owner: directory)
+        } catch {
+            NodeLogger("storage").error("\(directory): handlePinRequest pin root=\(String(cid.prefix(16)))… failed: \(error)")
+        }
 
         let fee = await ivy.config.relayFee * 2
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
         await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
     }
 
+}
+
+/// Lazy-refill token bucket. `tryConsume` returns false when starved so the
+/// caller can drop the request without further work. State is updated on every
+/// call; idle peers retain their full capacity until next message.
+struct TokenBucket {
+    var tokens: Double
+    var lastRefill: ContinuousClock.Instant
+    let capacity: Double
+    let refillPerSec: Double
+
+    init(capacity: Double, refillPerSec: Double) {
+        self.tokens = capacity
+        self.lastRefill = .now
+        self.capacity = capacity
+        self.refillPerSec = refillPerSec
+    }
+
+    mutating func tryConsume(_ cost: Double = 1) -> Bool {
+        let now = ContinuousClock.Instant.now
+        let elapsed = Double((now - lastRefill).components.seconds) +
+            Double((now - lastRefill).components.attoseconds) / 1e18
+        if elapsed > 0 {
+            tokens = min(capacity, tokens + elapsed * refillPerSec)
+            lastRefill = now
+        }
+        guard tokens >= cost else { return false }
+        tokens -= cost
+        return true
+    }
 }
 
 extension Ivy {

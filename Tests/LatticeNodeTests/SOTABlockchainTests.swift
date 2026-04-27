@@ -1637,10 +1637,14 @@ final class ReorgDepthAndFinalityTests: XCTestCase {
         XCTAssertTrue(config.isFinal(chain: "Nexus", blockHeight: 0, currentHeight: 10))
     }
 
-    /// Reorg depth limit: maxReorgDepth is respected
-    func testReorgDepthLimitConstant() {
-        // Verify the constant exists and is reasonable
-        XCTAssertEqual(LatticeNode.maxReorgDepth, 100, "Max reorg depth should be 100")
+    /// Reorg depth limit derives from retentionDepth: deeper forks can't
+    /// find a common ancestor anyway, so the two limits must agree.
+    func testReorgDepthLimitDerivesFromRetention() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let node = try await mk(kp, p(), tmp())
+        let depth = await node.maxReorgDepth
+        let retention = await node.config.retentionDepth
+        XCTAssertEqual(depth, Int(retention))
     }
 }
 

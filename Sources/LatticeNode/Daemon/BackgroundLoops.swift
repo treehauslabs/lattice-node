@@ -45,6 +45,7 @@ func startMempoolLoop(node: LatticeNode) -> Task<Void, Never> {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(60))
             await node.pruneExpiredTransactions()
+            await node.sweepPeerTracking()
             for directory in await node.allDirectories() {
                 if let network = await node.network(for: directory) {
                     let _ = try? await network.diskBroker.evictUnpinned()

@@ -2,7 +2,7 @@
 
 Investigation of memory, storage, and cycle-growth issues that prevent lattice-node mining from running indefinitely without stalls or unbounded resource growth.
 
-Audit: 2026-04-25
+Audit: 2026-04-27
 
 ---
 
@@ -12,51 +12,37 @@ The storage layer uses a shared DiskBroker (one SQLite database for all chains) 
 
 ---
 
-## Active findings -- 2026-04-25
+## Recently shipped -- 2026-04-25 to 2026-04-27
+
+Five changes have closed major findings or eliminated whole classes of risk:
+
+- **Volume-rooted child-chain fetch** (`9e9d03d`) -- `IvyFetcher` rewritten with explicit `enterVolume`/`exitVolume` lifecycle. The unbounded `[String: Data]` cache is gone; cache scope tracks Volume boundaries. Closes #1.
+- **Validate state on the block-receive data path** (`f8c7baa`) -- gossip-received blocks now run full validation (`skipValidation: false`). Only mining and CAS recovery (trusted-data paths) skip. Closes #2.
+- **Pin nexus blocks from descendant child blocks** (`8e503f2`) -- validator pins (`validates:<childCID>`) make anchor relationships explicit and queryable; cascade-prune cleans them up at retention depth.
+- **Recover chain state in topological order** (`793723b`) -- startup loads parents before children, fixing CAS-recovery races.
+- **Parent-anchored child-chain bootstrap with full validation** (`2f1db55`) -- followers no longer trust historical child blocks blindly. Subscribe(child) now implies subscribe(every ancestor); follower bootstrap walks the parent chain backward to derive each anchor and validates the entire child chain end-to-end (genesis + per-height PoW vs anchor + structural) before subscribing.
+
+## Active findings -- 2026-04-27
 
 ### Critical
 
-**1. IvyFetcher.cache grows without bound**
+**1. Silent storage failures in block processing**
 
-`IvyFetcher.swift:24`
+`ChainNetwork.swift:135-263` (and previously `LatticeNode+Blocks.swift:72-75`)
 
-The `cache: [String: Data]` dict accumulates entries on every `provide()` and `fetch()` call with no eviction. Mining sessions that process thousands of blocks exhaust heap memory.
+`storeBlockRecursively` now uses `do/catch` and logs errors. But several `ChainNetwork` paths still use `try?` -- `storeAndPublish`, `storeLocally`, `storeBatch`, `storeBlockBatch`, `setChainTip`. Critical block-store path is loud; bulk/tip-pin paths still silent.
 
-*Impact:* Unbounded memory growth proportional to blocks processed. Mining eventually OOMs.
+*Impact:* Silent data loss on bulk/tip-pin paths. Blocks appear committed but underlying data may be missing.
 
-*Fix:* LRU cap (e.g. 50k entries) or clear after each block processing cycle.
-
----
-
-**2. skipValidation=true on peer-received blocks**
-
-`LatticeNode+Blocks.swift:615-620`
-
-Blocks received from peers via gossip are processed with `skipValidation: true`. Pre-checks cover PoW, timestamp, and block size -- but NOT state transitions. A peer with sufficient hashpower could forge valid-PoW blocks with invalid state (minting coins, crediting accounts).
-
-*Impact:* Consensus safety violation. Invalid state transitions accepted without verification.
-
-*Fix:* Either re-enable validation for peer blocks (requires making sub-tree data available, e.g. by sending Volume payloads inline alongside blocks), or add a deferred validation pass that checks state consistency within retentionDepth.
-
----
-
-**3. Silent storage failures in block processing**
-
-`ChainNetwork.swift:119-120,126,247` and `LatticeNode+Blocks.swift:72-75`
-
-All DiskBroker store and pin operations use `try?`, silently discarding errors. If disk is full or SQLite is corrupt, blocks are announced as stored but data is lost.
-
-*Impact:* Silent data loss. Blocks appear committed but underlying data may be missing, causing fetch failures for peers and state corruption on restart.
-
-*Fix:* Log errors at minimum. For critical paths (storeBlockRecursively), fail the block submission rather than proceeding with partial data.
+*Fix:* Convert remaining `try?` sites to logged catches. Fail the operation when the failure is meaningful (tip pin, batch store on hot path).
 
 ---
 
 ### High
 
-**4. Mempool-full gossip has no per-peer rate limit**
+**2. Mempool-full gossip has no per-peer rate limit**
 
-`ChainNetwork.swift:382-423`
+`ChainNetwork.swift:398-439`
 
 The `mempool-full` topic handler accepts unlimited distinct transactions from a single peer. A malicious peer can flood the mempool with valid-but-useless transactions.
 
@@ -66,9 +52,9 @@ The `mempool-full` topic handler accepts unlimited distinct transactions from a 
 
 ---
 
-**5. evictUnpinned runs only every 60s**
+**3. evictUnpinned runs only every 60s**
 
-`BackgroundLoops.swift:50`
+`BackgroundLoops.swift:46`
 
 Orphan volumes from rejected gossip blocks (`storeLocally` with no pin) accumulate on disk indefinitely until the next eviction sweep.
 
@@ -78,11 +64,11 @@ Orphan volumes from rejected gossip blocks (`storeLocally` with no pin) accumula
 
 ---
 
-**6. Child block state application errors are silent**
+**4. Child block state application errors are silent**
 
-`LatticeNode+Blocks.swift:833-843`
+`LatticeNode+Blocks.swift:854-857`
 
-In `applyChildBlockStates`, if the childBlocks subtree cannot be resolved, the function silently returns. Child chain states diverge from nexus without warning.
+In `applyChildBlockStates`, if the childBlocks subtree cannot be resolved, the function silently returns. Child chain states diverge from nexus without warning. Function was heavily restructured (8e503f2 added validator pins) but the silent-return path on resolve-failure is unchanged.
 
 *Impact:* Child chains silently fall out of sync with nexus. No alerting, no recovery path.
 
@@ -90,9 +76,9 @@ In `applyChildBlockStates`, if the childBlocks subtree cannot be resolved, the f
 
 ---
 
-**7. recentPeerBlocks and peerBlockCounts cleanup is reactive, not time-based**
+**5. recentPeerBlocks and peerBlockCounts cleanup is reactive, not time-based**
 
-`LatticeNode+Blocks.swift:35,721-761`
+`LatticeNode+Blocks.swift:35,718-761`
 
 Old peer entries never expire; cleanup only runs when hard cap is breached.
 
@@ -104,9 +90,9 @@ Old peer entries never expire; cleanup only runs when hard cap is breached.
 
 ### Medium
 
-**8. maxReorgDepth (100) vs retentionDepth (configurable, default 1000)**
+**6. maxReorgDepth (100) vs retentionDepth (configurable, default 1000)**
 
-`LatticeNode+Blocks.swift:17,374`
+`LatticeNode+Blocks.swift:17,367`
 
 A legitimate reorg deeper than 100 blocks but within retentionDepth is rejected.
 
@@ -116,21 +102,9 @@ A legitimate reorg deeper than 100 blocks but within retentionDepth is rejected.
 
 ---
 
-**9. Nonce API semantics undocumented**
+**7. pinRequest handler has no rate limit**
 
-`LatticeNode+State.swift:55-76`
-
-`getNonce` returns next-valid, `getAccount` returns next-valid in its nonce field. No type-level distinction between "last used" and "next valid" nonces.
-
-*Impact:* Caller confusion. Off-by-one errors in transaction construction.
-
-*Fix:* Rename to `getNextNonce` in the public API, or add documentation.
-
----
-
-**10. pinRequest handler has no rate limit**
-
-`ChainNetwork.swift:428-455`
+`ChainNetwork.swift:454-470`
 
 A peer can send unlimited pin requests, each triggering a DHT fetch.
 
@@ -140,7 +114,7 @@ A peer can send unlimited pin requests, each triggering a DHT fetch.
 
 ---
 
-**11. Ivy dead code**
+**8. Ivy dead code**
 
 `Ivy.swift`
 
@@ -152,50 +126,40 @@ Mining challenge (~95 LOC), offerDirectConnect (~25 LOC), PEX (~130 LOC), zone s
 
 ---
 
-**12. Ivy pendingRequests unbounded**
-
-`Ivy.swift:23`
-
-Continuation dict keyed by CID with no cap.
-
-*Impact:* Slow memory leak under sustained fetch activity.
-
-*Fix:* BoundedDictionary.
-
----
-
 ### Remaining from previous audit
 
-**13. finalizeSyncResult (P1 #12)** -- re-resolves txDict during sync. Fix: cache during download.
+**9. finalizeSyncResult (P1 #12)** -- re-resolves txDict during sync. Fix: cache during download.
 
-**14. stmtCache (P1 #16)** -- no formal cap but bounded by finite SQL strings. Low risk.
+**10. stmtCache (P1 #16)** -- no formal cap but bounded by finite SQL strings. Low risk.
 
-**15. inFlightBlockCIDs (P2 #10)** -- no cap. Low risk.
-
-**16. childBlocks serialization (S8)** -- DONE as of 2026-04-25 (SerializationPinningTests.swift).
+**11. inFlightBlockCIDs (P2 #10)** -- no cap. Low risk.
 
 ---
 
 ## Quick wins priority order
 
-1. **IvyFetcher.cache LRU cap** (#1) -- direct memory leak during mining
-2. **Log storage errors** (#3) -- silent data loss
-3. **Per-peer mempool gossip rate limit** (#4) -- DoS vector
-4. **Time-based expiry on peer tracking dicts** (#7) -- memory hygiene
-5. **Delete dead Ivy code (I3-I6)** (#11) -- attack surface reduction
-6. **Ivy pendingRequests BoundedDictionary** (#12) -- long-running leak
-7. **Derive maxReorgDepth from retentionDepth** (#8) -- correctness
-8. **Address skipValidation for peer blocks** (#2) -- consensus safety (complex, needs design)
+1. **Log remaining `try?` storage sites** (#1) -- finish what `storeBlockRecursively` started
+2. **Per-peer mempool gossip rate limit** (#2) -- DoS vector
+3. **Time-based expiry on peer tracking dicts** (#5) -- memory hygiene
+4. **Log child-state apply failures** (#4) -- observability
+5. **Delete dead Ivy code (I3-I6)** (#8) -- attack surface reduction
+6. **Per-peer pinRequest rate limit** (#7) -- DoS vector
+7. **Derive maxReorgDepth from retentionDepth** (#6) -- correctness
 
 ---
 
 ## Archive -- resolved items
 
 <details>
-<summary>Verification status table (2026-04-25)</summary>
+<summary>Verification status table (2026-04-27)</summary>
 
 | Item | Status | Note |
 | --- | --- | --- |
+| 2026-04 #1 IvyFetcher.cache | DONE | Volume-scoped enterVolume/exitVolume lifecycle (9e9d03d) |
+| 2026-04 #2 skipValidation peer blocks | DONE | Full validation on gossip-recv (f8c7baa) |
+| 2026-04 #9 Nonce API semantics | DONE | `getNextNonce` exposed; `getNonce` is wrapper |
+| 2026-04 #12 Ivy pendingRequests | DONE | `canRegisterPending` enforces `maxPendingRequests` (4096) |
+| 2026-04 follower trust | DONE | Parent-anchored bootstrap with full validation (2f1db55) |
 | P0 #1 diagLog | DONE | Gated behind env flag |
 | P0 #2 recentBlockExpiry | OBSOLETE | BlockchainProtectionPolicy deleted; pin lifecycle via VolumeBroker |
 | P0 #3 accountCIDs LRU | OBSOLETE | BlockchainProtectionPolicy deleted; ref-counted pins |
@@ -255,6 +219,60 @@ Continuation dict keyed by CID with no cap.
 | L7 Block.version field | KEEP | Hard-fork-only removal |
 
 </details>
+
+---
+
+## Real-node smoke testing plan -- 2026-04-27
+
+### What we have
+
+Eight `.mjs` smoke tests in `lattice-app/` spawn real `LatticeNode` binaries and drive them via RPC. Each test boots fresh `/tmp/...` data dirs, so they're self-contained and CI-friendly.
+
+| Test | Scenario | Asserts |
+| --- | --- | --- |
+| `smoke-sync` | 2 nodes, A miner, B follower with `--subscribe Nexus/Payments` | B converges on both Nexus and Payments tips |
+| `smoke-multinode-convergence` | 3 nodes mesh, A mines | All three tips identical after mining stops |
+| `smoke-restart-resilience` | One node, swap, SIGKILL, respawn, swap again | Pre-restart deposit consumed; post-restart swap settles |
+| `smoke-swap` | Single devnet, deposit/receipt/withdraw | One full uniform-rate cycle |
+| `smoke-variable-rate-swap` | As above, 2.5x rate | Asymmetric pair preserved |
+| `smoke-grandchild-swap` | `Nexus → Mid → {Alpha, Beta}`, receipt on Mid | 3 cycles each on Alpha and Beta |
+| `smoke-multidepth-swap` | 3-deep branching tree | Exact balance deltas at every (source, receipt) depth combo |
+| `smoke-stateless` | CLI flag wiring | `--stateless --mine` rejected; `--stateless` boots |
+
+### Gaps (concerns with no smoke coverage)
+
+1. **Adversarial peer behavior** -- forged blocks, bad signatures, equivocation, mempool spam.
+2. **Network partition / heal** -- no link drop, asymmetric loss, or three-way split.
+3. **Late-joiner deep sync** -- `smoke-sync` covers only height ~10; no test exercises bootstrap at height 200+.
+4. **Parent-dependency invariant** -- the new (commit 2f1db55) subscription/mining gates have no smoke coverage.
+5. **Long-running multi-chain stability** -- the RSS pathology in multi-chain merged mining (project memory) is unobserved by any smoke test.
+6. **Stateless follower depth** -- `smoke-stateless` only verifies CLI flags, not actual following with bounded disk.
+7. **Mempool back-pressure / DoS** -- finding #2 has no test.
+
+### Plan
+
+**Phase A -- Refactor scaffolding (1-2 days).** Extract a `smoke-lib.mjs` consolidating the helpers each test currently reimplements: `secp` HMAC bootstrap, `base32Encode`, `computeAddress`, `sign`, `rpc`, `getNonce`/`Balance`/`Deposit`/`Receipt`, `submit`, `waitForHeight`, `pollUntil`, `stageFund` (swap tests); `startNode`/`teardown`, `waitForRPC`, `readIdentity` (process-spawning tests). Behavior unchanged; ~150 LOC duplication removed per test file.
+
+**Phase B -- New tests filling the gaps.** Each <300 LOC, process-spawning, deterministic, fresh tmp dirs.
+
+1. `smoke-late-joiner.mjs` -- A mines `Nexus + Payments` to height 200; B joins fresh with `--subscribe Nexus/Payments`. Pass: B's tip CID matches A on both chains within 90s.
+2. `smoke-parent-dependency.mjs` -- B starts with `--subscribe Nexus/Mid/Stable`. Verify subscribed paths cover Nexus, Nexus/Mid, AND Nexus/Mid/Stable. RPC `mining/start Stable` fails (or no-ops) when parent isn't mining. Confirms commit 2f1db55 gates.
+3. `smoke-partition.mjs` -- 3 nodes all mining; partition `{A,B}` vs `{C}` for 30s via firewall hooks (or peer-disconnect RPC). Heal. Pass: all three converge to the heaviest tip; reorg events fire on the losing side.
+4. `smoke-byzantine-bad-block.mjs` -- A test peer (Swift binary in `Tests/`) gossips a forged block (correct PoW prefix, mutated state root). Pass: honest node rejects without applying state; honest tip unchanged.
+5. `smoke-stability-multichain.mjs` -- A miner with 3 child chains all merge-mining. Run 30 minutes. Sample RSS every 30s. Pass: RSS stays under 2x initial steady-state; height progresses on all chains.
+6. `smoke-mempool-spam.mjs` -- A mines, B floods 1000 valid tx/sec for 30s. Pass: A's mempool stays under cap; A keeps mining; B's admission gets throttled (when finding #2 lands).
+7. `smoke-stateless-follower.mjs` -- A mines to height 50; B joins as `--stateless --subscribe Nexus/Payments`. Pass: B answers `/api/chain/info` with correct tips; B's data dir stays under 10 MB.
+
+**Phase C -- Test runner + CI.** `smoke-all.mjs` runs every smoke sequentially with timing and pass/fail summary; each test gets `/tmp/smoke-{name}-{run-id}/`. `smoke-stability-multichain` is opt-in via env flag (long-running). Wire to CI on every PR.
+
+**Phase D -- Promotion to canary.** Migrate the stable subset to a continuously-running cloud canary (single region first, then multi-region per the Phase 5 plan in the archive below). Each canary failure pages.
+
+### Acceptance
+
+- All 15 smoke tests (8 existing + 7 new) green when run via `smoke-all.mjs`.
+- `smoke-stability-multichain.mjs` runs cleanly on a developer laptop without OOM.
+- `smoke-all.mjs` wall-clock under 30 minutes (excluding stability test).
+- New tests use shared scaffolding from `smoke-lib.mjs`.
 
 ---
 

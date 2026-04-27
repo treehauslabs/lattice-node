@@ -14,7 +14,14 @@ extension LatticeNode {
     static let blockDeduplicationWindow: Duration = .milliseconds(100)
     static let peerBlockCountCleanupThreshold = 5000
     static let peerBlockCountWindow: Duration = .seconds(30)
-    static let maxReorgDepth: Int = 100
+
+    /// Reorg depth limit, scaled to this node's retention window. The walk
+    /// in `findCommonAncestor` is already bounded by `retentionDepth` (a
+    /// deeper fork has no common ancestor and is refused outright), so an
+    /// independent constant either silently strands legitimate retention-bounded
+    /// reorgs (when retentionDepth > 100) or falsely reassures (when
+    /// retentionDepth < 100). Cap at retentionDepth so the two limits agree.
+    var maxReorgDepth: Int { Int(config.retentionDepth) }
 
     nonisolated func isBlockTimestampValid(_ block: Block) -> Bool {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
@@ -364,8 +371,8 @@ extension LatticeNode {
 
         log.info("Reorg: \(orphanedBlockHashes.count) orphaned block(s)")
 
-        if orphanedBlockHashes.count > Self.maxReorgDepth {
-            log.error("Reorg depth \(orphanedBlockHashes.count) exceeds limit \(Self.maxReorgDepth) — potential attack")
+        if orphanedBlockHashes.count > maxReorgDepth {
+            log.error("Reorg depth \(orphanedBlockHashes.count) exceeds limit \(maxReorgDepth) — potential attack")
             return
         }
 
@@ -742,6 +749,12 @@ extension LatticeNode {
     }
 
     static let maxRecentPeerBlocks = 4096
+    /// How long a `recentPeerBlocks` entry remains useful. The dedup check
+    /// only cares about hits inside `blockDeduplicationWindow` (100ms), so
+    /// anything older than ~60s is dead weight that the LRU hard-cap would
+    /// eventually evict — a periodic sweep drops it earlier and keeps memory
+    /// bounded under steady-state churn.
+    static let recentPeerBlockRetention: Duration = .seconds(60)
 
     func recordBlockTime(key: String, time: ContinuousClock.Instant) {
         // Move to end on update (LRU touch)
@@ -750,6 +763,21 @@ extension LatticeNode {
         // Hard cap: evict oldest entries from front
         while recentPeerBlocks.count > Self.maxRecentPeerBlocks {
             recentPeerBlocks.removeFirst()
+        }
+    }
+
+    /// Drop peer-tracking entries whose time window has elapsed. Hard caps
+    /// already keep the dicts from unbounded growth, but a peer that bursts
+    /// once and disappears would otherwise sit in `peerBlockCounts` until
+    /// 5000 other peers showed up to evict it. Called from the mempool loop.
+    func sweepPeerTracking() {
+        let now = ContinuousClock.Instant.now
+        peerBlockCounts = peerBlockCounts.filter { _, entry in
+            now - entry.windowStart < Self.peerRateWindow
+        }
+        let recentCutoff = Self.recentPeerBlockRetention
+        recentPeerBlocks = recentPeerBlocks.filter { _, t in
+            now - t < recentCutoff
         }
     }
 
@@ -851,17 +879,27 @@ extension LatticeNode {
             fetcher: fetcher
         )
 
+        let log = NodeLogger("apply-child")
         guard let childBlocksNode = try? await parentBlock.childBlocks.resolve(
             paths: [[""]: .list], fetcher: fetcher
         ).node,
-              let childDirs = try? childBlocksNode.allKeys() else { return }
+              let childDirs = try? childBlocksNode.allKeys() else {
+            log.warn("parent \(parentBlockCID): childBlocks resolve failed — skipping child apply for this parent")
+            return
+        }
         for childDir in childDirs {
-            guard let childBlockHeader: VolumeImpl<Block> = try? childBlocksNode.get(key: childDir) else { continue }
+            guard let childBlockHeader: VolumeImpl<Block> = try? childBlocksNode.get(key: childDir) else {
+                log.warn("\(childDir): missing child header in parent \(parentBlockCID) — skipping")
+                continue
+            }
             let childBlock: Block
             if let n = childBlockHeader.node {
                 childBlock = n
             } else {
-                guard let resolved = try? await childBlockHeader.resolve(fetcher: fetcher).node else { continue }
+                guard let resolved = try? await childBlockHeader.resolve(fetcher: fetcher).node else {
+                    log.warn("\(childDir): child block resolve failed (header CID \(childBlockHeader.rawCID)) — skipping")
+                    continue
+                }
                 childBlock = resolved
             }
 
