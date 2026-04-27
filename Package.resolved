@@ -1,5 +1,5 @@
 {
-  "originHash" : "27376a566633c317e4bdfcac0d17c339a0154d2715d315cf6242f86b8df1cc6d",
+  "originHash" : "5dbf9b9ea21f4c8f0013b630e9add7449f0a1fffb45193471dff09c3caee45b1",
   "pins" : [
     {
       "identity" : "acorn",
@@ -69,8 +69,8 @@
       "kind" : "localSourceControl",
       "location" : "https://github.com/treehauslabs/Ivy.git",
       "state" : {
-        "revision" : "555994177323771c25bf1fd80033136b66b46f3e",
-        "version" : "5.2.0"
+        "revision" : "511795daec9b9806ca3b0ffb4e0f3b79dfe6e9dc",
+        "version" : "5.3.0"
       }
     },
     {
