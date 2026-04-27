@@ -821,6 +821,36 @@ extension LatticeNode {
     /// any merged-mining depth pins the same topmost nexus block that admitted
     /// it. One-hop, so prune and cross-chain sync don't need to walk a chain.
     private func applyChildBlockStates(parentBlock: Block, nexusBlockCID: String, fetcher: Fetcher) async {
+        let nexusDir = genesisConfig.spec.directory
+        await applyChildBlockStates(
+            parentBlock: parentBlock,
+            parentBlockCID: nexusBlockCID,
+            parentChainPath: [nexusDir],
+            nexusBlockCID: nexusBlockCID,
+            fetcher: fetcher
+        )
+    }
+
+    private func applyChildBlockStates(
+        parentBlock: Block,
+        parentBlockCID: String,
+        parentChainPath: [String],
+        nexusBlockCID: String,
+        fetcher: Fetcher
+    ) async {
+        // Before applying the current parent's child state, attempt to
+        // bootstrap any configured-but-unsubscribed child chain present in
+        // this parent block. The bootstrap walks parent history backward to
+        // anchor every historical child block, validates the chain end-to-end,
+        // and registers the network. Idempotent: re-runs only while the
+        // directory remains unsubscribed.
+        await attemptChildBootstrapsForCurrentParent(
+            parentBlock: parentBlock,
+            parentBlockCID: parentBlockCID,
+            parentChainPath: parentChainPath,
+            fetcher: fetcher
+        )
+
         guard let childBlocksNode = try? await parentBlock.childBlocks.resolve(
             paths: [[""]: .list], fetcher: fetcher
         ).node,
@@ -882,7 +912,13 @@ extension LatticeNode {
 
             // Recurse with the SAME nexus CID — every descendant pins the
             // topmost ancestor, not its immediate parent.
-            await applyChildBlockStates(parentBlock: childBlock, nexusBlockCID: nexusBlockCID, fetcher: childFetcher)
+            await applyChildBlockStates(
+                parentBlock: childBlock,
+                parentBlockCID: childBlockHeader.rawCID,
+                parentChainPath: parentChainPath + [childDir],
+                nexusBlockCID: nexusBlockCID,
+                fetcher: childFetcher
+            )
         }
     }
 
@@ -913,7 +949,7 @@ extension LatticeNode {
     }
 
     /// Apply an accepted block's state changes, receipts, fees, events, and metrics.
-    private func applyAcceptedBlock(
+    func applyAcceptedBlock(
         block: Block,
         blockHash: String,
         txEntries: [String: VolumeImpl<Transaction>],

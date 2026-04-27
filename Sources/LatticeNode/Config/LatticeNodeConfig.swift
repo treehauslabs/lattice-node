@@ -83,7 +83,13 @@ public struct LatticeNodeConfig: Sendable {
 
     public func addingSubscription(chainPath: [String]) -> LatticeNodeConfig {
         var subs = subscribedChains
-        subs.set(chainPath, value: true)
+        // Parent-dependency invariant: subscribing to a child implies
+        // subscribing to every ancestor — child sync bootstraps by walking the
+        // parent chain, child mining is gated on parent mining. A subscription
+        // without its parent path cannot make progress.
+        for depth in 1...chainPath.count {
+            subs.set(Array(chainPath.prefix(depth)), value: true)
+        }
         return LatticeNodeConfig(
             publicKey: publicKey,
             privateKey: privateKey,

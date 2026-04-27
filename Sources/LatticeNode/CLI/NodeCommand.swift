@@ -160,7 +160,10 @@ struct NodeCommand: AsyncParsableCommand {
         subscribedChains.set(["Nexus"], value: true)
         for sub in effectiveSubscribe {
             let path = sub.split(separator: "/").map(String.init)
-            subscribedChains.set(path, value: true)
+            // Subscribing to a child implies subscribing to every ancestor.
+            for depth in 1...path.count {
+                subscribedChains.set(Array(path.prefix(depth)), value: true)
+            }
         }
 
         if effectiveStateless && !effectiveMine.isEmpty {
