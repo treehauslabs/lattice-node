@@ -20,24 +20,12 @@ extension LatticeNode {
         guard let network = networks[directory] else {
             return .failure("Unknown chain: \(directory)")
         }
-        if let chain = await chain(for: directory) {
-            let isNexus = directory == genesisConfig.spec.directory
-            let validator = TransactionValidator(fetcher: await network.fetcher, chainState: chain, frontierCache: frontierCaches[directory], chainDirectory: directory, isNexus: isNexus)
-            let result = await validator.validate(transaction)
-            switch result {
-            case .failure(let error):
-                return .failure(describeValidationError(error))
-            case .success:
-                break
-            }
-        }
-        if let sender = transaction.body.node?.signers.first,
-           let tipNonce = try? await getNonce(address: sender, directory: directory) {
-            await network.nodeMempool.updateConfirmedNonce(sender: sender, nonce: tipNonce)
-        }
-        let addResult = await network.nodeMempool.addTransaction(transaction)
-        if case .rejected(let reason) = addResult {
-            return .failure("Transaction rejected by mempool: \(reason)")
+        let addResult = await admitToMempool(transaction: transaction, directory: directory)
+        switch addResult {
+        case .rejected(let reason):
+            return .failure(reason)
+        case .added, .addedPending, .replacedExisting:
+            break
         }
         metrics.increment("lattice_transactions_submitted_total")
         if let bodyData = transaction.body.node?.toData(),
@@ -53,6 +41,93 @@ extension LatticeNode {
             sender: sender
         ))
         return .success
+    }
+
+    /// Unified mempool admission for any chain. One classifier funnels:
+    ///   - direct submit (RPC, restart restoration)
+    ///   - gossip-received transactions
+    ///   - reorg orphan re-add (nexus and child)
+    ///
+    /// On a non-nexus chain, withdrawal-bearing transactions are classified
+    /// against the parent chain's receiptState at its current tip:
+    ///   - all required receipts present + match expected withdrawer → valid
+    ///   - any required receipt missing → pending (held until parent block
+    ///     adds it; nonce slot reserved, never selected by the miner)
+    ///   - any receipt-present-but-wrong-withdrawer → rejected (permanent;
+    ///     receipt key already commits to a different owner on parent chain)
+    ///
+    /// Pending classification is the fix for the receipt-visibility race in
+    /// merged mining: a withdrawal whose required receipt is being added to
+    /// the parent block in the same round used to silently fail validation
+    /// and get dropped from mempool. With pending, it sits dormant until
+    /// the parent block lands, then `recheckPending` promotes it.
+    public func admitToMempool(transaction: Transaction, directory: String) async -> AddResult {
+        guard let network = networks[directory] else {
+            return .rejected(reason: "Unknown chain: \(directory)")
+        }
+        guard let body = transaction.body.node else {
+            return .rejected(reason: "Missing transaction body")
+        }
+
+        if let chain = await chain(for: directory) {
+            let isNexus = directory == genesisConfig.spec.directory
+            let validator = TransactionValidator(
+                fetcher: await network.fetcher,
+                chainState: chain,
+                frontierCache: frontierCaches[directory],
+                chainDirectory: directory,
+                isNexus: isNexus
+            )
+            let result = await validator.validate(transaction)
+            if case .failure(let error) = result {
+                return .rejected(reason: describeValidationError(error))
+            }
+        }
+
+        if let sender = body.signers.first,
+           let tipNonce = try? await getNonce(address: sender, directory: directory) {
+            await network.nodeMempool.updateConfirmedNonce(sender: sender, nonce: tipNonce)
+        }
+
+        // Withdrawals only exist on child chains; on the nexus the validator
+        // will already have rejected. Empty-withdrawals tx skips parent probe.
+        let nexusDir = genesisConfig.spec.directory
+        if directory == nexusDir || body.withdrawalActions.isEmpty {
+            return await network.nodeMempool.addTransaction(transaction)
+        }
+
+        var pending: Set<ReceiptRequirement> = []
+        for wa in body.withdrawalActions {
+            let key = ReceiptKey(withdrawalAction: wa, directory: directory).description
+            // getReceipt returns String? (nil = absent); try? wraps into
+            // String?? on throw, so flatten back to String? before use.
+            let stored: String? = (try? await getReceipt(
+                demander: wa.demander,
+                amountDemanded: wa.amountDemanded,
+                nonce: wa.nonce,
+                directory: directory
+            )) ?? nil
+            if let stored {
+                // Receipt key on parent commits to a single withdrawer.
+                // Mismatch is permanent — no future state change can flip it.
+                if stored != wa.withdrawer {
+                    return .rejected(reason: "Receipt \(key) belongs to \(stored), not \(wa.withdrawer)")
+                }
+            } else {
+                pending.insert(ReceiptRequirement(
+                    receiptKey: key,
+                    expectedWithdrawer: wa.withdrawer
+                ))
+            }
+        }
+
+        if pending.isEmpty {
+            return await network.nodeMempool.addTransaction(transaction)
+        }
+        return await network.nodeMempool.addPendingTransaction(
+            transaction,
+            receiptRequirements: pending
+        )
     }
 
     func describeValidationError(_ error: TransactionValidationError) -> String {
@@ -98,31 +173,20 @@ extension LatticeNode {
         }
     }
 
-    // MARK: - Gossip Validation
+    // MARK: - Gossip Admission
 
-    nonisolated public func chainNetwork(_ network: ChainNetwork, shouldAcceptTransaction transaction: Transaction, bodyCID: String) async -> Bool {
+    /// Gossip-path admission. Funnels a peer-broadcast transaction through
+    /// the same `admitToMempool` classifier as direct submits — receipt-
+    /// blocked withdrawals land in pending instead of being silently dropped.
+    /// Returns true on any acceptance (valid, pending, or replaced) so the
+    /// caller can rebroadcast.
+    nonisolated public func chainNetwork(_ network: ChainNetwork, admitTransaction transaction: Transaction, bodyCID: String) async -> Bool {
         let directory = await network.directory
-        return await validateGossipedTransaction(transaction, directory: directory)
-    }
-
-    func validateGossipedTransaction(_ transaction: Transaction, directory: String) async -> Bool {
-        guard let chain = await chain(for: directory) else { return true }
-        guard let network = networks[directory] else { return true }
-        let isNexus = directory == genesisConfig.spec.directory
-        let validator = TransactionValidator(
-            fetcher: await network.fetcher,
-            chainState: chain,
-            frontierCache: frontierCaches[directory],
-            chainDirectory: directory,
-            isNexus: isNexus
-        )
-        let result = await validator.validate(transaction)
-        guard case .success = result else { return false }
-        if let sender = transaction.body.node?.signers.first,
-           let tipNonce = try? await getNonce(address: sender, directory: directory) {
-            await network.nodeMempool.updateConfirmedNonce(sender: sender, nonce: tipNonce)
+        let result = await admitToMempool(transaction: transaction, directory: directory)
+        switch result {
+        case .added, .addedPending, .replacedExisting: return true
+        case .rejected: return false
         }
-        return true
     }
 
 }

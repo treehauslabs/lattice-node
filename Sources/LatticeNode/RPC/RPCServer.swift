@@ -434,7 +434,6 @@ enum RPCRoutes {
             actions: [],
             depositActions: depositActions,
             genesisActions: [],
-            peerActions: [],
             receiptActions: receiptActions,
             withdrawalActions: withdrawalActions,
             signers: body.signers,
@@ -555,7 +554,7 @@ enum RPCRoutes {
             let dummyAddress = CryptoUtils.createAddress(from: dummy.publicKey)
             let premineBody = TransactionBody(
                 accountActions: [AccountAction(owner: recipient, delta: Int64(spec.premineAmount()))],
-                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                actions: [], depositActions: [], genesisActions: [],
                 receiptActions: [], withdrawalActions: [],
                 signers: [dummyAddress], fee: 0, nonce: 0
             )
@@ -956,7 +955,6 @@ enum RPCRoutes {
                 StateSection(name: "accountState", cid: state.accountState.rawCID),
                 StateSection(name: "depositState", cid: state.depositState.rawCID),
                 StateSection(name: "receiptState", cid: state.receiptState.rawCID),
-                StateSection(name: "peerState", cid: state.peerState.rawCID),
                 StateSection(name: "genesisState", cid: state.genesisState.rawCID),
                 StateSection(name: "generalState", cid: state.generalState.rawCID),
             ]

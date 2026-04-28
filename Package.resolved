@@ -1,5 +1,5 @@
 {
-  "originHash" : "54e1c2d26737bc335cf0be6d393d0259858a3239763da846b5fa9f7315d1729a",
+  "originHash" : "12ada07365c7b430a1be7e96a3cb447030fd7de2b37522b693e5114fccc92018",
   "pins" : [
     {
       "identity" : "acorn",
@@ -65,21 +65,21 @@
       }
     },
     {
-      "identity" : "ivy",
-      "kind" : "localSourceControl",
-      "location" : "https://github.com/treehauslabs/Ivy.git",
-      "state" : {
-        "revision" : "93075106755b7748211c7ae4bc8604480277d427",
-        "version" : "5.4.0"
-      }
-    },
-    {
       "identity" : "jxkit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jectivex/JXKit.git",
       "state" : {
         "revision" : "a4c1872d36036fe4ade4b1cadb268603e89e25f0",
         "version" : "3.6.0"
+      }
+    },
+    {
+      "identity" : "lattice",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/treehauslabs/Lattice.git",
+      "state" : {
+        "revision" : "8b98ee346c00a9380e51b0bc8d3847e32d81956d",
+        "version" : "8.1.0"
       }
     },
     {

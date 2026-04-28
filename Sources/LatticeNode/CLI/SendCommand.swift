@@ -79,7 +79,6 @@ struct SendCommand: AsyncParsableCommand {
             actions: [],
             depositActions: [],
             genesisActions: [],
-            peerActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [senderAddress],

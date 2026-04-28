@@ -231,7 +231,7 @@ final class MultiChainEndToEndTests: XCTestCase {
 
         let childPremineBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(childPremine))],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
         let childGenesis = try await BlockBuilder.buildGenesis(
@@ -257,7 +257,7 @@ final class MultiChainEndToEndTests: XCTestCase {
                 AccountAction(owner: kpAddr, delta: Int64(childPremine - 100) - Int64(childPremine)),
                 AccountAction(owner: receiverAddr, delta: Int64(100 + childReward))
             ],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 1
         )
         let childTx = sign(transferBody, kp)
@@ -398,7 +398,7 @@ final class MempoolEndToEndTests: XCTestCase {
 
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 50, nonce: 0
         )
         let tx = sign(body, kp)
@@ -419,7 +419,7 @@ final class MempoolEndToEndTests: XCTestCase {
 
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 10, nonce: 0
         )
         let tx = sign(body, kp)
@@ -439,7 +439,7 @@ final class MempoolEndToEndTests: XCTestCase {
             let kpAddr = addr(kp.publicKey)
             let body = TransactionBody(
                 accountActions: [], actions: [], depositActions: [], genesisActions: [],
-                peerActions: [], receiptActions: [], withdrawalActions: [],
+                receiptActions: [], withdrawalActions: [],
                 signers: [kpAddr], fee: i * 10, nonce: 0
             )
             let _ = await mempool.add(transaction: sign(body, kp))
@@ -459,7 +459,7 @@ final class MempoolEndToEndTests: XCTestCase {
         for i: UInt64 in 0..<3 {
             let body = TransactionBody(
                 accountActions: [], actions: [], depositActions: [], genesisActions: [],
-                peerActions: [], receiptActions: [], withdrawalActions: [],
+                receiptActions: [], withdrawalActions: [],
                 signers: [kpAddr], fee: 10, nonce: i
             )
             let tx = sign(body, kp)
@@ -481,7 +481,7 @@ final class MempoolEndToEndTests: XCTestCase {
 
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: ["fake"], fee: 10, nonce: 0
         )
         let tx = Transaction(signatures: [kp.publicKey: "deadbeef"], body: HeaderImpl<TransactionBody>(node: body))
@@ -498,12 +498,12 @@ final class MempoolEndToEndTests: XCTestCase {
 
         let nexusBody = TransactionBody(
             accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 10, nonce: 0
         )
         let childBody = TransactionBody(
             accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 20, nonce: 0
         )
 
@@ -916,7 +916,7 @@ private struct MultiChainEnv {
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(childSpec.premineAmount()))],
             actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
+            receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, transactions: [sign(premineBody, kp)],
@@ -1144,7 +1144,7 @@ final class MultiChainBalanceAndStateTests: XCTestCase {
                 AccountAction(owner: receiverAddr, delta: Int64(500))
             ],
             actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [], signers: [env.kpAddr], fee: 0, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: [env.kpAddr], fee: 0, nonce: 1
         )
         let tx = sign(transferBody, env.kp)
 
@@ -1234,7 +1234,7 @@ final class MultiChainMiningContextTests: XCTestCase {
         for (mempool, fee) in [(nexusMempool, 10 as UInt64), (childAMempool, 20), (childBMempool, 30)] {
             let body = TransactionBody(
                 accountActions: [], actions: [], depositActions: [], 
-                genesisActions: [], peerActions: [], receiptActions: [], withdrawalActions: [],
+                genesisActions: [], receiptActions: [], withdrawalActions: [],
                 signers: [kpAddr], fee: fee, nonce: 0
             )
             let _ = await mempool.add(transaction: sign(body, kp))
@@ -1828,7 +1828,7 @@ final class CASIsolationTests: XCTestCase {
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(childSpec.premineAmount()))],
             actions: [], depositActions: [], genesisActions: [],
-            peerActions: [], receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
+            receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
         let childGenesis = try await BlockBuilder.buildGenesis(
             spec: childSpec, transactions: [sign(premineBody, kp)],

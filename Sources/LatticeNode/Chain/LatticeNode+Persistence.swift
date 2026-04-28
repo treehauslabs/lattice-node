@@ -52,8 +52,14 @@ extension LatticeNode {
                let tipNonce = try? await getNonce(address: sender, directory: directory) {
                 await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: tipNonce)
             }
-            if await network.submitTransaction(tx) {
+            // Route through the unified admission helper so a withdrawal
+            // tx persisted before a parent reorg gets classified pending
+            // (or evicted on wrong-owner) instead of silently dropping.
+            switch await admitToMempool(transaction: tx, directory: directory) {
+            case .added, .addedPending, .replacedExisting:
                 restored += 1
+            case .rejected:
+                break
             }
         }
         if restored > 0 {

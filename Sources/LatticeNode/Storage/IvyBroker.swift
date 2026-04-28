@@ -29,7 +29,7 @@ public actor IvyBroker: VolumeBroker {
         } else {
             expiry = UInt64(Date().timeIntervalSince1970) + 86400
         }
-        await node.publishPinAnnounce(rootCID: root, selector: "/", expiry: expiry, signature: Data(), fee: 0)
+        await node.publishPinAnnounce(rootCID: root, expiry: expiry, signature: Data(), fee: 0)
     }
 
     public func unpin(root: String, owner: String, count: Int) {}

@@ -82,7 +82,7 @@ final class MempoolAdversarialTests: XCTestCase {
 
         let body1 = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: -Int64(1000))],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [], receiptActions: [],
+            actions: [], depositActions: [], genesisActions: [], receiptActions: [],
             withdrawalActions: [],
             signers: [addr], fee: UInt64.max - 10, nonce: 1
         )
@@ -95,7 +95,7 @@ final class MempoolAdversarialTests: XCTestCase {
         // Try to replace with same nonce but lower fee — should fail even with overflow
         let body2 = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: -Int64(1000))],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [], receiptActions: [],
+            actions: [], depositActions: [], genesisActions: [], receiptActions: [],
             withdrawalActions: [],
             signers: [addr], fee: 5, nonce: 1
         )
@@ -119,7 +119,7 @@ final class MempoolAdversarialTests: XCTestCase {
             let addr = CryptoUtils.createAddress(from: kp.publicKey)
             let body = TransactionBody(
                 accountActions: [AccountAction(owner: addr, delta: -Int64(1000))],
-                actions: [], depositActions: [], genesisActions: [], peerActions: [], receiptActions: [],
+                actions: [], depositActions: [], genesisActions: [], receiptActions: [],
                 withdrawalActions: [],
                 signers: [addr], fee: UInt64(i + 1), nonce: 0
             )
@@ -153,7 +153,7 @@ final class MempoolAdversarialTests: XCTestCase {
         for i in 0..<20 {
             let body = TransactionBody(
                 accountActions: [AccountAction(owner: addr, delta: Int64(UInt64(999 - i)) - Int64(1000))],
-                actions: [], depositActions: [], genesisActions: [], peerActions: [], receiptActions: [],
+                actions: [], depositActions: [], genesisActions: [], receiptActions: [],
                 withdrawalActions: [],
                 signers: [addr], fee: UInt64(100 + i), nonce: UInt64(i)
             )

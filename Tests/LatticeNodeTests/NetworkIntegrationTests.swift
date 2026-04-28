@@ -336,7 +336,7 @@ final class NetworkIntegrationTests: XCTestCase {
                     AccountAction(owner: minerAddr, delta: Int64(minerBalance - amount - fee) - Int64(minerBalance)),
                     AccountAction(owner: receiverAddr, delta: Int64(amount + reward))
                 ],
-                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                actions: [], depositActions: [], genesisActions: [],
                 receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: fee, nonce: 0
             )
             let bodyHeader = HeaderImpl<TransactionBody>(node: txBody)
@@ -848,7 +848,7 @@ final class NetworkIntegrationTests: XCTestCase {
                 AccountAction(owner: minerAddr, delta: Int64(minerBalance - amount - fee) - Int64(minerBalance)),
                 AccountAction(owner: receiverAddr, delta: Int64(amount))
             ],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: fee, nonce: 0
         )
         let bodyHeader = HeaderImpl<TransactionBody>(node: txBody)
@@ -928,7 +928,7 @@ final class NetworkIntegrationTests: XCTestCase {
                 AccountAction(owner: minerAddr, delta: Int64(minerBalance - amount - fee) - Int64(minerBalance)),
                 AccountAction(owner: receiverAddr, delta: Int64(amount))
             ],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: fee, nonce: 0
         )
         let bodyHeader = HeaderImpl<TransactionBody>(node: txBody)
@@ -1006,7 +1006,7 @@ final class NetworkIntegrationTests: XCTestCase {
                     AccountAction(owner: minerAddr, delta: Int64(balance - amount - fee) - Int64(balance)),
                     AccountAction(owner: receiverAddr, delta: Int64(amount))
                 ],
-                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                actions: [], depositActions: [], genesisActions: [],
                 receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: fee, nonce: nonce
             )
             let bodyHeader = HeaderImpl<TransactionBody>(node: txBody)
@@ -1467,7 +1467,7 @@ final class NetworkIntegrationTests: XCTestCase {
                 AccountAction(owner: minerAddr, delta: -Int64(sendAmount + fee)),
                 AccountAction(owner: receiverAddr, delta: Int64(sendAmount))
             ],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: fee, nonce: 0
         )
         let tx = sign(txBody, kp1)

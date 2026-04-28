@@ -314,7 +314,10 @@ struct NodeCommand: AsyncParsableCommand {
                         let bodyHeader = HeaderImpl<TransactionBody>(rawCID: serialized.bodyCID)
                         guard let _ = try? await bodyHeader.resolve(fetcher: network.fetcher).node else { continue }
                         let tx = Transaction(signatures: serialized.signatures, body: bodyHeader)
-                        if await network.submitTransaction(tx) { restored += 1 }
+                        switch await node.admitToMempool(transaction: tx, directory: nexusDir) {
+                        case .added, .addedPending, .replacedExisting: restored += 1
+                        case .rejected: break
+                        }
                     }
                     if restored > 0 { print("  Mempool:     \(restored)/\(savedTxs.count) transaction(s) restored from CAS") }
                 }

@@ -275,6 +275,17 @@ extension LatticeNode {
             if directory == genesisConfig.spec.directory {
                 await applyChildBlockStates(parentBlock: block, nexusBlockCID: header.rawCID, fetcher: fetcher)
             }
+            // Promote any pending child-mempool entries whose required
+            // receipt just landed in this block. Sibling fix for the
+            // receipt-visibility race: pending entries gated on receipts
+            // newly committed here become selectable on the next round.
+            await runReceiptPromotionHook(txEntries: txEntries, parentDirectory: directory)
+            // Evict mempool entries holding deposit keys consumed by this
+            // block's withdrawals. The included withdrawal itself was
+            // already removed via batchUpdateConfirmedNonces; this catches
+            // cross-pool conflicts (e.g. a pending entry on the same
+            // deposit that lost the inclusion race).
+            await runDepositEvictionHook(txEntries: txEntries, directory: directory)
         }
 
         let tipAfter = await chain.getMainChainTip()
@@ -429,32 +440,36 @@ extension LatticeNode {
             await network.nodeMempool.removeAll(txCIDs: newChainTxCIDs)
         }
 
-        // Step 4: Re-validate orphaned txs and return to mempool
-        let isNexus = dir == genesisConfig.spec.directory
-        let validator = TransactionValidator(fetcher: fetcher, chainState: chain, frontierCache: frontierCaches[dir], chainDirectory: dir, isNexus: isNexus)
+        // Step 4: Re-classify orphaned txs through the unified admission
+        // helper. admitToMempool runs the validator + parent-receipt probe
+        // so a withdrawal whose required receipt is no longer canonical in
+        // the new chain lands in pending (or evicts on wrong-owner) instead
+        // of being silently dropped.
         var recovered = 0
         for entry in orphanedBlockTxs {
             for (cid, txHeader) in entry.txEntries {
                 guard let tx = txHeader.node else { continue }
                 if tx.body.node?.fee == 0 && tx.body.node?.nonce == entry.block.index { continue }
                 if newChainTxCIDs.contains(cid) { continue }
-                let result = await validator.validate(tx)
-                if case .success = result, let network {
-                    // Sync mempool confirmedNonce to post-reorg state. Without
-                    // this, a sender's confirmedNonce could still reflect the
-                    // orphaned chain's (higher) nonce, stranding the re-added
-                    // tx forever since its nonce would be < confirmedNonce.
-                    if let sender = tx.body.node?.signers.first,
-                       let tipNonce = try? await getNonce(address: sender, directory: dir) {
-                        await network.nodeMempool.updateConfirmedNonce(sender: sender, nonce: tipNonce)
-                    }
-                    let _ = await network.nodeMempool.add(transaction: tx)
+                let addResult = await admitToMempool(transaction: tx, directory: dir)
+                switch addResult {
+                case .added, .addedPending, .replacedExisting:
                     recovered += 1
+                case .rejected:
+                    continue
                 }
             }
         }
 
         log.info("Reorg complete: \(recovered) tx(s) recovered, \(newChainTxCIDs.count) confirmed in new chain")
+
+        // Step 4.5: Demote any direct child mempool's valid withdrawals
+        // whose required receipt is no longer canonical at the new parent
+        // tip, and re-probe pending entries against the new state. A
+        // reorg can both add and remove receipts; admitToMempool only
+        // covers orphaned txs being re-admitted, not entries that were
+        // already in the child mempool as valid before the reorg fired.
+        await runChildReorgHook(parentDirectory: dir)
 
         // Step 5: Roll back child chain states from orphaned nexus blocks
         await rollbackChildChains(orphanedBlockHashes: orphanedBlockHashes, fetcher: fetcher)
@@ -490,28 +505,16 @@ extension LatticeNode {
 
                 let childTxEntries = await resolveBlockTransactions(block: childBlock, fetcher: fetcher)
 
-                // Recover orphaned child txs to child mempool (with validation)
-                if let childNetwork = networks[childDir],
-                   let childChain = await chain(for: childDir) {
-                    let validator = TransactionValidator(
-                        fetcher: fetcher,
-                        chainState: childChain,
-                        frontierCache: frontierCaches[childDir],
-                        chainDirectory: childDir,
-                        isNexus: false
-                    )
+                // Recover orphaned child txs through the unified admission
+                // helper. Withdrawals whose receipt is no longer canonical
+                // in the new parent chain go pending (or evict on wrong-
+                // owner) — same classifier as gossip and direct submit.
+                if let childNetwork = networks[childDir] {
                     for (cid, txHeader) in childTxEntries {
                         guard let tx = txHeader.node else { continue }
                         if tx.body.node?.fee == 0 { continue }
                         if await childNetwork.nodeMempool.contains(txCID: cid) { continue }
-                        let result = await validator.validate(tx)
-                        if case .success = result {
-                            if let sender = tx.body.node?.signers.first,
-                               let tipNonce = try? await getNonce(address: sender, directory: childDir) {
-                                await childNetwork.nodeMempool.updateConfirmedNonce(sender: sender, nonce: tipNonce)
-                            }
-                            let _ = await childNetwork.nodeMempool.add(transaction: tx)
-                        }
+                        _ = await admitToMempool(transaction: tx, directory: childDir)
                     }
                 }
 
@@ -1086,7 +1089,7 @@ extension LatticeNode {
         await withTaskGroup(of: Void.self) { group in
             for cid in cidsToPin {
                 group.addTask {
-                    await network.announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
+                    await network.announce(cid: cid, expiry: expiry, fee: fee)
                 }
             }
         }

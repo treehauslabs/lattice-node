@@ -587,7 +587,6 @@ public actor MinerLoop {
             actions: [],
             depositActions: [],
             genesisActions: [],
-            peerActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [identity.address],

@@ -156,7 +156,7 @@ final class LifecycleTests: XCTestCase {
             let premineAmount = Int64(genesisConfig.spec.premineAmount())
             let body = TransactionBody(
                 accountActions: [AccountAction(owner: minerAddr, delta: premineAmount)],
-                actions: [], depositActions: [], genesisActions: [], peerActions: [],
+                actions: [], depositActions: [], genesisActions: [],
                 receiptActions: [], withdrawalActions: [],
                 signers: [minerAddr], fee: 0, nonce: 0
             )
@@ -311,7 +311,7 @@ final class LifecycleTests: XCTestCase {
         // Build genesis with premine so there's a balance to spend
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: 1_000_000)],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], fee: 0, nonce: 0
         )
@@ -335,7 +335,7 @@ final class LifecycleTests: XCTestCase {
                 AccountAction(owner: minerAddr, delta: -100),
                 AccountAction(owner: "recipient_address", delta: 100),
             ],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], fee: 0, nonce: 1
         )
@@ -1157,7 +1157,7 @@ final class LifecycleTests: XCTestCase {
         let childSpec = testSpec("Child")
         let childPremineBody = TransactionBody(
             accountActions: [AccountAction(owner: demanderAddr, delta: Int64(childPremine))],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
             signers: [addr(dummySigner.publicKey)], fee: 0, nonce: 0
         )
@@ -1557,7 +1557,7 @@ final class LifecycleTests: XCTestCase {
         // Build and store block 1 (coinbase for miner)
         let coinbase = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(spec.rewardAtBlock(0)))],
-            actions: [], depositActions: [], genesisActions: [], peerActions: [],
+            actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], fee: 0, nonce: 0
         )

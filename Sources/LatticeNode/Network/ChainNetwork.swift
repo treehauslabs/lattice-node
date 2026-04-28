@@ -10,7 +10,11 @@ import OrderedCollections
 public protocol ChainNetworkDelegate: AnyObject, Sendable {
     func chainNetwork(_ network: ChainNetwork, didReceiveBlock cid: String, data: Data, from peer: PeerID) async
     func chainNetwork(_ network: ChainNetwork, didReceiveBlockAnnouncement cid: String, from peer: PeerID) async
-    func chainNetwork(_ network: ChainNetwork, shouldAcceptTransaction transaction: Transaction, bodyCID: String) async -> Bool
+    /// Validate + classify + admit a gossip-received transaction. Delegate
+    /// owns the full mempool admission decision (valid vs pending vs reject)
+    /// so receipt-blocked child-chain withdrawals can sit in pending instead
+    /// of being silently dropped. Returns true on any acceptance.
+    func chainNetwork(_ network: ChainNetwork, admitTransaction transaction: Transaction, bodyCID: String) async -> Bool
     func chainNetwork(_ network: ChainNetwork, didConnectPeer peer: PeerID) async
 }
 
@@ -219,37 +223,36 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
     }
 
     /// Publish a pin announce via Ivy and record the CID with the disk broker.
-    public func announce(cid: String, selector: String, expiry: UInt64, fee: UInt64) async {
+    /// Ivy 5.5 removed selector — DHT pin discovery is now whole-root.
+    public func announce(cid: String, expiry: UInt64, fee: UInt64) async {
         guard !cid.isEmpty else { return }
-        await ivy.publishPinAnnounce(rootCID: cid, selector: selector, expiry: expiry, signature: Data(), fee: fee)
+        await ivy.publishPinAnnounce(rootCID: cid, expiry: expiry, signature: Data(), fee: fee)
     }
 
     /// Publish pin announcements for each Volume boundary root in the block.
-    /// Each announcement includes a selector describing what subtree the pin covers.
-    /// Light clients can discover pinners for specific subtrees (e.g., /accountState).
+    /// Ivy 5.5 dropped subtree selectors — pins are now whole-root, so per-
+    /// subtree announce calls have collapsed to one announce per distinct CID.
     private func announceVolumeBoundaries(block: Block) async {
         let fee = await ivy.config.relayFee * 3
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
 
         let frontierCID = block.frontier.rawCID
         if !frontierCID.isEmpty {
-            await announce(cid: frontierCID, selector: "/", expiry: expiry, fee: fee)
-            await announce(cid: frontierCID, selector: "/accountState", expiry: expiry, fee: fee)
-            await announce(cid: frontierCID, selector: "/generalState", expiry: expiry, fee: fee)
+            await announce(cid: frontierCID, expiry: expiry, fee: fee)
         }
         let homesteadCID = block.homestead.rawCID
         if !homesteadCID.isEmpty {
-            await announce(cid: homesteadCID, selector: "/accountState", expiry: expiry, fee: fee)
+            await announce(cid: homesteadCID, expiry: expiry, fee: fee)
         }
 
         let txCID = block.transactions.rawCID
         if !txCID.isEmpty {
-            await announce(cid: txCID, selector: "/", expiry: expiry, fee: fee)
+            await announce(cid: txCID, expiry: expiry, fee: fee)
         }
 
         let childCID = block.childBlocks.rawCID
         if !childCID.isEmpty {
-            await announce(cid: childCID, selector: "/", expiry: expiry, fee: fee)
+            await announce(cid: childCID, expiry: expiry, fee: fee)
         }
     }
 
@@ -271,17 +274,17 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
 
         // Announce the block itself
-        await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
+        await announce(cid: cid, expiry: expiry, fee: fee)
 
         // Announce Volume boundaries so state/tx subtrees are discoverable
         if let block = Block(data: data) {
             let frontierCID = block.frontier.rawCID
             if !frontierCID.isEmpty {
-                await announce(cid: frontierCID, selector: "/", expiry: expiry, fee: fee)
+                await announce(cid: frontierCID, expiry: expiry, fee: fee)
             }
             let txCID = block.transactions.rawCID
             if !txCID.isEmpty {
-                await announce(cid: txCID, selector: "/", expiry: expiry, fee: fee)
+                await announce(cid: txCID, expiry: expiry, fee: fee)
             }
         }
     }
@@ -467,12 +470,18 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
                 signatures: wireTx.signatures,
                 body: HeaderImpl(rawCID: cidStr, node: body, encryptionInfo: nil)
             )
-            if let del = delegate, !(await del.chainNetwork(self, shouldAcceptTransaction: resolvedTx, bodyCID: cidStr)) {
-                break
+            // Delegate now owns full admission (validate + classify + insert);
+            // ChainNetwork no longer calls nodeMempool directly. Pending
+            // classification for receipt-blocked withdrawals must happen
+            // here too so a peer's gossip doesn't bypass the classifier.
+            let accepted: Bool
+            if let del = delegate {
+                accepted = await del.chainNetwork(self, admitTransaction: resolvedTx, bodyCID: cidStr)
+            } else {
+                accepted = await nodeMempool.add(transaction: resolvedTx)
             }
-            await storeLocally(cid: cidStr, data: bodyData)
-            let accepted = await nodeMempool.add(transaction: resolvedTx)
             if accepted {
+                await storeLocally(cid: cidStr, data: bodyData)
                 recentTxCIDs[cidStr] = now
                 while recentTxCIDs.count > Self.maxRecentTxCIDs {
                     recentTxCIDs.removeFirst()
@@ -504,7 +513,7 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
         if await diskBroker.hasVolume(root: cid) {
             let fee = await ivy.config.relayFee * 2
             let expiry = UInt64(Date().timeIntervalSince1970) + 86400
-            await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
+            await announce(cid: cid, expiry: expiry, fee: fee)
             return
         }
 
@@ -525,7 +534,7 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
 
         let fee = await ivy.config.relayFee * 2
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
-        await announce(cid: cid, selector: "/", expiry: expiry, fee: fee)
+        await announce(cid: cid, expiry: expiry, fee: fee)
     }
 
 }
