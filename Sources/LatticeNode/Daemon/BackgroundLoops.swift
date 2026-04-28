@@ -74,11 +74,26 @@ func startStorageMaintenanceLoop(node: LatticeNode) -> Task<Void, Never> {
     }
 }
 
-/// Re-announce all pinned Volumes periodically.
-/// Pin announcements expire after 24 hours; this re-announces every 6 hours
-/// so peers can continue discovering us as a provider for data we hold.
+/// Re-announce all pinned Volumes. Cadence matches the 24h pin expiry
+/// so each announcement replaces the previous one as it expires.
 @discardableResult
 func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
+    Task {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(86400)) // 24 hours
+            for directory in await node.allDirectories() {
+                await node.reannouncePinnedVolumes(directory: directory)
+            }
+            await node.demoteLowScoringAnchors()
+        }
+    }
+}
+
+/// Evict expired pin announcements and stale provider records.
+/// Runs every 6 hours so offline peers are cleaned within a few hours
+/// of their announcements expiring.
+@discardableResult
+func startEvictionLoop(node: LatticeNode) -> Task<Void, Never> {
     Task {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(21600)) // 6 hours
@@ -86,9 +101,7 @@ func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
                 if let network = await node.network(for: directory) {
                     await network.ivy.evict()
                 }
-                await node.reannouncePinnedVolumes(directory: directory)
             }
-            await node.demoteLowScoringAnchors()
         }
     }
 }

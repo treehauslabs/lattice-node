@@ -52,6 +52,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     var peerRefreshTask: Task<Void, Never>?
     private var mempoolPruneTask: Task<Void, Never>?
     private var pinReannounceTask: Task<Void, Never>?
+    private var evictionTask: Task<Void, Never>?
     private var storageMaintenanceTask: Task<Void, Never>?
     public var feeEstimators: [String: FeeEstimator]
     public let subscriptions: SubscriptionManager
@@ -244,6 +245,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         if !config.discoveryOnly {
             mempoolPruneTask = startMempoolLoop(node: self)
             pinReannounceTask = startPinReannounceLoop(node: self)
+            evictionTask = startEvictionLoop(node: self)
             storageMaintenanceTask = startStorageMaintenanceLoop(node: self)
         }
     }
@@ -253,6 +255,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         mempoolPruneTask = nil
         pinReannounceTask?.cancel()
         pinReannounceTask = nil
+        evictionTask?.cancel()
+        evictionTask = nil
         storageMaintenanceTask?.cancel()
         storageMaintenanceTask = nil
         // One last WAL checkpoint + incremental vacuum on a graceful stop so
