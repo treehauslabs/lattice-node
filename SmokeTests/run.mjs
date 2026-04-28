@@ -41,6 +41,8 @@ const TESTS = [
   { name: 'nonce-edge-cases',      file: 'scenarios/safety/nonce-edge-cases.mjs',       timeoutMs: 180_000 },
   { name: 'rpc-idempotency',       file: 'scenarios/safety/rpc-idempotency.mjs',        timeoutMs: 120_000 },
   { name: 'swap-violations',       file: 'scenarios/safety/swap-violations.mjs',        timeoutMs: 300_000 },
+  { name: 'fee-bounds',             file: 'scenarios/safety/fee-bounds.mjs',              timeoutMs: 180_000 },
+  { name: 'balance-overdraft',      file: 'scenarios/safety/balance-overdraft.mjs',       timeoutMs: 180_000 },
   { name: 'supply-conservation',   file: 'scenarios/safety/supply-conservation.mjs',    timeoutMs: 600_000 },
   { name: 'mempool-propagation',   file: 'scenarios/safety/mempool-propagation.mjs',    timeoutMs: 300_000 },
   { name: 'sigterm-under-load',    file: 'scenarios/persistence/sigterm-under-load.mjs', timeoutMs: 360_000 },
@@ -49,6 +51,7 @@ const TESTS = [
   { name: 'health-and-metrics',    file: 'scenarios/rpc/health-and-metrics.mjs',         timeoutMs: 180_000 },
   { name: 'block-explorer',        file: 'scenarios/rpc/block-explorer.mjs',             timeoutMs: 180_000 },
   { name: 'chain-spec',            file: 'scenarios/rpc/chain-spec.mjs',                 timeoutMs: 180_000 },
+  { name: 'balance-proof',         file: 'scenarios/rpc/balance-proof.mjs',              timeoutMs: 180_000 },
   { name: 'stability-multichain',  file: 'scenarios/liveness/stability-multichain.mjs', timeoutMs: 35 * 60_000, gated: 'SMOKE_STABILITY' },
 ]
 

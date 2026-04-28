@@ -31,6 +31,9 @@
     "health-and-metrics": "node scenarios/rpc/health-and-metrics.mjs",
     "block-explorer": "node scenarios/rpc/block-explorer.mjs",
     "chain-spec": "node scenarios/rpc/chain-spec.mjs",
+    "balance-proof": "node scenarios/rpc/balance-proof.mjs",
+    "fee-bounds": "node scenarios/safety/fee-bounds.mjs",
+    "balance-overdraft": "node scenarios/safety/balance-overdraft.mjs",
     "stability-multichain": "SMOKE_STABILITY=1 node scenarios/liveness/stability-multichain.mjs"
   },
   "dependencies": {
