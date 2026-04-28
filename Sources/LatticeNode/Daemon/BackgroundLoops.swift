@@ -83,6 +83,9 @@ func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(21600)) // 6 hours
             for directory in await node.allDirectories() {
+                if let network = await node.network(for: directory) {
+                    await network.ivy.evictExpiredProviders()
+                }
                 await node.reannouncePinnedVolumes(directory: directory)
             }
             await node.demoteLowScoringAnchors()
