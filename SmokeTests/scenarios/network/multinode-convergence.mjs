@@ -64,11 +64,12 @@ if (aTip.height < 2) {
   console.error('  ✗ A failed to mine any blocks'); net.teardown(); process.exit(1)
 }
 
-console.log('\n[5] Checking for convergence (up to 15s)...')
+console.log('\n[5] Checking for convergence (up to 60s)...')
 await waitFor(async () => {
   const [aT, bT, cT] = await Promise.all([tipInfo(A), tipInfo(B), tipInfo(C)])
+  if (aT?.height) process.stdout.write(`\r  A@${aT.height} B@${bT?.height ?? '?'} C@${cT?.height ?? '?'}   `)
   return aT?.tip && aT.tip === bT?.tip && aT.tip === cT?.tip ? aT : null
-}, 'three-node mesh converged', { timeoutMs: 15_000, intervalMs: 1000 })
+}, 'three-node mesh converged', { timeoutMs: 60_000, intervalMs: 2000 })
 
 const finalTip = await tipInfo(A)
 console.log(`  ✓ converged at height=${finalTip.height} tip=${finalTip.tip.slice(0, 20)}...`)

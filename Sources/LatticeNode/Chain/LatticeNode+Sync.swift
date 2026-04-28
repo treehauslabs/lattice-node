@@ -8,6 +8,8 @@ extension LatticeNode {
 
     public var isSyncing: Bool { syncTask != nil }
 
+    static let catchUpSyncThreshold: UInt64 = 5
+
     func checkSyncNeeded(
         peerBlock: Block,
         peerTipCID: String,
@@ -18,7 +20,7 @@ extension LatticeNode {
         guard let chainState = await chain(for: directory) else { return false }
         let localHeight = await chainState.getHighestBlockIndex()
         let gap = peerBlock.index > localHeight ? peerBlock.index - localHeight : 0
-        guard gap > config.retentionDepth else { return false }
+        guard gap > Self.catchUpSyncThreshold else { return false }
 
         if let localSnapshot = await chainState.tipSnapshot {
             if peerBlock.difficulty <= localSnapshot.difficulty && peerBlock.index <= localHeight {
@@ -64,7 +66,7 @@ extension LatticeNode {
     }
 
     func performSync(peerTipCID: String, network: ChainNetwork) async {
-        let fetcher: any Fetcher = await network.ivyFetcher
+        let fetcher = await network.ivyFetcher
         let syncer = ChainSyncer(
             fetcher: fetcher,
             store: { [network] cid, data in await network.storeBlock(cid: cid, data: data) },
@@ -92,7 +94,7 @@ extension LatticeNode {
         let log = NodeLogger("sync")
         log.info("Starting headers-first sync from \(String(peerTipCID.prefix(16)))...")
 
-        let fetcher: any Fetcher = await network.ivyFetcher
+        let fetcher = await network.ivyFetcher
         let headerChain = HeaderChain()
 
         do {

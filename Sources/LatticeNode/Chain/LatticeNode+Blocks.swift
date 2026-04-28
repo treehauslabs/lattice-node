@@ -64,8 +64,11 @@ extension LatticeNode {
             try await storer.flush()
 
             let owner = "\(dir):\(block.index)"
+            let fee = await network.ivy.config.relayFee * 2
+            let expiry = UInt64(Date().timeIntervalSince1970) + 86400
             for root in storer.storedRoots {
                 try await network.diskBroker.pin(root: root, owner: owner)
+                await network.announce(cid: root, expiry: expiry, fee: fee)
             }
             if let store = stateStores[dir] {
                 await store.persistStoredRoots(height: block.index, roots: storer.storedRoots)

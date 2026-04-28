@@ -31,7 +31,7 @@ public enum SyncFetchError: Error, Sendable {
 }
 
 public actor ChainSyncer {
-    private let fetcher: Fetcher
+    private let fetcher: VolumeAwareFetcher
     private let storeFn: @Sendable (String, Data) async -> Void
     private let genesisBlockHash: String
     private let retentionDepth: UInt64
@@ -39,7 +39,7 @@ public actor ChainSyncer {
     private var cancelled = false
 
     public init(
-        fetcher: Fetcher,
+        fetcher: VolumeAwareFetcher,
         store: @Sendable @escaping (String, Data) async -> Void,
         genesisBlockHash: String,
         retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE,
@@ -52,10 +52,13 @@ public actor ChainSyncer {
         self.fetchTimeout = fetchTimeout
     }
 
-    private func fetchWithTimeout(rawCid: String) async throws -> Data {
+    private func fetchBlockVolume(rawCid: String) async throws -> Data {
         try await withThrowingTaskGroup(of: Data.self) { group in
             group.addTask {
-                try await self.fetcher.fetch(rawCid: rawCid)
+                try await self.fetcher.enterVolume(rootCID: rawCid, paths: .init())
+                let data = try await self.fetcher.fetch(rawCid: rawCid)
+                await self.fetcher.exitVolume(rootCID: rawCid)
+                return data
             }
             group.addTask {
                 try await Task.sleep(for: self.fetchTimeout)
@@ -105,7 +108,7 @@ public actor ChainSyncer {
         while !cancelled {
             let data: Data
             do {
-                data = try await fetchWithTimeout(rawCid: currentCID)
+                data = try await fetchBlockVolume(rawCid: currentCID)
             } catch {
                 throw SyncError.invalidBlock(UInt64(collected.count))
             }
