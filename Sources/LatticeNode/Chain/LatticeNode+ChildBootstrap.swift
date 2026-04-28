@@ -180,7 +180,13 @@ extension LatticeNode {
             )
         }
 
-        // 8. Register the chain network so peer messages flow.
+        // 8. Pin and announce the child chain's spec so peers can discover it.
+        let chainPath = parentChainPath + [directory]
+        if let network = networks[directory] ?? networks[parentChainPath.last ?? genesisConfig.spec.directory] {
+            await pinSpec(block: genesisEntry.block, chainPath: chainPath, network: network)
+        }
+
+        // 9. Register the chain network so peer messages flow.
         await handleChildChainDiscovery(directory: directory)
 
         // 9. Backfill per-block state for the historical chain (1..N-1). Each

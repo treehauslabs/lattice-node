@@ -166,9 +166,13 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         }
         if let specData = genesis.block.spec.node?.toData() {
             let specCID = genesis.block.spec.rawCID
+            let nexusDir = genesisConfig.spec.directory
             let specPayload = VolumePayload(root: specCID, entries: [specCID: specData])
             try? await nexusNetwork.diskBroker.storeVolumeLocal(specPayload)
-            try? await nexusNetwork.diskBroker.pin(root: specCID, owner: "\(genesisConfig.spec.directory):spec")
+            try? await nexusNetwork.diskBroker.pin(root: specCID, owner: "\(nexusDir):spec")
+            let fee = await nexusNetwork.ivy.config.relayFee * 2
+            let expiry = UInt64(Date().timeIntervalSince1970) + 86400 * 365
+            await nexusNetwork.announce(cid: specCID, expiry: expiry, fee: fee)
         }
 
         self.genesisResult = genesis
