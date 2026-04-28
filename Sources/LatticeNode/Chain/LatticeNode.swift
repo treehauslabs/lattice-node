@@ -508,8 +508,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public func connectedPeerEndpoints(directory: String? = nil) async -> [PeerEndpoint] {
         let dir = directory ?? genesisConfig.spec.directory
         guard let network = networks[dir] else { return [] }
-        let entries = await network.ivy.router.allPeers()
-        return entries.map { $0.endpoint }
+        return await network.ivy.connectedPeerEndpoints
     }
 }
 

@@ -35,17 +35,15 @@ C.start({ peers: [A] })
 await B.waitForRPC()
 await C.waitForRPC()
 
-console.log('  letting peers connect...')
-await waitFor(async () => (await peerCount(A)) >= 2,
-  'A sees ≥2 peers', { timeoutMs: 10_000 })
-await sleep(1000)
+console.log('  waiting for all peers to connect...')
+await waitFor(async () => {
+  const [a, b, c] = await Promise.all([peerCount(A), peerCount(B), peerCount(C)])
+  return a >= 2 && b >= 1 && c >= 1 ? true : null
+}, 'all peers connected', { timeoutMs: 30_000 })
 
 console.log('\n[3] Checking peer connectivity...')
 const peers = [await peerCount(A), await peerCount(B), await peerCount(C)]
 console.log(`  peer counts: A=${peers[0]} B=${peers[1]} C=${peers[2]}`)
-if (peers[1] < 1 || peers[2] < 1) {
-  console.error('  ✗ B and/or C have no peers'); net.teardown(); process.exit(1)
-}
 
 console.log('\n[4] Start mining on A...')
 await startMining(A, 'Nexus')
