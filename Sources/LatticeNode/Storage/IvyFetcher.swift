@@ -109,10 +109,6 @@ public actor IvyFetcher: VolumeAwareFetcher {
         if !entries.isEmpty {
             let payload = VolumePayload(root: rootCID, entries: entries)
             try? await broker.storeVolumeLocal(payload)
-            for (cid, data) in entries where cid != rootCID {
-                let child = VolumePayload(root: cid, entries: [cid: data])
-                try? await broker.storeVolumeLocal(child)
-            }
         }
         pushCache(root: rootCID, entries: entries)
     }
