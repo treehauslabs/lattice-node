@@ -74,20 +74,17 @@ func startStorageMaintenanceLoop(node: LatticeNode) -> Task<Void, Never> {
     }
 }
 
-/// Re-announce pins and advertise storage capacity periodically.
+/// Re-announce all pinned Volumes periodically.
 /// Pin announcements expire after 24 hours; this re-announces every 6 hours
-/// and broadcasts available storage so peers can route pin requests to us.
+/// so peers can continue discovering us as a provider for data we hold.
 @discardableResult
 func startPinReannounceLoop(node: LatticeNode) -> Task<Void, Never> {
     Task {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(21600)) // 6 hours
             for directory in await node.allDirectories() {
-                await node.reannounceChainTip(directory: directory)
+                await node.reannouncePinnedVolumes(directory: directory)
             }
-            // Same cadence: drop anchor peers that went Byzantine after we
-            // saved them. Without this, a bootstrap peer that now serves
-            // stale tips remains pinned across restarts forever (S9).
             await node.demoteLowScoringAnchors()
         }
     }

@@ -495,12 +495,14 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
     /// Re-announce the current chain tip block and its Volume boundaries.
     /// Called periodically to keep pin announcements alive in the DHT.
-    public func reannounceChainTip(directory: String) async {
-        guard let network = networks[directory],
-              let chain = await chain(for: directory) else { return }
-        let tipCID = await chain.getMainChainTip()
-        guard let data = try? await network.ivyFetcher.fetch(rawCid: tipCID) else { return }
-        await network.announceStoredBlock(cid: tipCID, data: data)
+    public func reannouncePinnedVolumes(directory: String) async {
+        guard let network = networks[directory] else { return }
+        let roots = await network.diskBroker.pinnedRoots()
+        let fee = await network.ivy.config.relayFee * 2
+        let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+        for root in roots {
+            await network.announce(cid: root, expiry: expiry, fee: fee)
+        }
     }
 
     // MARK: - Peer Persistence
