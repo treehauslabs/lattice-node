@@ -73,7 +73,7 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
         }
         self.broker = memory
 
-        let tallyWithMaxPeers = TallyConfig(maxPeers: maxPeerConnections)
+        let tallyWithMaxPeers = TallyConfig(rateLimitBytesPerSecond: .infinity, maxPeers: maxPeerConnections)
         let ivyConfig = IvyConfig(
             publicKey: config.publicKey,
             listenPort: config.listenPort,
