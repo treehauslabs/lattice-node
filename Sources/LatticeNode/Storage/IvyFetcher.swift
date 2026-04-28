@@ -116,7 +116,7 @@ public actor IvyFetcher: VolumeAwareFetcher {
 
     public func exitVolume(rootCID: String) {
         if let idx = cacheStack.lastIndex(where: { $0.root == rootCID }) {
-            cacheStack.removeSubrange(idx...)
+            cacheStack.remove(at: idx)
         }
     }
 

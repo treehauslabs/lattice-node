@@ -34,6 +34,9 @@ extension LatticeNode {
 
     static let syncTimeout: Duration = .seconds(600)
 
+    static let syncRetryDelay: Duration = .seconds(10)
+    static let maxSyncRetries = 6
+
     func startSync(peerTipCID: String, network: ChainNetwork) {
         let strategy = self.config.syncStrategy
         syncTask = Task { [weak self] in
@@ -66,28 +69,36 @@ extension LatticeNode {
     }
 
     func performSync(peerTipCID: String, network: ChainNetwork) async {
-        let fetcher = await network.ivyFetcher
-        let syncer = ChainSyncer(
-            fetcher: fetcher,
-            store: { [network] cid, data in await network.storeBlock(cid: cid, data: data) },
-            genesisBlockHash: genesisResult.blockHash,
-            retentionDepth: config.retentionDepth
-        )
-
-        do {
-            let result: SyncResult
-            switch config.syncStrategy {
-            case .full:
-                result = try await syncer.syncFull(peerTipCID: peerTipCID)
-            case .snapshot, .headersFirst:
-                result = try await syncer.syncSnapshot(peerTipCID: peerTipCID)
+        let log = NodeLogger("sync")
+        for attempt in 0..<Self.maxSyncRetries {
+            if attempt > 0 {
+                log.info("Sync retry \(attempt + 1)/\(Self.maxSyncRetries) after \(Self.syncRetryDelay)")
+                try? await Task.sleep(for: Self.syncRetryDelay)
             }
+            let fetcher = await network.ivyFetcher
+            let syncer = ChainSyncer(
+                fetcher: fetcher,
+                store: { [network] cid, data in await network.storeBlock(cid: cid, data: data) },
+                genesisBlockHash: genesisResult.blockHash,
+                retentionDepth: config.retentionDepth
+            )
 
-            await finalizeSyncResult(result, network: network, fetcher: fetcher)
-        } catch {
-            let log = NodeLogger("sync")
-            log.error("Sync failed: \(error) — will retry on next peer block")
+            do {
+                let result: SyncResult
+                switch config.syncStrategy {
+                case .full:
+                    result = try await syncer.syncFull(peerTipCID: peerTipCID)
+                case .snapshot, .headersFirst:
+                    result = try await syncer.syncSnapshot(peerTipCID: peerTipCID)
+                }
+
+                await finalizeSyncResult(result, network: network, fetcher: fetcher)
+                return
+            } catch {
+                log.error("Sync failed (attempt \(attempt + 1)): \(error)")
+            }
         }
+        log.error("Sync exhausted \(Self.maxSyncRetries) retries — will retry on next peer block")
     }
 
     func performHeadersFirstSync(peerTipCID: String, network: ChainNetwork) async {
