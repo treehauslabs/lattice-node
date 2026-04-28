@@ -202,6 +202,12 @@ extension LatticeNode {
         let nexusDir = genesisConfig.spec.directory
 
         await lattice.nexus.chain.resetFrom(result.persisted, retentionDepth: config.retentionDepth)
+
+        let tipStub = VolumeImpl<Block>(rawCID: result.tipBlockHash, node: nil, encryptionInfo: nil)
+        if let tipBlock = try? await tipStub.resolve(fetcher: fetcher).node {
+            await lattice.nexus.chain.updateTipSnapshot(block: tipBlock)
+        }
+
         await persistChainState(directory: nexusDir)
 
         if let store = stateStores[nexusDir] {
