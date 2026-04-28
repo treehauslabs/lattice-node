@@ -8,7 +8,7 @@ import { sleep, waitFor } from '../../lib/waitFor.mjs'
 import { genKeypair, sign, computeAddress } from '../../lib/wallet.mjs'
 import {
   chainInfo, getNonce, getBalance, startMining, stopMining,
-  awaitMiningQuiesced,
+  awaitMiningQuiesced, tipInfo,
 } from '../../lib/chain.mjs'
 import { peerCount } from '../../lib/probe.mjs'
 
@@ -44,21 +44,23 @@ await waitFor(async () => (await peerCount(M)) >= 1 && (await peerCount(R)) >= 1
   'peers connected', { timeoutMs: 15_000 })
 console.log(`  peers connected`)
 
-console.log(`\n[2] Mine brief burst, wait for relay to sync...`)
+console.log(`\n[2] Mine short burst, wait for relay convergence...`)
 await startMining(M, nexusDir)
-await sleep(200)
+await sleep(8000)
 await stopMining(M, nexusDir)
-await awaitMiningQuiesced(M, nexusDir)
-const mInfo = await chainInfo(M)
-const mHeight = mInfo.chains.find(c => c.directory === nexusDir)?.height ?? 0
-console.log(`  miner height: ${mHeight}`)
+await sleep(2000)
+
+const mTip = await tipInfo(M)
+console.log(`  miner tip: ${nexusDir}@${mTip.height}`)
+if (mTip.height < 2) {
+  console.error(`  ✗ miner failed to produce blocks`); net.teardown(); process.exit(1)
+}
 
 await waitFor(async () => {
-  const ri = await chainInfo(R)
-  const rc = ri?.chains?.find(c => c.directory === nexusDir)
-  return rc && rc.height >= mHeight ? rc.height : null
-}, 'relay synced to miner height', { timeoutMs: 60_000 })
-console.log(`  relay synced`)
+  const rt = await tipInfo(R)
+  return rt && rt.tip === mTip.tip ? rt : null
+}, 'relay converged', { timeoutMs: 60_000 })
+console.log(`  relay converged`)
 const minerBal = await getBalance(M, minerAddr, nexusDir)
 console.log(`  miner balance: ${minerBal}`)
 
