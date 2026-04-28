@@ -55,12 +55,6 @@ public actor IvyFetcher: VolumeAwareFetcher {
     public func fetch(rawCid: String) async throws -> Data {
         if let data = cacheLookup(rawCid) { return data }
 
-        // Walk only the local near chain (Memory → Disk), never far. The far
-        // tier is the network (IvyBroker), and querying it with a stem CID
-        // treats that stem as a Volume root — peers can't satisfy it. Stems
-        // must come from the cache stack populated by an earlier enterVolume.
-        // The local fallback below is for legitimate single-entry payloads
-        // stored with their own CID as the root (storeAndPublish/storeLocally).
         var current: (any VolumeBroker)? = broker
         while let b = current {
             if let payload = await b.fetchVolumeLocal(root: rawCid),
@@ -109,10 +103,6 @@ public actor IvyFetcher: VolumeAwareFetcher {
         if !entries.isEmpty {
             let payload = VolumePayload(root: rootCID, entries: entries)
             try? await broker.storeVolumeLocal(payload)
-            for (cid, data) in entries where cid != rootCID {
-                let child = VolumePayload(root: cid, entries: [cid: data])
-                try? await broker.storeVolumeLocal(child)
-            }
         }
         pushCache(root: rootCID, entries: entries)
     }

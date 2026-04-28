@@ -842,8 +842,20 @@ extension LatticeNode {
         }
         guard let network = networks[directory] else { return }
         await storeBlockRecursively(genesisBlock, network: network)
+        await pinSpec(block: genesisBlock, directory: directory, network: network)
         await applyGenesisBlock(directory: directory, block: genesisBlock)
         await persistChainState(directory: directory)
+    }
+
+    func pinSpec(block: Block, directory: String, network: ChainNetwork) async {
+        guard let specData = block.spec.node?.toData() else { return }
+        let specCID = block.spec.rawCID
+        let payload = VolumePayload(root: specCID, entries: [specCID: specData])
+        try? await network.diskBroker.storeVolumeLocal(payload)
+        try? await network.diskBroker.pin(root: specCID, owner: "\(directory):spec")
+        let fee = await network.ivy.config.relayFee * 2
+        let expiry = UInt64(Date().timeIntervalSince1970) + 86400 * 365
+        await network.announce(cid: specCID, expiry: expiry, fee: fee)
     }
 
     /// Apply child block state changes for each child block embedded in `parentBlock`.

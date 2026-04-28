@@ -164,6 +164,12 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             let log = NodeLogger("genesis")
             log.error("Failed to store genesis block recursively: \(error)")
         }
+        if let specData = genesis.block.spec.node?.toData() {
+            let specCID = genesis.block.spec.rawCID
+            let specPayload = VolumePayload(root: specCID, entries: [specCID: specData])
+            try? await nexusNetwork.diskBroker.storeVolumeLocal(specPayload)
+            try? await nexusNetwork.diskBroker.pin(root: specCID, owner: "\(genesisConfig.spec.directory):spec")
+        }
 
         self.genesisResult = genesis
         let nexusLevel = ChainLevel(chain: genesis.chainState, children: [:])
