@@ -1,0 +1,27 @@
+{
+  "name": "lattice-node-smoke",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "End-to-end smoke tests for lattice-node. Spawn real binaries, hit real RPC, assert chain state.",
+  "scripts": {
+    "all": "node run.mjs",
+    "swap": "node scenarios/swap/swap.mjs",
+    "variable-rate-swap": "node scenarios/swap/variable-rate-swap.mjs",
+    "grandchild-swap": "node scenarios/swap/grandchild-swap.mjs",
+    "multidepth-swap": "node scenarios/swap/multidepth-swap.mjs",
+    "sync": "node scenarios/network/sync.mjs",
+    "multinode-convergence": "node scenarios/network/multinode-convergence.mjs",
+    "late-joiner": "node scenarios/network/late-joiner.mjs",
+    "partition": "node scenarios/network/partition.mjs",
+    "parent-dependency": "node scenarios/follower/parent-dependency.mjs",
+    "stateless-cli": "node scenarios/follower/stateless-cli.mjs",
+    "stateless-follower": "node scenarios/follower/stateless-follower.mjs",
+    "restart-resilience": "node scenarios/persistence/restart-resilience.mjs",
+    "stability-multichain": "SMOKE_STABILITY=1 node scenarios/liveness/stability-multichain.mjs"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.7.1",
+    "@noble/secp256k1": "^2.2.3"
+  }
+}
