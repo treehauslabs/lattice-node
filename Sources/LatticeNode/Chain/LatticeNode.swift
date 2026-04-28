@@ -98,7 +98,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
                 publicKey: config.publicKey,
                 listenPort: config.listenPort,
                 bootstrapPeers: config.bootstrapPeers,
-                enableLocalDiscovery: config.enableLocalDiscovery
+                enableLocalDiscovery: config.enableLocalDiscovery,
+                baseThresholdMultiplier: UInt64.max
             ),
             resources: resourcesWithIdentity,
             chainCount: chainCount,
@@ -388,7 +389,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             publicKey: self.config.publicKey,
             listenPort: port,
             bootstrapPeers: bootstrapPeers,
-            enableLocalDiscovery: self.config.enableLocalDiscovery
+            enableLocalDiscovery: self.config.enableLocalDiscovery,
+            baseThresholdMultiplier: UInt64.max
         )
         try await registerChainNetwork(directory: directory, config: ivyConfig)
     }
