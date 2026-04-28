@@ -52,6 +52,12 @@ const TESTS = [
   { name: 'block-explorer',        file: 'scenarios/rpc/block-explorer.mjs',             timeoutMs: 180_000 },
   { name: 'chain-spec',            file: 'scenarios/rpc/chain-spec.mjs',                 timeoutMs: 180_000 },
   { name: 'balance-proof',         file: 'scenarios/rpc/balance-proof.mjs',              timeoutMs: 180_000 },
+  { name: 'difficulty-adjustment', file: 'scenarios/rpc/difficulty-adjustment.mjs',      timeoutMs: 360_000 },
+  { name: 'concurrent-senders',   file: 'scenarios/safety/concurrent-senders.mjs',      timeoutMs: 180_000 },
+  { name: 'premine-correctness',  file: 'scenarios/safety/premine-correctness.mjs',     timeoutMs: 180_000 },
+  { name: 'large-block',          file: 'scenarios/safety/large-block.mjs',             timeoutMs: 300_000 },
+  { name: 'deploy-under-load',    file: 'scenarios/safety/deploy-under-load.mjs',       timeoutMs: 300_000 },
+  { name: 'reorg-state-rollback', file: 'scenarios/safety/reorg-state-rollback.mjs',    timeoutMs: 360_000 },
   { name: 'stability-multichain',  file: 'scenarios/liveness/stability-multichain.mjs', timeoutMs: 35 * 60_000, gated: 'SMOKE_STABILITY' },
 ]
 

@@ -34,6 +34,12 @@
     "balance-proof": "node scenarios/rpc/balance-proof.mjs",
     "fee-bounds": "node scenarios/safety/fee-bounds.mjs",
     "balance-overdraft": "node scenarios/safety/balance-overdraft.mjs",
+    "concurrent-senders": "node scenarios/safety/concurrent-senders.mjs",
+    "premine-correctness": "node scenarios/safety/premine-correctness.mjs",
+    "large-block": "node scenarios/safety/large-block.mjs",
+    "deploy-under-load": "node scenarios/safety/deploy-under-load.mjs",
+    "reorg-state-rollback": "node scenarios/safety/reorg-state-rollback.mjs",
+    "difficulty-adjustment": "node scenarios/rpc/difficulty-adjustment.mjs",
     "stability-multichain": "SMOKE_STABILITY=1 node scenarios/liveness/stability-multichain.mjs"
   },
   "dependencies": {
