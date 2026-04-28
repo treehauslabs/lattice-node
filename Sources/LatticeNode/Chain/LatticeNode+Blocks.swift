@@ -607,6 +607,10 @@ extension LatticeNode {
         // Basic checks passed — store to CAS
         await storeReceivedBlockRecursively(cid: cid, data: data, network: network)
 
+        let blockFetcher = await network.ivyFetcher
+        await blockFetcher.bindPinner(rootCID: cid, peer: peer)
+        await blockFetcher.bindBlockRoots(block, peer: peer)
+
         if await checkSyncNeeded(
             peerBlock: block,
             peerTipCID: cid,
@@ -617,9 +621,6 @@ extension LatticeNode {
         }
 
         let header = VolumeImpl<Block>(rawCID: cid)
-        let blockFetcher = await network.ivyFetcher
-        await blockFetcher.bindPinner(rootCID: cid, peer: peer)
-        await blockFetcher.bindBlockRoots(block, peer: peer)
         let outcome = await processBlockAndRecoverReorg(
             header: header, directory: directory, fetcher: blockFetcher,
             resolvedBlock: block
