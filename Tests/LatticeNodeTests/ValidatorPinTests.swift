@@ -152,22 +152,8 @@ final class ValidatorPinTests: XCTestCase {
 
     /// Smoke test: two real nodes both subscribed to the same Child chain,
     /// connected over TCP via the Nexus network AND the Child network. Miner
-    /// produces merged-mined nexus blocks; each carries an embedded child
-    /// block whose body lives in the miner's Child broker.
-    ///
-    /// As of this commit: the Nexus chain syncs (peer reaches the miner's
-    /// nexus tip) and the Child Ivy peer link is established, but child
-    /// blocks do not get applied to the peer's Child chain. The most likely
-    /// cause is that on the receive side, `acceptChildBlockTree` resolves
-    /// `childBlockHeader.resolve(fetcher: validationFetcher)` against a
-    /// CompositeFetcher whose child-Ivy fallback fails to fetch the body
-    /// from the miner's child broker — likely a serving/discovery gap rather
-    /// than peering, since the Ivy peer count is 1 on both sides.
-    ///
-    /// This test asserts the *Nexus* sync invariants only and records the
-    /// child-sync gap as a TODO so the suite still gates the path that does
-    /// work today. See tasks #16/#17 for the planned peer RPC + walk that
-    /// will close this gap.
+    /// Two-node test: node1 mines merged-mined blocks (nexus + child),
+    /// node2 syncs both chains via peer gossip.
     func testChildChainSyncBetweenRunningNodes() async throws {
         let kp1 = CryptoUtils.generateKeyPair()
         let kp2 = CryptoUtils.generateKeyPair()
@@ -216,20 +202,20 @@ final class ValidatorPinTests: XCTestCase {
             fetcher: nexus1.ivyFetcher
         )
 
-        // Subscribe + register child network on node1, point node2's child
-        // network at node1's child port for peer-to-peer child gossip.
         await node1.lattice.nexus.subscribe(to: "Child", genesisBlock: childGenesis)
         try await node1.registerChainNetwork(
             directory: "Child",
             config: IvyConfig(publicKey: kp1.publicKey, listenPort: p1Child,
-                              bootstrapPeers: [], enableLocalDiscovery: false)
+                              bootstrapPeers: [], enableLocalDiscovery: false,
+                              baseThresholdMultiplier: UInt64.max)
         )
         await node2.lattice.nexus.subscribe(to: "Child", genesisBlock: childGenesis)
         try await node2.registerChainNetwork(
             directory: "Child",
             config: IvyConfig(publicKey: kp2.publicKey, listenPort: p2Child,
                               bootstrapPeers: [PeerEndpoint(publicKey: kp1.publicKey, host: "127.0.0.1", port: p1Child)],
-                              enableLocalDiscovery: false)
+                              enableLocalDiscovery: false,
+                              baseThresholdMultiplier: UInt64.max)
         )
 
         // Seed both nodes' Child broker + StateStore with genesis (genesis is
@@ -244,10 +230,19 @@ final class ValidatorPinTests: XCTestCase {
             await n.applyGenesisBlock(directory: "Child", block: childGenesis)
         }
 
-        // Wait for nexus + child peer connections to settle.
-        try await Task.sleep(for: .seconds(2))
+        // Wait until both nexus and child peers are connected before mining.
+        let peerDeadline = ContinuousClock.Instant.now + .seconds(10)
+        while ContinuousClock.Instant.now < peerDeadline {
+            let nexusPeers = await node2.network(for: "Nexus")?.ivy.directPeerCount ?? 0
+            let childPeers = await node2.network(for: "Child")?.ivy.directPeerCount ?? 0
+            if nexusPeers > 0 && childPeers > 0 { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let nexusPeerCount = await node2.network(for: "Nexus")?.ivy.directPeerCount ?? 0
+        let childPeerCount = await node2.network(for: "Child")?.ivy.directPeerCount ?? 0
+        XCTAssertGreaterThan(nexusPeerCount, 0, "node2 should be connected to node1 on nexus before mining")
+        XCTAssertGreaterThan(childPeerCount, 0, "node2 should be connected to node1 on child before mining")
 
-        // Mine merged blocks on node1 — each nexus block embeds a child block.
         try await mineBlocks(3, on: node1)
 
         let nexusHeight1 = await node1.lattice.nexus.chain.getHighestBlockIndex()

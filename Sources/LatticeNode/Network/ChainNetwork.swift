@@ -88,7 +88,8 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
             stunServers: config.stunServers,
             defaultTTL: config.defaultTTL,
             healthConfig: config.healthConfig,
-            signingKey: config.signingKey
+            signingKey: config.signingKey,
+            baseThresholdMultiplier: config.baseThresholdMultiplier
         )
         let ivy = Ivy(config: ivyConfig, tally: sharedTally)
 
