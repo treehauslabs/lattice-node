@@ -63,6 +63,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public let nodeAddress: String
     public let ivyBroker: IvyBroker
     public let sharedDiskBroker: DiskBroker
+    public let sharedTally: Tally
 
     // MARK: - Initialization
 
@@ -88,6 +89,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         let disk = try DiskBroker(path: dbPath)
         self.sharedDiskBroker = disk
 
+        let tally = Tally(config: TallyConfig(maxPeers: config.maxPeerConnections))
+        self.sharedTally = tally
+
         let nexusNetwork = try await ChainNetwork(
             directory: genesisConfig.spec.directory,
             config: IvyConfig(
@@ -99,7 +103,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             resources: resourcesWithIdentity,
             chainCount: chainCount,
             maxPeerConnections: config.maxPeerConnections,
-            sharedDiskBroker: disk
+            sharedDiskBroker: disk,
+            sharedTally: tally
         )
 
         let sharedIvyBroker = IvyBroker(node: nexusNetwork.ivy)
@@ -315,7 +320,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             resources: resourcesWithIdentity,
             chainCount: chainCount,
             sharedDiskBroker: sharedDiskBroker,
-            ivyBroker: ivyBroker
+            ivyBroker: ivyBroker,
+            sharedTally: sharedTally
         )
         await network.setDelegate(self)
         networks[directory] = network
@@ -376,9 +382,12 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
 
     public func registerChainNetworkUsingNodeConfig(directory: String) async throws {
         let port = deterministicPort(basePort: self.config.listenPort, directory: directory)
+        let parentDir = parentDirectoryByChain[directory] ?? genesisConfig.spec.directory
+        let bootstrapPeers = await networks[parentDir]?.ivy.connectedPeerEndpoints ?? []
         let ivyConfig = IvyConfig(
             publicKey: self.config.publicKey,
             listenPort: port,
+            bootstrapPeers: bootstrapPeers,
             enableLocalDiscovery: self.config.enableLocalDiscovery
         )
         try await registerChainNetwork(directory: directory, config: ivyConfig)

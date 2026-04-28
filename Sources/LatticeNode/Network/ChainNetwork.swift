@@ -53,7 +53,8 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
         chainCount: Int = 1,
         maxPeerConnections: Int = BootstrapPeers.maxPeerConnections,
         sharedDiskBroker: DiskBroker,
-        ivyBroker: IvyBroker? = nil
+        ivyBroker: IvyBroker? = nil,
+        sharedTally: Tally? = nil
     ) async throws {
         self.directory = directory
         self.subscribedChains = Set([directory])
@@ -89,7 +90,7 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
             healthConfig: config.healthConfig,
             signingKey: config.signingKey
         )
-        let ivy = Ivy(config: ivyConfig)
+        let ivy = Ivy(config: ivyConfig, tally: sharedTally)
 
         self.ivy = ivy
         self.ivyFetcher = IvyFetcher(ivy: ivy, broker: memory)
