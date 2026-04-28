@@ -194,11 +194,6 @@ extension LatticeNode {
         }
     }
 
-    /// Intentionally a no-op: a gossiped block decodes with all sub-Headers
-    /// having `node == nil`, so pre-storing would only register a stub
-    /// `[blockRoot: blockData]` payload that causes `tryEnterLocal` to push
-    /// a 1-entry cache layer during validation and short-circuit the network
-    /// walk that would have pulled the full Volume from the peer.
     func storeReceivedBlockRecursively(cid: String, data: Data, network: ChainNetwork) async {
         _ = (cid, data, network)
     }

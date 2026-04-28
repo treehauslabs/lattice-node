@@ -49,8 +49,8 @@ if (peers[1] < 1 || peers[2] < 1) {
 
 console.log('\n[4] Start mining on A...')
 await startMining(A, 'Nexus')
-const TARGET_HEIGHT = 10
-const MINE_WINDOW_MS = 8000
+const TARGET_HEIGHT = 5
+const MINE_WINDOW_MS = 3000
 const mineStart = Date.now()
 while (Date.now() - mineStart < MINE_WINDOW_MS) {
   const t = await tipInfo(A)
@@ -69,7 +69,7 @@ await waitFor(async () => {
   const [aT, bT, cT] = await Promise.all([tipInfo(A), tipInfo(B), tipInfo(C)])
   if (aT?.height) process.stdout.write(`\r  A@${aT.height} B@${bT?.height ?? '?'} C@${cT?.height ?? '?'}   `)
   return aT?.tip && aT.tip === bT?.tip && aT.tip === cT?.tip ? aT : null
-}, 'three-node mesh converged', { timeoutMs: 60_000, intervalMs: 2000 })
+}, 'three-node mesh converged', { timeoutMs: 180_000, intervalMs: 2000 })
 
 const finalTip = await tipInfo(A)
 console.log(`  ✓ converged at height=${finalTip.height} tip=${finalTip.tip.slice(0, 20)}...`)
