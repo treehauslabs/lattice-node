@@ -138,10 +138,10 @@ console.log('\n[6] Check deposit state after reorg...')
 if (winner === 'C') {
   const depPost = await getDeposit(A, user.address, 500, swapNonce, CHILD)
   if (depPost.exists) {
-    console.log('  ⚠ deposit still exists on A after C won (known: Volume serving after restart)')
-  } else {
-    console.log('  ✓ deposit rolled back (C won, A\'s fork orphaned)')
+    console.error('  ✗ deposit still exists on A after C won — child state not rolled back')
+    net.teardown(); await sleep(500); process.exit(1)
   }
+  console.log('  ✓ deposit rolled back (C won, A\'s fork orphaned)')
 } else {
   const depPost = await getDeposit(A, user.address, 500, swapNonce, CHILD)
   if (!depPost.exists) {
