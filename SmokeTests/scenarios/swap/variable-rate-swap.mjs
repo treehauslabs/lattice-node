@@ -13,7 +13,7 @@ import {
 import { submitTx } from '../../lib/tx.mjs'
 
 const ROOT = smokeRoot('vrs')
-const [{ port, rpcPort }] = allocPorts(1, { seed: 61 })
+const [{ port, rpcPort }] = allocPorts(1, { seed: 62 })
 const CHILD = 'FastTest'
 
 console.log('=== variable-rate cross-chain swap smoke test ===')

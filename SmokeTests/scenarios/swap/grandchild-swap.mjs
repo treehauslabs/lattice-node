@@ -14,7 +14,7 @@ import {
 import { submitTx } from '../../lib/tx.mjs'
 
 const ROOT = smokeRoot('grandchild')
-const [{ port, rpcPort }] = allocPorts(1, { seed: 81 })
+const [{ port, rpcPort }] = allocPorts(1, { seed: 82 })
 const MID = 'Mid'
 const ALPHA = 'AlphaChain'
 const BETA = 'BetaChain'

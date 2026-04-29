@@ -18,7 +18,7 @@ import {
 import { submitTx } from '../../lib/tx.mjs'
 
 const ROOT = smokeRoot('multidepth')
-const [{ port, rpcPort }] = allocPorts(1, { seed: 71 })
+const [{ port, rpcPort }] = allocPorts(1, { seed: 72 })
 
 console.log('=== multi-depth cross-chain swap smoke test ===')
 const node = singleNode({ root: ROOT, port, rpcPort })
