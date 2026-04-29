@@ -99,7 +99,12 @@ public actor IvyFetcher: VolumeAwareFetcher {
     /// it locally on hit, and always pushes a cache layer (possibly empty)
     /// so the call pairs cleanly with `exitVolume`.
     public func enterFromNetwork(rootCID: String) async {
+        let peerCount = await ivy.directPeerCount
+        let connectedPeers = await ivy.connectedPeers.count
         let entries = await ivy.fetchVolume(rootCID: rootCID)
+        if entries.isEmpty {
+            NodeLogger("fetcher").warn("enterFromNetwork empty rootCID=\(String(rootCID.prefix(20)))… directPeers=\(peerCount) connectedPeers=\(connectedPeers) stackDepth=\(cacheStack.count)")
+        }
         if !entries.isEmpty {
             let payload = VolumePayload(root: rootCID, entries: entries)
             try? await broker.storeVolumeLocal(payload)

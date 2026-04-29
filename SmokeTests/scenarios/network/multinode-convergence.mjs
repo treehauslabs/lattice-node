@@ -45,7 +45,12 @@ console.log('\n[3] Checking peer connectivity...')
 const peers = [await peerCount(A), await peerCount(B), await peerCount(C)]
 console.log(`  peer counts: A=${peers[0]} B=${peers[1]} C=${peers[2]}`)
 
-console.log('\n[4] Start mining on A...')
+console.log('\n[4] Settling connections...')
+await sleep(3000)
+const peers2 = [await peerCount(A), await peerCount(B), await peerCount(C)]
+console.log(`  peer counts after settle: A=${peers2[0]} B=${peers2[1]} C=${peers2[2]}`)
+
+console.log('\n[5] Start mining on A...')
 const aTip = await mineBurst(A, 'Nexus')
 console.log(`  ✓ mining stopped; A tip height=${aTip.height}`)
 if (aTip.height < 2) {

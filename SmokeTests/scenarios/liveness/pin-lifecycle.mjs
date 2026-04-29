@@ -44,6 +44,7 @@ await waitFor(async () => {
   return ap >= 1 && bp >= 1 ? true : null
 }, 'A-B connected', { timeoutMs: 30_000 })
 
+await sleep(3000)
 const aTip = await mineBurst(A, 'Nexus')
 console.log(`  A@${aTip.height}`)
 
