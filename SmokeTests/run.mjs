@@ -89,7 +89,7 @@ const TESTS = [
   // -- liveness --
   { name: 'pin-lifecycle',        file: 'scenarios/liveness/pin-lifecycle.mjs',          timeoutMs: 300_000 },
   // -- gated --
-  { name: 'multichain-late-joiner', file: 'scenarios/network/multichain-late-joiner.mjs', timeoutMs: 240_000, gated: 'SMOKE_MULTICHAIN_SYNC' },
+  { name: 'multichain-late-joiner', file: 'scenarios/network/multichain-late-joiner.mjs', timeoutMs: 240_000 },
   { name: 'stability-multichain',  file: 'scenarios/liveness/stability-multichain.mjs', timeoutMs: 35 * 60_000, gated: 'SMOKE_STABILITY' },
 ]
 

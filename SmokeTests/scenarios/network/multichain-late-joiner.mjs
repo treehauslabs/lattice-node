@@ -1,10 +1,6 @@
 // Multi-chain late joiner: A mines Nexus + 2 child chains to depth ≥ 30.
 // B joins fresh, subscribes to both children, and must discover + sync
 // all 3 chains. Follows the same frozen-tip pattern as late-joiner.mjs.
-//
-// GATED: requires SMOKE_MULTICHAIN_SYNC=1 — known issue with multi-child
-// subscribe discovery on frozen peers (B syncs nexus but doesn't register
-// child chains). See late-joiner.mjs for the single-child variant.
 
 import { allocPorts, smokeRoot } from '../../lib/env.mjs'
 import { Network } from '../../lib/node.mjs'

@@ -398,7 +398,17 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public func registerChainNetworkUsingNodeConfig(directory: String) async throws {
         let port = deterministicPort(basePort: self.config.listenPort, directory: directory)
         let parentDir = parentDirectoryByChain[directory] ?? genesisConfig.spec.directory
-        let bootstrapPeers = await networks[parentDir]?.ivy.connectedPeerEndpoints ?? []
+        let parentEndpoints = await networks[parentDir]?.ivy.connectedPeerEndpoints ?? []
+        // Remap parent peer endpoints to the child chain's deterministic port.
+        // Each peer runs its child Ivy on deterministicPort(basePort:, directory:)
+        // where basePort is the peer's nexus listen port.
+        let bootstrapPeers = parentEndpoints.map { ep in
+            PeerEndpoint(
+                publicKey: ep.publicKey,
+                host: ep.host,
+                port: deterministicPort(basePort: ep.port, directory: directory)
+            )
+        }
         let ivyConfig = IvyConfig(
             publicKey: self.config.publicKey,
             listenPort: port,

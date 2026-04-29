@@ -195,7 +195,8 @@ extension LatticeNode {
         fetcher: Fetcher,
         network: ChainNetwork
     ) async {
-        for blockMeta in persisted.blocks {
+        let sortedBlocks = persisted.blocks.sorted { $0.blockIndex < $1.blockIndex }
+        for blockMeta in sortedBlocks {
             let stub = VolumeImpl<Block>(rawCID: blockMeta.blockHash, node: nil, encryptionInfo: nil)
             guard let block = try? await stub.resolve(fetcher: fetcher).node else { continue }
             let header = VolumeImpl<Block>(node: block)
@@ -207,12 +208,27 @@ extension LatticeNode {
             if let vaf = fetcher as? VolumeAwareFetcher {
                 try? await vaf.enterVolume(rootCID: header.rawCID, paths: .init())
             }
-            let _ = await lattice.processBlockHeader(header, fetcher: fetcher)
+            // processBlockHeader returns early (dedup) because resetFrom
+            // already installed these blocks. processChildBlockTree skips
+            // the nexus chain and directly discovers + submits child blocks.
+            await lattice.processChildBlockTree(
+                parentBlock: block,
+                parentBlockHeader: header,
+                fetcher: fetcher
+            )
+
+            // Apply child block state (StateStore, receipts, mempool).
+            await applyChildBlockStates(
+                parentBlock: block,
+                nexusBlockCID: header.rawCID,
+                fetcher: fetcher
+            )
             if let vaf = fetcher as? VolumeAwareFetcher {
                 await vaf.exitVolume(rootCID: header.rawCID)
             }
         }
     }
+
 
     private func finalizeSyncResult(_ result: SyncResult, network: ChainNetwork, fetcher: Fetcher) async {
         let log = NodeLogger("sync")

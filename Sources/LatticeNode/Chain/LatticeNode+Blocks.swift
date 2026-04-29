@@ -869,7 +869,7 @@ extension LatticeNode {
     /// Threads `nexusBlockCID` UNCHANGED through recursion: every descendant at
     /// any merged-mining depth pins the same topmost nexus block that admitted
     /// it. One-hop, so prune and cross-chain sync don't need to walk a chain.
-    private func applyChildBlockStates(parentBlock: Block, nexusBlockCID: String, fetcher: Fetcher) async {
+    func applyChildBlockStates(parentBlock: Block, nexusBlockCID: String, fetcher: Fetcher) async {
         let nexusDir = genesisConfig.spec.directory
         await applyChildBlockStates(
             parentBlock: parentBlock,
@@ -913,11 +913,25 @@ extension LatticeNode {
                 log.warn("\(childDir): missing child header in parent \(parentBlockCID) — skipping")
                 continue
             }
+            // Child block data is in the nexus broker (stored via
+            // storeRecursively on the nexus block) and may also be in the
+            // child broker. Use the nexus fetcher as primary (its
+            // tryEnterLocal finds the data without network round-trips)
+            // with the child fetcher as fallback for steady-state.
+            let blockFetcher: Fetcher
+            if let childNet = networks[childDir] {
+                blockFetcher = CompositeFetcher(
+                    primary: fetcher,
+                    fallbacks: [childNet.ivyFetcher]
+                )
+            } else {
+                blockFetcher = fetcher
+            }
             let childBlock: Block
             if let n = childBlockHeader.node {
                 childBlock = n
             } else {
-                guard let resolved = try? await childBlockHeader.resolve(fetcher: fetcher).node else {
+                guard let resolved = try? await childBlockHeader.resolve(fetcher: blockFetcher).node else {
                     log.warn("\(childDir): child block resolve failed (header CID \(childBlockHeader.rawCID)) — skipping")
                     continue
                 }
