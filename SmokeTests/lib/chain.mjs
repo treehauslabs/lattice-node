@@ -97,6 +97,19 @@ export async function waitForHeight(node, chain, minHeight, timeoutMs = 30_000) 
   }, `${node.name}/${chain} height ≥ ${minHeight}`, { timeoutMs, intervalMs: 1_000 })
 }
 
+export async function mineBurst(node, chain, { targetHeight = 5, maxMs = 8000 } = {}) {
+  await startMining(node, chain)
+  const start = Date.now()
+  while (Date.now() - start < maxMs) {
+    const t = await tipInfo(node, chain)
+    if (t && t.height >= targetHeight) break
+    await sleep(200)
+  }
+  await stopMining(node, chain)
+  await sleep(1000)
+  return await tipInfo(node, chain)
+}
+
 // Common defaults match the swap tests' fast child chain.
 export async function deployChild(node, opts) {
   const minerIdent = opts.minerIdentity ?? (await node.readIdentity())

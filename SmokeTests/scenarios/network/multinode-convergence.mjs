@@ -4,7 +4,7 @@
 import { allocPorts, smokeRoot } from '../../lib/env.mjs'
 import { Network } from '../../lib/node.mjs'
 import { sleep, waitFor } from '../../lib/waitFor.mjs'
-import { startMining, stopMining, tipInfo } from '../../lib/chain.mjs'
+import { startMining, stopMining, tipInfo, mineBurst } from '../../lib/chain.mjs'
 import { peerCount } from '../../lib/probe.mjs'
 
 const ROOT = smokeRoot('multinode')
@@ -46,17 +46,7 @@ const peers = [await peerCount(A), await peerCount(B), await peerCount(C)]
 console.log(`  peer counts: A=${peers[0]} B=${peers[1]} C=${peers[2]}`)
 
 console.log('\n[4] Start mining on A...')
-await startMining(A, 'Nexus')
-const TARGET_HEIGHT = 5
-const MINE_WINDOW_MS = 3000
-const mineStart = Date.now()
-while (Date.now() - mineStart < MINE_WINDOW_MS) {
-  const t = await tipInfo(A)
-  if (t && t.height >= TARGET_HEIGHT) break
-  await sleep(500)
-}
-await stopMining(A, 'Nexus')
-const aTip = await tipInfo(A)
+const aTip = await mineBurst(A, 'Nexus')
 console.log(`  ✓ mining stopped; A tip height=${aTip.height}`)
 if (aTip.height < 2) {
   console.error('  ✗ A failed to mine any blocks'); net.teardown(); process.exit(1)

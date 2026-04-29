@@ -4,11 +4,11 @@
 import { allocPorts, smokeRoot } from '../../lib/env.mjs'
 import { Network } from '../../lib/node.mjs'
 import { sleep, waitFor } from '../../lib/waitFor.mjs'
-import { startMining, stopMining, tipInfo, chainInfo } from '../../lib/chain.mjs'
+import { tipInfo, mineBurst } from '../../lib/chain.mjs'
 import { peerCount } from '../../lib/probe.mjs'
 
 const ROOT = smokeRoot('pin-lifecycle')
-const [a, b] = allocPorts(2, { seed: 75 })
+const [a, b] = allocPorts(2, { seed: 77 })
 const PIN_EXPIRY = 120
 const REANNOUNCE = 120
 const EVICTION = 30
@@ -20,7 +20,6 @@ const pinEnv = {
 }
 
 console.log('=== pin-lifecycle smoke test ===')
-console.log(`  expiry=${PIN_EXPIRY}s reannounce=${REANNOUNCE}s eviction=${EVICTION}s`)
 
 const net = Network.fresh({
   root: ROOT,
@@ -44,31 +43,23 @@ await waitFor(async () => {
   const [ap, bp] = await Promise.all([peerCount(A), peerCount(B)])
   return ap >= 1 && bp >= 1 ? true : null
 }, 'A-B connected', { timeoutMs: 30_000 })
-console.log('  peers connected')
 
-await startMining(A, 'Nexus')
-await sleep(3000)
-await stopMining(A, 'Nexus')
-await sleep(2000)
-
-const aTip = await tipInfo(A)
+const aTip = await mineBurst(A, 'Nexus')
 console.log(`  A@${aTip.height}`)
 
 const bTip = await waitFor(async () => {
   const bt = await tipInfo(B)
   return bt && bt.tip === aTip.tip ? bt : null
 }, 'B converged', { timeoutMs: 60_000, intervalMs: 2000 })
-console.log(`  B synced to height=${bTip.height}`)
-console.log('  ✓ initial sync complete')
+console.log(`  ✓ B synced to height=${bTip.height}`)
 
 console.log('\n[2] Stop B, wait past eviction cycle...')
 await B.stopAndAwaitShutdown()
 const evictWait = EVICTION + 5
-console.log(`  waiting ${evictWait}s for eviction to run...`)
+console.log(`  waiting ${evictWait}s...`)
 await sleep(evictWait * 1000)
-console.log('  ✓ eviction cycle passed')
 
-console.log('\n[3] Restart B — should retain state and reannounce...')
+console.log('\n[3] Restart B — should retain state...')
 B.start({ peers: [A], env: pinEnv })
 await B.waitForRPC()
 
@@ -76,24 +67,16 @@ await waitFor(async () => {
   const [ap, bp] = await Promise.all([peerCount(A), peerCount(B)])
   return ap >= 1 && bp >= 1 ? true : null
 }, 'A-B reconnected', { timeoutMs: 30_000 })
-console.log('  reconnected')
 
 const bTip2 = await tipInfo(B)
-console.log(`  B height after restart: ${bTip2.height}`)
-
 if (bTip2.height < bTip.height) {
   console.error(`  ✗ B lost state: was ${bTip.height}, now ${bTip2.height}`)
   net.teardown(); await sleep(500); process.exit(1)
 }
 console.log(`  ✓ B retained state (height ${bTip2.height})`)
 
-console.log('\n[4] Mine more on A, verify B still syncs...')
-await startMining(A, 'Nexus')
-await sleep(3000)
-await stopMining(A, 'Nexus')
-await sleep(2000)
-
-const aFinal = await tipInfo(A)
+console.log('\n[4] Mine more, verify B still syncs...')
+const aFinal = await mineBurst(A, 'Nexus', { targetHeight: bTip2.height + 3 })
 const bFinal = await waitFor(async () => {
   const bt = await tipInfo(B)
   return bt && bt.tip === aFinal.tip ? bt : null
