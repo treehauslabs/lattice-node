@@ -486,9 +486,13 @@ extension LatticeNode {
         )
     }
 
-    /// Roll back child chain StateStores for child blocks embedded in orphaned nexus blocks.
+    /// Roll back child chain state for child blocks embedded in orphaned nexus blocks.
+    /// Updates each affected child chain's tipSnapshot and StateStore so queries
+    /// against the new canonical tip return correct state.
     private func rollbackChildChains(orphanedBlockHashes: [String], fetcher: Fetcher) async {
         let log = NodeLogger("reorg")
+        var affectedChildren: Set<String> = []
+
         for blockHash in orphanedBlockHashes {
             let stub = VolumeImpl<Block>(rawCID: blockHash, node: nil, encryptionInfo: nil)
             guard let block = try? await stub.resolve(fetcher: fetcher).node,
@@ -498,21 +502,27 @@ extension LatticeNode {
                   let childDirs = try? childDict.allKeys() else { continue }
 
             for childDir in childDirs {
+                affectedChildren.insert(childDir)
                 guard let childBlockHeader: VolumeImpl<Block> = try? childDict.get(key: childDir) else { continue }
+                let blockFetcher: Fetcher
+                if let childNet = networks[childDir] {
+                    blockFetcher = CompositeFetcher(
+                        primary: fetcher,
+                        fallbacks: [childNet.ivyFetcher]
+                    )
+                } else {
+                    blockFetcher = fetcher
+                }
                 let childBlock: Block
                 if let n = childBlockHeader.node {
                     childBlock = n
                 } else {
-                    guard let resolved = try? await childBlockHeader.resolve(fetcher: fetcher).node else { continue }
+                    guard let resolved = try? await childBlockHeader.resolve(fetcher: blockFetcher).node else { continue }
                     childBlock = resolved
                 }
 
-                let childTxEntries = await resolveBlockTransactions(block: childBlock, fetcher: fetcher)
+                let childTxEntries = await resolveBlockTransactions(block: childBlock, fetcher: blockFetcher)
 
-                // Recover orphaned child txs through the unified admission
-                // helper. Withdrawals whose receipt is no longer canonical
-                // in the new parent chain go pending (or evict on wrong-
-                // owner) — same classifier as gossip and direct submit.
                 if let childNetwork = networks[childDir] {
                     for (cid, txHeader) in childTxEntries {
                         guard let tx = txHeader.node else { continue }
@@ -524,6 +534,35 @@ extension LatticeNode {
 
                 log.info("Child chain \(childDir): rolled back block at height \(childBlock.index)")
             }
+        }
+
+        // Update tipSnapshot and StateStore for each affected child chain.
+        // propagateParentReorg updated the Lattice-level chainTip but not
+        // the cached tipSnapshot, so queries reading frontierCID would
+        // return stale (pre-reorg) state.
+        for childDir in affectedChildren {
+            guard let childChain = await chain(for: childDir) else { continue }
+            let newTip = await childChain.getMainChainTip()
+            let tipStub = VolumeImpl<Block>(rawCID: newTip, node: nil, encryptionInfo: nil)
+            let blockFetcher: Fetcher
+            if let childNet = networks[childDir] {
+                blockFetcher = CompositeFetcher(primary: fetcher, fallbacks: [childNet.ivyFetcher])
+            } else {
+                blockFetcher = fetcher
+            }
+            if let tipBlock = try? await tipStub.resolve(fetcher: blockFetcher).node {
+                await childChain.updateTipSnapshot(block: tipBlock)
+                if let store = stateStores[childDir] {
+                    await store.setChainTip(
+                        hash: newTip,
+                        height: tipBlock.index,
+                        stateRoot: tipBlock.frontier.rawCID
+                    )
+                }
+                log.info("\(childDir): tipSnapshot updated to height \(tipBlock.index)")
+            }
+            tipCaches[childDir]?.update(newTip)
+            await frontierCaches[childDir]?.invalidate()
         }
     }
 

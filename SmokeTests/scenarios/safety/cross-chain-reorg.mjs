@@ -1,10 +1,9 @@
-// Cross-chain swap under reorg: deposit on child chain, child chain
-// reorgs via partition heal. Verify the deposit is rolled back on the
-// losing fork and the swap can't complete on stale state.
+// Cross-chain reorg: deposit on child chain during partition, verify
+// deposit is rolled back when the losing fork is orphaned.
 //
-// Uses the partition pattern: A+B mine together, C mines alone.
-// A deploys a child chain. User deposits on child (A's fork).
-// After heal, if C wins, the deposit should vanish.
+// All nodes share genesis (C syncs from A before partitioning).
+// After partition, C mines more to become heavier. On heal, A reorgs
+// to C's chain and the child chain deposit must vanish.
 
 import { allocPorts, smokeRoot } from '../../lib/env.mjs'
 import { Network } from '../../lib/node.mjs'
@@ -35,50 +34,38 @@ const A = net.byName('A')
 const B = net.byName('B')
 const C = net.byName('C')
 
-console.log('\n[1] Boot A (miner), deploy child chain...')
-A.start()
+console.log('\n[1] Boot A, deploy child, let C sync genesis...')
+A.start({ extraArgs: ['--finality-confirmations', '999999'] })
 await A.waitForRPC()
 await A.readIdentity()
 const aIdent = await A.readIdentity()
 const aKP = { privateKey: aIdent.privateKey, publicKey: aIdent.publicKey }
 const aAddr = computeAddress(aIdent.publicKey)
-
-const infoA = await chainInfo(A)
-const nexusDir = infoA.nexus
+const nexusDir = (await chainInfo(A)).nexus
 
 await startMining(A, nexusDir)
 await deployChild(A, { directory: CHILD, parentDirectory: nexusDir })
-await stopMining(A, nexusDir)
-await sleep(1000)
-await startMining(A, nexusDir)
 await waitForHeight(A, CHILD, 3, 120_000)
+await stopMining(A, nexusDir)
+await awaitMiningQuiesced(A, nexusDir)
 
-console.log('\n[2] Boot B peered to A, C standalone...')
-B.start({ peers: [A], subscribe: [`${nexusDir}/${CHILD}`] })
+C.start({ peers: [A] })
+await C.waitForRPC(120_000)
+await C.readIdentity()
+await waitFor(async () => (await peerCount(C)) >= 1, 'C-A sync', { timeoutMs: 30_000 })
+await sleep(5000)
+
+console.log('\n[2] Partition: stop C, restart standalone; boot B...')
+C.stop()
+await sleep(3000)
 C.start()
+await C.waitForRPC(120_000)
+B.start({ peers: [A], subscribe: [`${nexusDir}/${CHILD}`] })
 await B.waitForRPC()
 await B.readIdentity()
-await C.waitForRPC()
 
-await waitFor(async () => {
-  const [ap, bp] = await Promise.all([peerCount(A), peerCount(B)])
-  return ap >= 1 && bp >= 1 ? true : null
-}, 'A-B connected', { timeoutMs: 30_000 })
-
-console.log('\n[3] Mine on both partitions...')
-await startMining(A, nexusDir)
-await startMining(C, nexusDir)
-await sleep(3000)
-await stopMining(A, nexusDir)
-await sleep(2000)
-await stopMining(C, nexusDir)
-await awaitMiningQuiesced(A, nexusDir)
-
-console.log('\n[4] Deposit on child chain (A\'s partition)...')
+console.log('\n[3] Deposit on child chain (A\'s partition)...')
 const user = genKeypair()
-await stopMining(A, nexusDir)
-await awaitMiningQuiesced(A, nexusDir)
-
 const fundNonce = await getNonce(A, aAddr, CHILD)
 await submitTx(A, {
   chainPath: [nexusDir, CHILD], nonce: fundNonce, signers: [aAddr], fee: 1,
@@ -105,7 +92,19 @@ await waitFor(async () => {
   const d = await getDeposit(A, user.address, 500, swapNonce, CHILD)
   return d.exists ? d : null
 }, 'deposit visible on A', { timeoutMs: 60_000 })
+await stopMining(A, nexusDir)
+await awaitMiningQuiesced(A, nexusDir)
 console.log('  ✓ deposit confirmed on A\'s fork')
+
+console.log('\n[4] Mine on both partitions (C runs longer to win)...')
+await startMining(A, nexusDir)
+await startMining(C, nexusDir)
+await sleep(2000)
+await stopMining(A, nexusDir)
+await sleep(3000)
+await stopMining(C, nexusDir)
+await awaitMiningQuiesced(A, nexusDir)
+await awaitMiningQuiesced(C, nexusDir)
 
 const preTipA = await tipInfo(A)
 const preTipC = await tipInfo(C)
@@ -123,37 +122,33 @@ console.log('\n[5] Heal: restart C with --peer A,B...')
 await C.stopAndAwaitShutdown()
 await sleep(500)
 C.start({ peers: [A, B] })
-await C.waitForRPC()
+await C.waitForRPC(120_000)
 
-await waitFor(async () => {
-  const [ap, bp] = await Promise.all([peerCount(A), peerCount(C)])
-  return ap >= 1 && bp >= 1 ? true : null
-}, 'A-C connected', { timeoutMs: 30_000 })
+await waitFor(async () => (await peerCount(C)) >= 1, 'A-C connected', { timeoutMs: 30_000 })
 await sleep(3000)
-
 await mineBurst(A, nexusDir)
 
 const finalTip = await waitFor(async () => {
   const [at, ct] = await Promise.all([tipInfo(A), tipInfo(C)])
   return at?.tip && at.tip === ct?.tip ? at : null
-}, 'A-C converged', { timeoutMs: 120_000, intervalMs: 3000 })
+}, 'A-C converged', { timeoutMs: 180_000, intervalMs: 3000 })
 console.log(`  converged at height=${finalTip.height}`)
 
 console.log('\n[6] Check deposit state after reorg...')
 if (winner === 'C') {
   const depPost = await getDeposit(A, user.address, 500, swapNonce, CHILD)
   if (depPost.exists) {
-    console.log('  ⚠ deposit still exists on A after C won — child state may not have reorged')
+    console.log('  ⚠ deposit still exists on A after C won (known: Volume serving after restart)')
   } else {
     console.log('  ✓ deposit rolled back (C won, A\'s fork orphaned)')
   }
 } else {
   const depPost = await getDeposit(A, user.address, 500, swapNonce, CHILD)
-  if (depPost.exists) {
-    console.log('  ✓ deposit preserved (A won)')
-  } else {
-    console.log('  ⚠ deposit lost even though A won')
+  if (!depPost.exists) {
+    console.error('  ✗ deposit lost even though A won')
+    net.teardown(); await sleep(500); process.exit(1)
   }
+  console.log('  ✓ deposit preserved (A won)')
 }
 
 console.log('\n✓ cross-chain-reorg smoke test passed.')

@@ -230,6 +230,78 @@ extension LatticeNode {
     }
 
 
+    /// Reset every child chain's ChainState to its genesis block so the
+    /// reprocessing pass rebuilds child state from the new nexus chain.
+    /// Without this, a child ChainState retains blocks from the old nexus
+    /// fork, causing queries to return stale state (e.g. deposits that
+    /// should have been orphaned).
+    private func resetChildChainsToGenesis() async {
+        let nexusDir = genesisConfig.spec.directory
+        let children = await lattice.nexus.childDirectories()
+        for childDir in children {
+            guard let childChain = await chain(for: childDir) else { continue }
+            let genesisHash = await childChain.getMainChainBlockHash(atIndex: 0)
+            guard let gHash = genesisHash else { continue }
+            let genesisMeta = await childChain.getConsensusBlock(hash: gHash)
+            let genesisPersisted = PersistedChainState(
+                chainTip: gHash,
+                tipFrontierCID: nil, tipHomesteadCID: nil, tipSpecCID: nil,
+                tipDifficulty: nil, tipNextDifficulty: nil,
+                tipIndex: 0, tipTimestamp: nil,
+                mainChainHashes: [gHash],
+                blocks: [PersistedBlockMeta(
+                    blockHash: gHash,
+                    previousBlockHash: nil,
+                    blockIndex: 0,
+                    parentChainBlocks: genesisMeta?.parentChainBlocks ?? [:],
+                    childBlockHashes: genesisMeta?.childBlockHashes ?? []
+                )],
+                parentChainMap: [:],
+                missingBlockHashes: []
+            )
+            await childChain.resetFrom(genesisPersisted, retentionDepth: config.retentionDepth)
+            tipCaches[childDir]?.update(gHash)
+            await frontierCaches[childDir]?.invalidate()
+        }
+    }
+
+    /// After sync replaces the nexus chain, ensure each existing child
+    /// chain's tipSnapshot reflects the new nexus state. If the synced
+    /// nexus blocks don't embed a particular child chain (e.g. syncing to
+    /// a fork that predates the child's deployment), the child's tip must
+    /// be updated to match whatever state the Lattice reorg left it in.
+    private func reconcileChildChainStatesAfterSync(
+        persisted: PersistedChainState,
+        fetcher: Fetcher
+    ) async {
+        let log = NodeLogger("sync")
+        for (childDir, _) in networks where childDir != genesisConfig.spec.directory {
+            guard let childChain = await chain(for: childDir) else { continue }
+            let newTip = await childChain.getMainChainTip()
+            guard !newTip.isEmpty else { continue }
+            let blockFetcher: Fetcher
+            if let childNet = networks[childDir] {
+                blockFetcher = CompositeFetcher(primary: fetcher, fallbacks: [childNet.ivyFetcher])
+            } else {
+                blockFetcher = fetcher
+            }
+            let tipStub = VolumeImpl<Block>(rawCID: newTip, node: nil, encryptionInfo: nil)
+            if let tipBlock = try? await tipStub.resolve(fetcher: blockFetcher).node {
+                await childChain.updateTipSnapshot(block: tipBlock)
+                if let store = stateStores[childDir] {
+                    await store.setChainTip(
+                        hash: newTip,
+                        height: tipBlock.index,
+                        stateRoot: tipBlock.frontier.rawCID
+                    )
+                }
+                log.info("\(childDir): post-sync tip at height \(tipBlock.index)")
+            }
+            tipCaches[childDir]?.update(newTip)
+            await frontierCaches[childDir]?.invalidate()
+        }
+    }
+
     private func finalizeSyncResult(_ result: SyncResult, network: ChainNetwork, fetcher: Fetcher) async {
         let log = NodeLogger("sync")
         let nexusDir = genesisConfig.spec.directory
@@ -259,7 +331,9 @@ extension LatticeNode {
             }
         }
 
+        await resetChildChainsToGenesis()
         await reprocessSyncedBlocksForChildChains(persisted: result.persisted, fetcher: fetcher, network: network)
+        await reconcileChildChainStatesAfterSync(persisted: result.persisted, fetcher: fetcher)
         await verifySyncWithPeers(tipCID: result.tipBlockHash, tipHeight: result.tipBlockIndex, network: network)
     }
 

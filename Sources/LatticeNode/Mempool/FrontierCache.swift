@@ -21,4 +21,9 @@ public actor FrontierCache {
         cachedCID = frontierCID
         cachedState = state
     }
+
+    public func invalidate() {
+        cachedCID = nil
+        cachedState = nil
+    }
 }
