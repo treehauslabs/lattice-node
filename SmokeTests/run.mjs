@@ -89,6 +89,7 @@ const TESTS = [
   { name: 'difficulty-adjustment', file: 'scenarios/rpc/difficulty-adjustment.mjs',      timeoutMs: 360_000 },
   { name: 'websocket-events',     file: 'scenarios/rpc/websocket-events.mjs',            timeoutMs: 180_000 },
   { name: 'historical-balance',   file: 'scenarios/rpc/historical-balance.mjs',          timeoutMs: 180_000 },
+  { name: 'operational-endpoints', file: 'scenarios/rpc/operational-endpoints.mjs',     timeoutMs: 120_000 },
   // -- liveness --
   { name: 'pin-lifecycle',        file: 'scenarios/liveness/pin-lifecycle.mjs',          timeoutMs: 300_000 },
   // -- gated --

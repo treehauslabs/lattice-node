@@ -77,6 +77,7 @@ enum RPCRoutes {
 
     static func build(node: LatticeNode) -> Router<BasicRequestContext> {
         let router = Router()
+        router.middlewares.add(RateLimitMiddleware(limiter: node.rateLimiter))
         let api = router.group("api")
 
         api.get("chain/info") { _, _ in try await chainInfo(node: node) }
@@ -1111,6 +1112,10 @@ enum RPCRoutes {
             metrics.set("lattice_mempool_size{chain=\"\(s.directory)\"}", value: Double(s.mempoolCount))
             metrics.set("lattice_mining_active{chain=\"\(s.directory)\"}", value: s.mining ? 1 : 0)
         }
+        let peerCount = await node.connectedPeerEndpoints().count
+        metrics.set("lattice_peer_count", value: Double(peerCount))
+        metrics.set("lattice_chain_count", value: Double(statuses.count))
+        metrics.set("lattice_uptime_seconds", value: ProcessInfo.processInfo.systemUptime)
         let text = metrics.prometheus()
         var headers = HTTPFields()
         headers.append(HTTPField(name: .contentType, value: "text/plain; version=0.0.4; charset=utf-8"))

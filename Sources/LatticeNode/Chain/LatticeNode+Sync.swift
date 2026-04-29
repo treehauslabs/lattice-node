@@ -39,6 +39,7 @@ extension LatticeNode {
 
     func startSync(peerTipCID: String, network: ChainNetwork) {
         let strategy = self.config.syncStrategy
+        metrics.set("lattice_sync_active", value: 1)
         syncTask = Task { [weak self] in
             guard let self = self else { return }
             await withTaskGroup(of: Void.self) { group in
@@ -66,6 +67,7 @@ extension LatticeNode {
 
     func clearSyncTask() {
         syncTask = nil
+        metrics.set("lattice_sync_active", value: 0)
     }
 
     func performSync(peerTipCID: String, network: ChainNetwork) async {

@@ -58,6 +58,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public let subscriptions: SubscriptionManager
     public let anchorPeers: AnchorPeers
     public let metrics: NodeMetrics
+    nonisolated let rateLimiter = RPCRateLimiter()
     public var stateStores: [String: StateStore]
     var tipCaches: [String: TipCache]
     var frontierCaches: [String: FrontierCache]
