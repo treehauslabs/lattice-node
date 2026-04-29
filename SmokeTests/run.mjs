@@ -43,6 +43,7 @@ const TESTS = [
   { name: 'sync',                  file: 'scenarios/network/sync.mjs',                  timeoutMs: 120_000 },
   { name: 'late-joiner',           file: 'scenarios/network/late-joiner.mjs',           timeoutMs: 240_000 },
   { name: 'partition',             file: 'scenarios/network/partition.mjs',             timeoutMs: 240_000 },
+  { name: 'concurrent-mining',    file: 'scenarios/network/concurrent-mining.mjs',    timeoutMs: 300_000 },
   // -- follower --
   { name: 'parent-dependency',     file: 'scenarios/follower/parent-dependency.mjs',    timeoutMs: 300_000 },
   { name: 'stateless-cli',         file: 'scenarios/follower/stateless-cli.mjs',        timeoutMs: 60_000 },
@@ -51,6 +52,8 @@ const TESTS = [
   { name: 'restart-resilience',    file: 'scenarios/persistence/restart-resilience.mjs', timeoutMs: 360_000 },
   { name: 'graceful-shutdown',     file: 'scenarios/persistence/graceful-shutdown.mjs',  timeoutMs: 360_000 },
   { name: 'sigterm-under-load',    file: 'scenarios/persistence/sigterm-under-load.mjs', timeoutMs: 360_000 },
+  { name: 'restart-with-children', file: 'scenarios/persistence/restart-with-children.mjs', timeoutMs: 360_000 },
+  { name: 'retention-pruning',    file: 'scenarios/persistence/retention-pruning.mjs',     timeoutMs: 300_000 },
   // -- swap --
   { name: 'swap',                  file: 'scenarios/swap/swap.mjs',                     timeoutMs: 180_000 },
   { name: 'variable-rate-swap',    file: 'scenarios/swap/variable-rate-swap.mjs',       timeoutMs: 180_000 },

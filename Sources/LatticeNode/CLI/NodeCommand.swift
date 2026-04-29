@@ -268,6 +268,7 @@ struct NodeCommand: AsyncParsableCommand {
         )
 
         let currentSubscriptions = await state.subscriptions
+        let retentionDepth = ProcessInfo.processInfo.environment["RETENTION_DEPTH"].flatMap(UInt64.init) ?? DEFAULT_RETENTION_DEPTH
         let pinExpiry = ProcessInfo.processInfo.environment["PIN_ANNOUNCE_EXPIRY"].flatMap(UInt64.init) ?? 86400
         let reannounceSeconds = ProcessInfo.processInfo.environment["REANNOUNCE_INTERVAL"].flatMap(Double.init) ?? 86400
         let evictionSeconds = ProcessInfo.processInfo.environment["EVICTION_INTERVAL"].flatMap(Double.init) ?? 21600
@@ -281,6 +282,7 @@ struct NodeCommand: AsyncParsableCommand {
             enableLocalDiscovery: effectiveLocalDiscovery,
             persistInterval: 100,
             subscribedChains: currentSubscriptions,
+            retentionDepth: retentionDepth,
             resources: resources,
             finality: parsedFinality,
             maxPeerConnections: effectiveMaxPeers,
