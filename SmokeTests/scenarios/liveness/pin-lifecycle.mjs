@@ -8,7 +8,7 @@ import { tipInfo, mineBurst } from '../../lib/chain.mjs'
 import { peerCount } from '../../lib/probe.mjs'
 
 const ROOT = smokeRoot('pin-lifecycle')
-const [a, b] = allocPorts(2, { seed: 77 })
+const [a, b] = allocPorts(2, { seed: 32 })
 const PIN_EXPIRY = 120
 const REANNOUNCE = 120
 const EVICTION = 30
@@ -32,11 +32,11 @@ const A = net.byName('A')
 const B = net.byName('B')
 
 console.log('\n[1] Boot A and B, wait for connection, mine...')
-A.start({ env: pinEnv })
+A.start()
 await A.waitForRPC()
 await A.readIdentity()
 
-B.start({ peers: [A], env: pinEnv })
+B.start({ peers: [A] })
 await B.waitForRPC()
 
 await waitFor(async () => {
@@ -61,7 +61,7 @@ console.log(`  waiting ${evictWait}s...`)
 await sleep(evictWait * 1000)
 
 console.log('\n[3] Restart B — should retain state...')
-B.start({ peers: [A], env: pinEnv })
+B.start({ peers: [A] })
 await B.waitForRPC()
 
 await waitFor(async () => {

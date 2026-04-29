@@ -40,6 +40,10 @@
     "deploy-under-load": "node scenarios/safety/deploy-under-load.mjs",
     "reorg-state-rollback": "node scenarios/safety/reorg-state-rollback.mjs",
     "difficulty-adjustment": "node scenarios/rpc/difficulty-adjustment.mjs",
+    "cross-chain-conservation": "node scenarios/safety/cross-chain-conservation.mjs",
+    "transaction-history": "node scenarios/rpc/transaction-history.mjs",
+    "mempool-eviction": "node scenarios/safety/mempool-eviction.mjs",
+    "pin-lifecycle": "node scenarios/liveness/pin-lifecycle.mjs",
     "stability-multichain": "SMOKE_STABILITY=1 node scenarios/liveness/stability-multichain.mjs"
   },
   "dependencies": {
