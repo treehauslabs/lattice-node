@@ -204,7 +204,13 @@ extension LatticeNode {
             try? header.storeRecursively(storer: storer)
             try? await storer.flush()
 
+            if let vaf = fetcher as? VolumeAwareFetcher {
+                try? await vaf.enterVolume(rootCID: header.rawCID, paths: .init())
+            }
             let _ = await lattice.processBlockHeader(header, fetcher: fetcher)
+            if let vaf = fetcher as? VolumeAwareFetcher {
+                await vaf.exitVolume(rootCID: header.rawCID)
+            }
         }
     }
 

@@ -248,7 +248,13 @@ extension LatticeNode {
         }
         let phLog = NodeLogger("blocks")
         let phShort = String(header.rawCID.prefix(16))
+        if let vaf = validationFetcher as? VolumeAwareFetcher {
+            try? await vaf.enterVolume(rootCID: header.rawCID, paths: .init())
+        }
         let (accepted, stateDiff) = await lattice.processBlockHeader(header, fetcher: validationFetcher, skipValidation: skipValidation)
+        if let vaf = validationFetcher as? VolumeAwareFetcher {
+            await vaf.exitVolume(rootCID: header.rawCID)
+        }
         guard accepted else {
             phLog.warn("\(directory): block \(phShort)… rejected by processBlockHeader")
             return .rejected
