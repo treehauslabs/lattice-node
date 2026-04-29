@@ -172,7 +172,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             try? await nexusNetwork.diskBroker.storeVolumeLocal(specPayload)
             try? await nexusNetwork.diskBroker.pin(root: specCID, owner: "\(nexusDir):spec")
             let fee = await nexusNetwork.ivy.config.relayFee * 2
-            let expiry = UInt64(Date().timeIntervalSince1970) + 86400 * 365
+            let expiry = UInt64(Date().timeIntervalSince1970) + config.pinAnnounceExpiry * 365
             await nexusNetwork.announce(cid: specCID, expiry: expiry, fee: fee)
         }
 
@@ -244,8 +244,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         }
         if !config.discoveryOnly {
             mempoolPruneTask = startMempoolLoop(node: self)
-            pinReannounceTask = startPinReannounceLoop(node: self)
-            evictionTask = startEvictionLoop(node: self)
+            pinReannounceTask = startPinReannounceLoop(node: self, interval: config.reannounceInterval)
+            evictionTask = startEvictionLoop(node: self, interval: config.evictionInterval)
             storageMaintenanceTask = startStorageMaintenanceLoop(node: self)
         }
     }
@@ -503,7 +503,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         guard let network = networks[directory] else { return }
         let roots = await network.diskBroker.pinnedRoots()
         let fee = await network.ivy.config.relayFee * 2
-        let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+        let expiry = UInt64(Date().timeIntervalSince1970) + config.pinAnnounceExpiry
         for root in roots {
             await network.announce(cid: root, expiry: expiry, fee: fee)
         }

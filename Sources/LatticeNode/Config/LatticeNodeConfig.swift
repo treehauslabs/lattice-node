@@ -34,6 +34,9 @@ public struct LatticeNodeConfig: Sendable {
     public let discoveryOnly: Bool
     public let storageMode: StorageMode
     public let blockRetention: BlockRetention
+    public let pinAnnounceExpiry: UInt64
+    public let reannounceInterval: Duration
+    public let evictionInterval: Duration
 
     public init(
         publicKey: String,
@@ -55,7 +58,10 @@ public struct LatticeNodeConfig: Sendable {
         maxPeerConnections: Int = BootstrapPeers.maxPeerConnections,
         discoveryOnly: Bool = false,
         storageMode: StorageMode = .stateful,
-        blockRetention: BlockRetention = .retention
+        blockRetention: BlockRetention = .retention,
+        pinAnnounceExpiry: UInt64 = 86400,
+        reannounceInterval: Duration = .seconds(86400),
+        evictionInterval: Duration = .seconds(21600)
     ) {
         self.publicKey = publicKey
         self.privateKey = privateKey
@@ -75,6 +81,9 @@ public struct LatticeNodeConfig: Sendable {
         self.discoveryOnly = discoveryOnly
         self.storageMode = storageMode
         self.blockRetention = blockRetention
+        self.pinAnnounceExpiry = pinAnnounceExpiry
+        self.reannounceInterval = reannounceInterval
+        self.evictionInterval = evictionInterval
     }
 
     public func isSubscribed(chainPath: [String]) -> Bool {

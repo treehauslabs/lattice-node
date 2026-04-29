@@ -65,7 +65,7 @@ extension LatticeNode {
 
             let owner = "\(dir):\(block.index)"
             let fee = await network.ivy.config.relayFee * 2
-            let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+            let expiry = UInt64(Date().timeIntervalSince1970) + config.pinAnnounceExpiry
             for root in storer.storedRoots {
                 try await network.diskBroker.pin(root: root, owner: owner)
                 await network.announce(cid: root, expiry: expiry, fee: fee)
@@ -861,7 +861,7 @@ extension LatticeNode {
         try? await network.diskBroker.storeVolumeLocal(payload)
         try? await network.diskBroker.pin(root: specCID, owner: "\(pathStr):spec")
         let fee = await network.ivy.config.relayFee * 2
-        let expiry = UInt64(Date().timeIntervalSince1970) + 86400 * 365
+        let expiry = UInt64(Date().timeIntervalSince1970) + config.pinAnnounceExpiry * 365
         await network.announce(cid: specCID, expiry: expiry, fee: fee)
     }
 
@@ -1103,7 +1103,7 @@ extension LatticeNode {
 
         // Announce so peers can discover us as a provider of our own tx data.
         let fee = await network.ivy.config.relayFee * 2
-        let expiry = UInt64(Date().timeIntervalSince1970) + 86400
+        let expiry = UInt64(Date().timeIntervalSince1970) + config.pinAnnounceExpiry
         await withTaskGroup(of: Void.self) { group in
             for cid in cidsToPin {
                 group.addTask {

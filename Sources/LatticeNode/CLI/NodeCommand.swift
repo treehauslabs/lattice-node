@@ -359,8 +359,8 @@ struct NodeCommand: AsyncParsableCommand {
             }
             backgroundTasks.append(startChildDiscoveryLoop(node: node, config: nodeConfig, basePort: effectivePort))
             backgroundTasks.append(startMempoolLoop(node: node))
-            backgroundTasks.append(startPinReannounceLoop(node: node))
-            backgroundTasks.append(startEvictionLoop(node: node))
+            backgroundTasks.append(startPinReannounceLoop(node: node, interval: nodeConfig.reannounceInterval))
+            backgroundTasks.append(startEvictionLoop(node: node, interval: nodeConfig.evictionInterval))
         }
 
         let peerRefreshTask = Task { await node.startPeerRefresh() }
