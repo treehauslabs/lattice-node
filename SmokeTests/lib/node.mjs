@@ -43,7 +43,8 @@ export class Node {
     if (extras.extraArgs) args.push(...extras.extraArgs)
 
     this.logStream = createWriteStream(this.logPath, { flags: 'a' })
-    this.proc = spawn(BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const env = extras.env ? { ...process.env, ...extras.env } : undefined
+    this.proc = spawn(BIN, args, { stdio: ['ignore', 'pipe', 'pipe'], env })
     this.proc.stdout.pipe(this.logStream)
     this.proc.stderr.pipe(this.logStream)
     this.proc.on('exit', (code) => {

@@ -268,6 +268,10 @@ struct NodeCommand: AsyncParsableCommand {
         )
 
         let currentSubscriptions = await state.subscriptions
+        let pinExpiry = ProcessInfo.processInfo.environment["PIN_ANNOUNCE_EXPIRY"].flatMap(UInt64.init) ?? 86400
+        let reannounceSeconds = ProcessInfo.processInfo.environment["REANNOUNCE_INTERVAL"].flatMap(Double.init) ?? 86400
+        let evictionSeconds = ProcessInfo.processInfo.environment["EVICTION_INTERVAL"].flatMap(Double.init) ?? 21600
+
         let nodeConfig = LatticeNodeConfig(
             publicKey: identity.publicKey,
             privateKey: privateKey,
@@ -280,7 +284,10 @@ struct NodeCommand: AsyncParsableCommand {
             resources: resources,
             finality: parsedFinality,
             maxPeerConnections: effectiveMaxPeers,
-            discoveryOnly: effectiveDiscoveryOnly
+            discoveryOnly: effectiveDiscoveryOnly,
+            pinAnnounceExpiry: pinExpiry,
+            reannounceInterval: .seconds(reannounceSeconds),
+            evictionInterval: .seconds(evictionSeconds)
         )
 
         let node = try await LatticeNode(
