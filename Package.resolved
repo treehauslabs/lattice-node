@@ -1,5 +1,5 @@
 {
-  "originHash" : "0cd0e763edfbbbc5565cec7966f437543dfc364a77b994fd4d038ac699ef20b2",
+  "originHash" : "ca282c0f9cb605a8a7e8935218f2f84e930e86bb5af5b239b6f630939e04c7c2",
   "pins" : [
     {
       "identity" : "acorn",
@@ -65,15 +65,6 @@
       }
     },
     {
-      "identity" : "ivy",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/treehauslabs/Ivy.git",
-      "state" : {
-        "revision" : "fb701b06c735edb264f5cf41904424cd56b0c215",
-        "version" : "5.10.0"
-      }
-    },
-    {
       "identity" : "jxkit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jectivex/JXKit.git",
@@ -87,8 +78,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/Lattice.git",
       "state" : {
-        "revision" : "8b98ee346c00a9380e51b0bc8d3847e32d81956d",
-        "version" : "8.1.0"
+        "revision" : "4acc4ddb0622810d8b47f68e5a12369df8ce7603",
+        "version" : "8.2.0"
       }
     },
     {
@@ -393,8 +384,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/VolumeBroker.git",
       "state" : {
-        "revision" : "e6844c71696ff70f9cca733c02dcae6dfd9d548d",
-        "version" : "2.2.0"
+        "revision" : "b1666a4dbdfa0cd3a02402c609ae51023c11c260",
+        "version" : "2.3.0"
       }
     }
   ],
