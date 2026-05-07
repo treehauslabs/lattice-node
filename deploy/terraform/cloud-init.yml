@@ -25,6 +25,7 @@ runcmd:
       --network host \
       -v /var/lib/lattice:/home/lattice/.lattice \
       ${docker_image} \
+      --testnet \
       --mine Nexus \
       --port ${p2p_port} \
       --data-dir /home/lattice/.lattice
@@ -43,6 +44,7 @@ runcmd:
       --network host \
       -v /var/lib/lattice:/home/lattice/.lattice \
       ${docker_image} \
+      --testnet \
       --mine Nexus \
       --port ${p2p_port} \
       --data-dir /home/lattice/.lattice \

@@ -159,9 +159,9 @@ cmd_codegen_inner() {
         KEYS[$name]=$(get_pubkey "${IPS[$name]}" 2>/dev/null || echo "UNKNOWN")
     done
 
-    echo "Add this to Sources/LatticeNode/Network/BootstrapPeers.swift:"
+    echo "Add this to Sources/LatticeNode/Network/BootstrapPeers.swift (testnet array):"
     echo ""
-    echo "    public static let nexus: [PeerEndpoint] = ["
+    echo "    public static let testnet: [PeerEndpoint] = ["
     for name in "${NAMES[@]}"; do
         echo "        PeerEndpoint(publicKey: \"${KEYS[$name]}\", host: \"${IPS[$name]}\", port: ${P2P_PORT}),"
     done
@@ -184,10 +184,8 @@ cmd_codegen() {
             KEYS[$name]=$(get_pubkey "${IPS[$name]}")
         done
 
-        local PEERS=""
-        for name in "${NAMES[@]}"; do
-            PEERS="$PEERS        PeerEndpoint(publicKey: \"${KEYS[$name]}\", host: \"${IPS[$name]}\", port: ${P2P_PORT}),\n"
-        done
+        # Preserve existing nexus peers; only overwrite testnet.
+        EXISTING_NEXUS=$(awk '/nexus:/,/\]/' "$SOURCE_FILE" | grep PeerEndpoint || true)
 
         cat > "$SOURCE_FILE" << SWIFT
 import Lattice
@@ -195,16 +193,21 @@ import Ivy
 
 public enum BootstrapPeers {
     public static let nexus: [PeerEndpoint] = [
+$(echo "$EXISTING_NEXUS")
+    ]
+
+    public static let testnet: [PeerEndpoint] = [
 $(for name in "${NAMES[@]}"; do
     echo "        PeerEndpoint(publicKey: \"${KEYS[$name]}\", host: \"${IPS[$name]}\", port: ${P2P_PORT}),"
 done)
     ]
 
     public static let maxPeerConnections: Int = 128
+    public static let maxPeerConnectionsDiscovery: Int = 512
 }
 SWIFT
 
-        echo "Updated $SOURCE_FILE with ${#NAMES[@]} bootstrap peers."
+        echo "Updated $SOURCE_FILE with ${#NAMES[@]} testnet bootstrap peers."
         echo "Run 'swift build' to verify, then commit and push."
     else
         cmd_codegen_inner

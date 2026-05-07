@@ -138,7 +138,7 @@ primary_region = "${REGION}"
     handlers = ["http"]
 
 [processes]
-  app = "node --mine Nexus --port 4001 --rpc-port 8080 --rpc-bind 0.0.0.0 --data-dir /data --autosize${PEER_ARGS}"
+  app = "node --testnet --mine Nexus --port 4001 --rpc-port 8080 --rpc-bind 0.0.0.0 --data-dir /data --autosize${PEER_ARGS}"
 
 [[vm]]
   size = "shared-cpu-2x"
@@ -155,21 +155,28 @@ EOF
 
     # Update BootstrapPeers.swift
     BOOTSTRAP_FILE="$PROJECT_DIR/Sources/LatticeNode/Network/BootstrapPeers.swift"
+    # Read existing nexus peers from the file so we don't clobber mainnet entries.
+    EXISTING_NEXUS=$(awk '/nexus:/,/\]/' "$BOOTSTRAP_FILE" | grep PeerEndpoint || true)
     cat > "$BOOTSTRAP_FILE" << EOF
 import Lattice
 import Ivy
 
 public enum BootstrapPeers {
     public static let nexus: [PeerEndpoint] = [
+$(echo "$EXISTING_NEXUS")
+    ]
+
+    public static let testnet: [PeerEndpoint] = [
         PeerEndpoint(publicKey: "${PUB_KEYS[0]}", host: "${IPS[0]}", port: 4001),
         PeerEndpoint(publicKey: "${PUB_KEYS[1]}", host: "${IPS[1]}", port: 4001),
         PeerEndpoint(publicKey: "${PUB_KEYS[2]}", host: "${IPS[2]}", port: 4001),
     ]
 
     public static let maxPeerConnections: Int = 128
+    public static let maxPeerConnectionsDiscovery: Int = 512
 }
 EOF
-    echo "  Updated BootstrapPeers.swift with IPs"
+    echo "  Updated BootstrapPeers.swift (testnet peers)"
 
     echo ""
     echo "=== Ready to Deploy ==="

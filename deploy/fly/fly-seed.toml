@@ -17,7 +17,7 @@
   destination = "/data"
 
 [processes]
-  seed = "node --discovery-only --port 4001 --data-dir /data"
+  seed = "node --testnet --discovery-only --port 4001 --data-dir /data"
 
 [[services]]
   internal_port = 4001
