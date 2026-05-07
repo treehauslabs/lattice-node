@@ -18,12 +18,12 @@ extension LatticeNode {
         guard syncTask == nil else { return true }
         let directory = await network.directory
         guard let chainState = await chain(for: directory) else { return false }
-        let localHeight = await chainState.getHighestBlockIndex()
-        let gap = peerBlock.index > localHeight ? peerBlock.index - localHeight : 0
+        let localHeight = await chainState.getHighestBlockHeight()
+        let gap = peerBlock.height > localHeight ? peerBlock.height - localHeight : 0
         guard gap > Self.catchUpSyncThreshold else { return false }
 
         if let localSnapshot = await chainState.tipSnapshot {
-            if peerBlock.difficulty <= localSnapshot.difficulty && peerBlock.index <= localHeight {
+            if peerBlock.difficulty <= localSnapshot.difficulty && peerBlock.height <= localHeight {
                 return false
             }
         }
@@ -149,7 +149,7 @@ extension LatticeNode {
                         await performSync(peerTipCID: peerTipCID, network: network)
                         return
                     }
-                    log.info("State root verified for tip block at height \(tipHeader.index)")
+                    log.info("State root verified for tip block at height \(tipHeader.height)")
                 }
             }
 
@@ -177,7 +177,7 @@ extension LatticeNode {
     }
 
     private func verifyTipStateRoot(_ block: Block, fetcher: Fetcher) async -> Bool {
-        let basicValid = (try? await block.validateFrontierState(
+        let basicValid = (try? await block.validatePostState(
             transactionBodies: [], fetcher: fetcher
         ))?.0 ?? false
         if basicValid { return true }
@@ -189,7 +189,7 @@ extension LatticeNode {
             return false
         }
         let bodies = txKeysAndValues.values.compactMap { $0.node?.body.node }
-        return (try? await block.validateFrontierState(transactionBodies: bodies, fetcher: fetcher))?.0 ?? false
+        return (try? await block.validatePostState(transactionBodies: bodies, fetcher: fetcher))?.0 ?? false
     }
 
     private func reprocessSyncedBlocksForChildChains(
@@ -197,7 +197,7 @@ extension LatticeNode {
         fetcher: Fetcher,
         network: ChainNetwork
     ) async {
-        let sortedBlocks = persisted.blocks.sorted { $0.blockIndex < $1.blockIndex }
+        let sortedBlocks = persisted.blocks.sorted { $0.blockHeight < $1.blockHeight }
         for blockMeta in sortedBlocks {
             let stub = VolumeImpl<Block>(rawCID: blockMeta.blockHash, node: nil, encryptionInfo: nil)
             guard let block = try? await stub.resolve(fetcher: fetcher).node else { continue }
@@ -205,7 +205,7 @@ extension LatticeNode {
 
             let storer = BrokerStorer(broker: network.diskBroker)
             try? header.storeRecursively(storer: storer)
-            try? await storer.flush()
+            try? await storer.flush(root: header.rawCID)
 
             if let vaf = fetcher as? VolumeAwareFetcher {
                 try? await vaf.enterVolume(rootCID: header.rawCID, paths: .init())
@@ -247,23 +247,23 @@ extension LatticeNode {
             let genesisMeta = await childChain.getConsensusBlock(hash: gHash)
             let genesisPersisted = PersistedChainState(
                 chainTip: gHash,
-                tipFrontierCID: nil, tipHomesteadCID: nil, tipSpecCID: nil,
+                tipPostStateCID: nil, tipPrevStateCID: nil, tipSpecCID: nil,
                 tipDifficulty: nil, tipNextDifficulty: nil,
-                tipIndex: 0, tipTimestamp: nil,
+                tipHeight: 0, tipTimestamp: nil,
                 mainChainHashes: [gHash],
                 blocks: [PersistedBlockMeta(
                     blockHash: gHash,
-                    previousBlockHash: nil,
-                    blockIndex: 0,
+                    parentBlockHash: nil,
+                    blockHeight: 0,
                     parentChainBlocks: genesisMeta?.parentChainBlocks ?? [:],
-                    childBlockHashes: genesisMeta?.childBlockHashes ?? []
+                    childHashes: genesisMeta?.childHashes ?? []
                 )],
                 parentChainMap: [:],
                 missingBlockHashes: []
             )
             await childChain.resetFrom(genesisPersisted, retentionDepth: config.retentionDepth)
             tipCaches[childDir]?.update(gHash)
-            await frontierCaches[childDir]?.invalidate()
+            await postStateCaches[childDir]?.invalidate()
         }
     }
 
@@ -293,14 +293,14 @@ extension LatticeNode {
                 if let store = stateStores[childDir] {
                     await store.setChainTip(
                         hash: newTip,
-                        height: tipBlock.index,
-                        stateRoot: tipBlock.frontier.rawCID
+                        height: tipBlock.height,
+                        stateRoot: tipBlock.postState.rawCID
                     )
                 }
-                log.info("\(childDir): post-sync tip at height \(tipBlock.index)")
+                log.info("\(childDir): post-sync tip at height \(tipBlock.height)")
             }
             tipCaches[childDir]?.update(newTip)
-            await frontierCaches[childDir]?.invalidate()
+            await postStateCaches[childDir]?.invalidate()
         }
     }
 
@@ -320,14 +320,14 @@ extension LatticeNode {
         if let store = stateStores[nexusDir] {
             // StateStore is now only a local index for receipts/tx_history/block_index.
             // Account state lives in the AccountState tree; no replay needed for balances or nonces.
-            let sortedBlocks = result.persisted.blocks.sorted { $0.blockIndex < $1.blockIndex }
+            let sortedBlocks = result.persisted.blocks.sorted { $0.blockHeight < $1.blockHeight }
             if let tipMeta = sortedBlocks.last {
                 let tipStub = VolumeImpl<Block>(rawCID: tipMeta.blockHash, node: nil, encryptionInfo: nil)
                 if let tipBlock = try? await tipStub.resolve(fetcher: fetcher).node {
                     await store.setChainTip(
                         hash: tipMeta.blockHash,
-                        height: tipBlock.index,
-                        stateRoot: tipBlock.frontier.rawCID
+                        height: tipBlock.height,
+                        stateRoot: tipBlock.postState.rawCID
                     )
                 }
             }
@@ -349,11 +349,11 @@ extension LatticeNode {
 
         let verifyStub = VolumeImpl<Block>(rawCID: tipCID, node: nil, encryptionInfo: nil)
         if let block = try? await verifyStub.resolve(fetcher: network.ivyFetcher).node {
-            let valid = block.index == tipHeight
+            let valid = block.height == tipHeight
             if valid {
                 log.info("Sync verified: tip at height \(tipHeight) with \(peerCount) connected peers")
             } else {
-                log.warn("Sync tip height mismatch: expected \(tipHeight), got \(block.index)")
+                log.warn("Sync tip height mismatch: expected \(tipHeight), got \(block.height)")
             }
         } else {
             log.warn("Sync verification: could not resolve tip block from CAS")

@@ -8,6 +8,10 @@ public enum BootstrapPeers {
         PeerEndpoint(publicKey: "03fbc457b8db9c6156661b98b592ffb1de12eea677fb345430a9171fc0673d9716", host: "188.93.144.135", port: 4001),
     ]
 
+    public static let testnet: [PeerEndpoint] = [
+        // Populate with testnet seed node public keys and IPs once deployed.
+    ]
+
     public static let maxPeerConnections: Int = 128
     public static let maxPeerConnectionsDiscovery: Int = 512
 }

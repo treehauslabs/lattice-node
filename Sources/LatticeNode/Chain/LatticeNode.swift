@@ -61,7 +61,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     nonisolated let rateLimiter = RPCRateLimiter()
     public var stateStores: [String: StateStore]
     var tipCaches: [String: TipCache]
-    var frontierCaches: [String: FrontierCache]
+    var postStateCaches: [String: PostStateCache]
     public let nodeAddress: String
     public let ivyBroker: IvyBroker
     public let sharedDiskBroker: DiskBroker
@@ -139,10 +139,10 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
                 retentionDepth: config.retentionDepth
             )
             let initLog = NodeLogger("init")
-            let restoredHeight = await restoredChain.getHighestBlockIndex()
+            let restoredHeight = await restoredChain.getHighestBlockHeight()
             let restoredTipHash = await restoredChain.getMainChainTip()
             let tipBlockPresent = await restoredChain.getMainChainBlockHash(atIndex: restoredHeight) != nil
-            initLog.info("Restored chain: height=\(restoredHeight) tip=\(String(restoredTipHash.prefix(16)))... tipIndexPresent=\(tipBlockPresent)")
+            initLog.info("Restored chain: height=\(restoredHeight) tip=\(String(restoredTipHash.prefix(16)))... tipHeightPresent=\(tipBlockPresent)")
             let genesisBlock = try await buildGenesisBlock(nexusNetwork.ivyFetcher)
             let blockHash = VolumeImpl<Block>(node: genesisBlock).rawCID
             genesis = GenesisResult(block: genesisBlock, blockHash: blockHash, chainState: restoredChain)
@@ -157,9 +157,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         let storer = BrokerStorer(broker: nexusNetwork.diskBroker)
         do {
             try genesisHeader.storeRecursively(storer: storer)
-            try await storer.flush()
+            try await storer.flush(root: genesisHeader.rawCID)
             let owner = "\(genesisConfig.spec.directory):0"
-            for root in storer.storedRoots {
+            for root in storer.storedCIDs {
                 try await nexusNetwork.diskBroker.pin(root: root, owner: owner)
             }
         } catch {
@@ -200,8 +200,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         }
         let restoredTip = await genesis.chainState.getMainChainTip()
         self.tipCaches = [genesisConfig.spec.directory: TipCache(tip: restoredTip)]
-        self.frontierCaches = [genesisConfig.spec.directory: FrontierCache()]
-        self.nodeAddress = HeaderImpl<PublicKey>(node: PublicKey(key: config.publicKey)).rawCID
+        self.postStateCaches = [genesisConfig.spec.directory: PostStateCache()]
+        self.nodeAddress = CryptoUtils.createAddress(from: config.publicKey)
     }
 
     public func stateStore(for directory: String) -> StateStore? {
@@ -354,8 +354,8 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             let tip = await chain(for: directory)?.getMainChainTip() ?? ""
             tipCaches[directory] = TipCache(tip: tip)
         }
-        if frontierCaches[directory] == nil {
-            frontierCaches[directory] = FrontierCache()
+        if postStateCaches[directory] == nil {
+            postStateCaches[directory] = PostStateCache()
         }
         try await network.start()
     }
@@ -381,7 +381,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
         parentDirectoryByChain.removeValue(forKey: directory)
         stateStores.removeValue(forKey: directory)
         tipCaches.removeValue(forKey: directory)
-        frontierCaches.removeValue(forKey: directory)
+        postStateCaches.removeValue(forKey: directory)
         feeEstimators.removeValue(forKey: directory)
 
         // Per-chain Prometheus label form is {chain="<directory>"}; strip every
@@ -399,15 +399,19 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public func registerChainNetworkUsingNodeConfig(directory: String) async throws {
         let port = deterministicPort(basePort: self.config.listenPort, directory: directory)
         let parentDir = parentDirectoryByChain[directory] ?? genesisConfig.spec.directory
-        let parentEndpoints = await networks[parentDir]?.ivy.connectedPeerEndpoints ?? []
-        // Remap parent peer endpoints to the child chain's deterministic port.
-        // Each peer runs its child Ivy on deterministicPort(basePort:, directory:)
-        // where basePort is the peer's nexus listen port.
+        let parentIvy = networks[parentDir]?.ivy
+        let parentEndpoints = await parentIvy?.connectedPeerEndpoints ?? []
+        // Prefer the port each peer advertised for this directory in its
+        // identify message (chainPorts map). Fall back to the deterministic
+        // port calculation for peers that haven't advertised yet.
+        let peerChainPortsMap = await parentIvy?.connectedPeerChainPorts ?? [:]
         let bootstrapPeers = parentEndpoints.map { ep in
-            PeerEndpoint(
+            let peerID = PeerID(publicKey: ep.publicKey)
+            let advertisedPort = peerChainPortsMap[peerID]?[directory]
+            return PeerEndpoint(
                 publicKey: ep.publicKey,
                 host: ep.host,
-                port: deterministicPort(basePort: ep.port, directory: directory)
+                port: advertisedPort ?? deterministicPort(basePort: ep.port, directory: directory)
             )
         }
         let ivyConfig = IvyConfig(
@@ -418,6 +422,17 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             baseThresholdMultiplier: UInt64.max
         )
         try await registerChainNetwork(directory: directory, config: ivyConfig)
+        await registerChildChainPort(directory: directory, port: port)
+    }
+
+    /// Register a child chain's listen port on the nexus Ivy so it is
+    /// advertised in identify messages. Peers receiving this can look up
+    /// the exact port for a directory instead of guessing via deterministic
+    /// port calculation.
+    public func registerChildChainPort(directory: String, port: UInt16) async {
+        let nexusDir = genesisConfig.spec.directory
+        guard let nexusIvy = networks[nexusDir]?.ivy else { return }
+        await nexusIvy.setChainPort(directory: directory, port: port)
     }
 
     // MARK: - Chain Lookup
@@ -456,7 +471,7 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     public func pruneTransactionHistory(retentionBlocks: UInt64) async {
         for (dir, store) in stateStores {
             guard let chain = await chain(for: dir) else { continue }
-            let height = await chain.getHighestBlockIndex()
+            let height = await chain.getHighestBlockHeight()
             guard height > retentionBlocks else { continue }
             let below = height - retentionBlocks
             let removed = await store.pruneTransactionHistory(

@@ -52,11 +52,8 @@ extension LatticeNode {
                let tipNonce = try? await getNonce(address: sender, directory: directory) {
                 await network.nodeMempool.seedConfirmedNonceIfUnset(sender: sender, nonce: tipNonce)
             }
-            // Route through the unified admission helper so a withdrawal
-            // tx persisted before a parent reorg gets classified pending
-            // (or evicted on wrong-owner) instead of silently dropping.
             switch await admitToMempool(transaction: tx, directory: directory) {
-            case .added, .addedPending, .replacedExisting:
+            case .added, .replacedExisting:
                 restored += 1
             case .rejected:
                 break
@@ -83,7 +80,7 @@ extension LatticeNode {
               let chainState = await chain(for: directory) else { return }
 
         let chainTipCID = await chainState.getMainChainTip()
-        let chainHeight = await chainState.getHighestBlockIndex()
+        let chainHeight = await chainState.getHighestBlockHeight()
 
         guard let sqliteTipCID = store.getChainTip(),
               let sqliteHeight = store.getHeight() else { return }
@@ -105,8 +102,8 @@ extension LatticeNode {
             }
             blocksToReplay.append((cid: currentCID, block: block))
 
-            guard let parentCID = block.previousBlock?.rawCID else {
-                log.warn("Recovery: block at height \(block.index) has no parent link — stopping")
+            guard let parentCID = block.parent?.rawCID else {
+                log.warn("Recovery: block at height \(block.height) has no parent link — stopping")
                 break
             }
             currentCID = parentCID
@@ -138,7 +135,7 @@ extension LatticeNode {
         tipCaches[directory]?.update(postRecoveryTip)
 
         if recovered > 0 {
-            log.info("\(directory): recovered \(recovered) block(s) from CAS — chain now at height \(await chainState.getHighestBlockIndex())")
+            log.info("\(directory): recovered \(recovered) block(s) from CAS — chain now at height \(await chainState.getHighestBlockHeight())")
             await persistChainState(directory: directory)
         }
     }
@@ -152,7 +149,7 @@ extension LatticeNode {
         guard let store = stateStores[directory],
               let chainState = await chain(for: directory) else { return }
         let log = NodeLogger("persistence")
-        let height = await chainState.getHighestBlockIndex()
+        let height = await chainState.getHighestBlockHeight()
         // Skip the full chain walk when block_index is already populated up to
         // `height`. Each `applyBlock` writes its own height into block_index
         // atomically, so on any steady-state restart the table already has
@@ -295,6 +292,7 @@ extension LatticeNode {
                         enableLocalDiscovery: config.enableLocalDiscovery
                     )
                     try? await registerChainNetwork(directory: dirName, config: childConfig)
+                    await registerChildChainPort(directory: dirName, port: port)
                 }
                 restored.insert(dirName)
                 progress = true

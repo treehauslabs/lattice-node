@@ -13,9 +13,22 @@ public enum DNSSeeds: Sendable {
         "dnsseed.lattice.treehauslabs.com",
     ]
 
+    public static let testnetHostnames: [String] = [
+        "seeds.testnet.lattice-node.net",
+        "dnsseed.testnet.lattice.treehauslabs.com",
+    ]
+
     private static let digTimeout: TimeInterval = 5
 
+    public static func resolveTestnet() async -> [PeerEndpoint] {
+        await resolveHostnames(testnetHostnames)
+    }
+
     public static func resolve() async -> [PeerEndpoint] {
+        await resolveHostnames(hostnames)
+    }
+
+    private static func resolveHostnames(_ hostnames: [String]) async -> [PeerEndpoint] {
         var peers: [PeerEndpoint] = []
         for hostname in hostnames {
             let resolved = await resolveTXT(hostname: hostname)

@@ -34,11 +34,11 @@ public struct TransactionValidator: Sendable {
     private let fetcher: Fetcher
     private let chainState: ChainState
     private let isCoinbase: Bool
-    private let frontierCache: FrontierCache?
+    private let frontierCache: PostStateCache?
     private let chainDirectory: String?
     private let isNexus: Bool
 
-    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, frontierCache: FrontierCache? = nil, chainDirectory: String? = nil, isNexus: Bool = false) {
+    public init(fetcher: Fetcher, chainState: ChainState, isCoinbase: Bool = false, frontierCache: PostStateCache? = nil, chainDirectory: String? = nil, isNexus: Bool = false) {
         self.fetcher = fetcher
         self.chainState = chainState
         self.isCoinbase = isCoinbase
@@ -102,7 +102,7 @@ public struct TransactionValidator: Sendable {
         }
 
         let signatureAddresses = Set(transaction.signatures.keys.map {
-            HeaderImpl<PublicKey>(node: PublicKey(key: $0)).rawCID
+            CryptoUtils.createAddress(from: $0)
         })
         for signer in body.signers {
             if !signatureAddresses.contains(signer) {
@@ -134,15 +134,15 @@ public struct TransactionValidator: Sendable {
         guard !isCoinbase else { return nil }
         guard let snapshot = await chainState.tipSnapshot else { return nil }
         let state: LatticeState
-        if let cached = await frontierCache?.get(frontierCID: snapshot.frontierCID) {
+        if let cached = await frontierCache?.get(frontierCID: snapshot.postStateCID) {
             state = cached
         } else {
-            let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+            let frontierHeader = LatticeStateHeader(rawCID: snapshot.postStateCID)
             guard let resolved = try? await frontierHeader.resolve(fetcher: fetcher).node else {
                 return nil
             }
             state = resolved
-            await frontierCache?.set(frontierCID: snapshot.frontierCID, state: state)
+            await frontierCache?.set(frontierCID: snapshot.postStateCID, state: state)
         }
         let nonceKey = AccountStateHeader.nonceTrackingKey(AccountStateHeader.signerPrefix(body))
         let resolved = try? await state.accountState.resolve(paths: [[nonceKey]: .targeted], fetcher: fetcher)
@@ -244,15 +244,15 @@ public struct TransactionValidator: Sendable {
         }
 
         let state: LatticeState
-        if let cached = await frontierCache?.get(frontierCID: snapshot.frontierCID) {
+        if let cached = await frontierCache?.get(frontierCID: snapshot.postStateCID) {
             state = cached
         } else {
-            let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+            let frontierHeader = LatticeStateHeader(rawCID: snapshot.postStateCID)
             guard let resolved = try? await frontierHeader.resolve(fetcher: fetcher).node else {
                 return .stateResolutionFailed
             }
             state = resolved
-            await frontierCache?.set(frontierCID: snapshot.frontierCID, state: state)
+            await frontierCache?.set(frontierCID: snapshot.postStateCID, state: state)
         }
 
         var accountPaths = [[String]: ResolutionStrategy]()

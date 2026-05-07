@@ -18,7 +18,7 @@ extension LatticeNode {
     public func chainStatus() async -> [ChainInfo] {
         var result: [ChainInfo] = []
         let nexusDir = genesisConfig.spec.directory
-        let nexusHeight = await lattice.nexus.chain.getHighestBlockIndex()
+        let nexusHeight = await lattice.nexus.chain.getHighestBlockHeight()
         let nexusTip = await lattice.nexus.chain.getMainChainTip()
         let nexusMempoolCount = await networks[nexusDir]?.nodeMempool.count ?? 0
         result.append(ChainInfo(
@@ -34,7 +34,7 @@ extension LatticeNode {
         for (childLevel, path) in children {
             let dir = path.last ?? ""
             let parent = path.count >= 2 ? path[path.count - 2] : nil
-            let h = await childLevel.chain.getHighestBlockIndex()
+            let h = await childLevel.chain.getHighestBlockHeight()
             let t = await childLevel.chain.getMainChainTip()
             let mc = await networks[dir]?.nodeMempool.count ?? 0
             result.append(ChainInfo(
@@ -112,15 +112,15 @@ extension LatticeNode {
         guard let network = networks[directory] else { return nil }
         guard let chain = await chain(for: directory) else { return nil }
         guard let snapshot = await chain.tipSnapshot else { return nil }
-        let frontierCID = snapshot.frontierCID
+        let frontierCID = snapshot.postStateCID
         let fetcher = await network.fetcher
-        if let cached = await frontierCaches[directory]?.get(frontierCID: frontierCID) {
+        if let cached = await postStateCaches[directory]?.get(frontierCID: frontierCID) {
             return (cached, fetcher)
         }
         let frontierHeader = LatticeStateHeader(rawCID: frontierCID)
         let resolved = try await frontierHeader.resolve(fetcher: fetcher)
         guard let state = resolved.node else { return nil }
-        await frontierCaches[directory]?.set(frontierCID: frontierCID, state: state)
+        await postStateCaches[directory]?.set(frontierCID: frontierCID, state: state)
         return (state, fetcher)
     }
 
@@ -144,7 +144,7 @@ extension LatticeNode {
         guard let network = networks[directory] else { return nil }
         guard let chain = await chain(for: directory) else { return nil }
         guard let snapshot = await chain.tipSnapshot else { return nil }
-        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+        let frontierHeader = LatticeStateHeader(rawCID: snapshot.postStateCID)
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
         guard let state = resolved.node else { return nil }
         let key = DepositKey(nonce: nonce, demander: demander, amountDemanded: amountDemanded).description
@@ -162,7 +162,7 @@ extension LatticeNode {
         guard let network = networks[parentDir] else { return nil }
         guard let chain = await chain(for: parentDir) else { return nil }
         guard let snapshot = await chain.tipSnapshot else { return nil }
-        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+        let frontierHeader = LatticeStateHeader(rawCID: snapshot.postStateCID)
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
         guard let state = resolved.node else { return nil }
         let key = ReceiptKey(receiptAction: ReceiptAction(withdrawer: "", nonce: nonce, demander: demander, amountDemanded: amountDemanded, directory: directory)).description
@@ -179,7 +179,7 @@ extension LatticeNode {
         guard let network = networks[directory] else { return [] }
         guard let chain = await chain(for: directory) else { return [] }
         guard let snapshot = await chain.tipSnapshot else { return [] }
-        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+        let frontierHeader = LatticeStateHeader(rawCID: snapshot.postStateCID)
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
         guard let state = resolved.node else { return [] }
         let depositResolved = try await state.depositState.resolveRecursive(fetcher: network.fetcher)
@@ -193,7 +193,7 @@ extension LatticeNode {
         guard let network = networks[dir] else { return nil }
         guard let chain = await chain(for: dir) else { return nil }
         guard let snapshot = await chain.tipSnapshot else { return nil }
-        let frontierHeader = LatticeStateHeader(rawCID: snapshot.frontierCID)
+        let frontierHeader = LatticeStateHeader(rawCID: snapshot.postStateCID)
         let resolved = try await frontierHeader.resolve(fetcher: network.fetcher)
         guard let state = resolved.node else { return nil }
         let proofPaths: [[String]: SparseMerkleProof] = [[address]: .existence]
@@ -215,9 +215,9 @@ extension LatticeNode {
         let result = BalanceProof(
             address: address,
             balance: balance,
-            stateRoot: snapshot.frontierCID,
+            stateRoot: snapshot.postStateCID,
             accountRoot: state.accountState.rawCID,
-            blockHeight: snapshot.index,
+            blockHeight: snapshot.tipHeight,
             blockHash: await chain.getMainChainTip()
         )
         return try JSONEncoder().encode(result)

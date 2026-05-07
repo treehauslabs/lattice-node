@@ -72,7 +72,7 @@ extension LatticeNode {
         guard let blockData = block.toData() else { return }
 
         let log = NodeLogger("miner")
-        log.info("\(directory): mined block \(String(header.rawCID.prefix(16)))… at index \(block.index) (txs=\(block.transactions.node?.count ?? 0))")
+        log.info("\(directory): mined block \(String(header.rawCID.prefix(16)))… at index \(block.height) (txs=\(block.transactions.node?.count ?? 0))")
 
         await storeBlockRecursively(block, network: network)
         await network.publishBlock(cid: header.rawCID, data: blockData)
@@ -92,7 +92,7 @@ extension LatticeNode {
         )
         let accepted = outcome == .accepted
         if outcome == .rejected {
-            log.warn("\(directory): mined block at index \(block.index) was NOT accepted")
+            log.warn("\(directory): mined block at index \(block.height) was NOT accepted")
         }
         if accepted, let removals = pendingRemovals {
             await network.pruneConfirmedTransactions(txCIDs: removals.nexusTxCIDs)

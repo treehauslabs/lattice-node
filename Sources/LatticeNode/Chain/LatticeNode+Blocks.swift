@@ -46,10 +46,10 @@ extension LatticeNode {
     /// Pinned in the per-chain protection policy to survive LRU eviction.
     static func stateRoots(of block: Block) -> [String] {
         [
-            block.frontier.rawCID,
-            block.homestead.rawCID,
+            block.postState.rawCID,
+            block.prevState.rawCID,
             block.transactions.rawCID,
-            block.childBlocks.rawCID,
+            block.children.rawCID,
         ].filter { !$0.isEmpty }
     }
 
@@ -61,19 +61,19 @@ extension LatticeNode {
         let storer = BrokerStorer(broker: network.diskBroker)
         do {
             try header.storeRecursively(storer: storer)
-            try await storer.flush()
+            try await storer.flush(root: header.rawCID)
 
-            let owner = "\(dir):\(block.index)"
+            let owner = "\(dir):\(block.height)"
             let fee = await network.ivy.config.relayFee * 2
             let expiry = UInt64(Date().timeIntervalSince1970) + config.pinAnnounceExpiry
-            for root in storer.storedRoots {
+            for root in storer.storedCIDs {
                 try await network.diskBroker.pin(root: root, owner: owner)
                 await network.announce(cid: root, expiry: expiry, fee: fee)
             }
             if let store = stateStores[dir] {
-                await store.persistStoredRoots(height: block.index, roots: storer.storedRoots)
+                await store.persistStoredRoots(height: block.height, roots: storer.storedCIDs)
                 if !stateDiff.replaced.isEmpty {
-                    await store.persistReplacedRoots(height: block.index, roots: stateDiff.replaced)
+                    await store.persistReplacedRoots(height: block.height, roots: stateDiff.replaced)
                 }
             }
 
@@ -88,15 +88,15 @@ extension LatticeNode {
     private func pruneBlocks(block: Block, directory: String, network: ChainNetwork) async throws {
         switch config.blockRetention {
         case .tip:
-            if block.index > 0 {
-                let prevOwner = "\(directory):\(block.index - 1)"
+            if block.height > 0 {
+                let prevOwner = "\(directory):\(block.height - 1)"
                 try await network.diskBroker.unpinAll(owner: prevOwner)
-                await releaseValidatorPins(directory: directory, height: block.index - 1, network: network)
+                await releaseValidatorPins(directory: directory, height: block.height - 1, network: network)
             }
 
         case .retention:
-            if block.index > config.retentionDepth {
-                let pruneHeight = block.index - config.retentionDepth
+            if block.height > config.retentionDepth {
+                let pruneHeight = block.height - config.retentionDepth
                 let pruneOwner = "\(directory):\(pruneHeight)"
                 try await network.diskBroker.unpinAll(owner: pruneOwner)
                 if let store = stateStores[directory] {
@@ -107,8 +107,8 @@ extension LatticeNode {
             }
 
         case .historical:
-            if block.index > config.retentionDepth {
-                let pruneHeight = block.index - config.retentionDepth
+            if block.height > config.retentionDepth {
+                let pruneHeight = block.height - config.retentionDepth
                 guard let chain = await chain(for: directory) else { return }
                 guard let blockHash = stateStores[directory]?.getBlockHash(atHeight: pruneHeight) else { return }
                 let onMainChain = await chain.isOnMainChain(hash: blockHash)
@@ -122,8 +122,8 @@ extension LatticeNode {
     }
 
     private func pruneState(block: Block, directory: String, network: ChainNetwork) async throws {
-        guard block.index > config.retentionDepth else { return }
-        let pruneHeight = block.index - config.retentionDepth
+        guard block.height > config.retentionDepth else { return }
+        let pruneHeight = block.height - config.retentionDepth
         let pruneOwner = "\(directory):\(pruneHeight)"
         guard let store = stateStores[directory] else { return }
 
@@ -182,15 +182,15 @@ extension LatticeNode {
         await dest.storeLocally(cid: cid, data: data)
 
         if let block = Block(data: data) {
-            if let prevCID = block.previousBlock?.rawCID {
+            if let prevCID = block.parent?.rawCID {
                 await copyCIDRecursive(prevCID, from: source, to: dest, visited: &visited, depth: depth + 1)
             }
             await copyCIDRecursive(block.transactions.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
             await copyCIDRecursive(block.spec.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
-            await copyCIDRecursive(block.homestead.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
-            await copyCIDRecursive(block.frontier.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
-            await copyCIDRecursive(block.parentHomestead.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
-            await copyCIDRecursive(block.childBlocks.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
+            await copyCIDRecursive(block.prevState.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
+            await copyCIDRecursive(block.postState.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
+            await copyCIDRecursive(block.parentState.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
+            await copyCIDRecursive(block.children.rawCID, from: source, to: dest, visited: &visited, depth: depth + 1)
         }
     }
 
@@ -279,23 +279,12 @@ extension LatticeNode {
             if directory == genesisConfig.spec.directory {
                 await applyChildBlockStates(parentBlock: block, nexusBlockCID: header.rawCID, fetcher: fetcher)
             }
-            // Promote any pending child-mempool entries whose required
-            // receipt just landed in this block. Sibling fix for the
-            // receipt-visibility race: pending entries gated on receipts
-            // newly committed here become selectable on the next round.
-            await runReceiptPromotionHook(txEntries: txEntries, parentDirectory: directory)
-            // Evict mempool entries holding deposit keys consumed by this
-            // block's withdrawals. The included withdrawal itself was
-            // already removed via batchUpdateConfirmedNonces; this catches
-            // cross-pool conflicts (e.g. a pending entry on the same
-            // deposit that lost the inclusion race).
-            await runDepositEvictionHook(txEntries: txEntries, directory: directory)
         }
 
         let tipAfter = await chain.getMainChainTip()
         tipCaches[directory]?.update(tipAfter)
         if tipBefore != tipAfter {
-            let parentOfNewTip = await chain.getConsensusBlock(hash: tipAfter)?.previousBlockHash
+            let parentOfNewTip = await chain.getConsensusBlock(hash: tipAfter)?.parentBlockHash
             if parentOfNewTip != tipBefore {
                 // Reorg (new tip's parent is not the old tip). Drop the
                 // miner's cached account-trie slice so the next iteration
@@ -365,7 +354,7 @@ extension LatticeNode {
             newChainHashes: newChainHashes,
             retentionDepth: config.retentionDepth,
             resolveParent: { hash in
-                await chain.getConsensusBlock(hash: hash)?.previousBlockHash
+                await chain.getConsensusBlock(hash: hash)?.parentBlockHash
             }
         )
         let orphanedBlockHashes = walk.orphans
@@ -392,11 +381,11 @@ extension LatticeNode {
         }
 
         // Enforce finality: refuse to reorg past finalized blocks
-        let currentHeight = await chain.getHighestBlockIndex()
+        let currentHeight = await chain.getHighestBlockHeight()
         for blockHash in orphanedBlockHashes {
             if let meta = await chain.getConsensusBlock(hash: blockHash) {
-                if config.finality.isFinal(chain: dir, blockHeight: meta.blockIndex, currentHeight: currentHeight) {
-                    log.error("Reorg would undo finalized block at height \(meta.blockIndex) — rejected")
+                if config.finality.isFinal(chain: dir, blockHeight: meta.blockHeight, currentHeight: currentHeight) {
+                    log.error("Reorg would undo finalized block at height \(meta.blockHeight) — rejected")
                     return
                 }
             }
@@ -453,11 +442,11 @@ extension LatticeNode {
         for entry in orphanedBlockTxs {
             for (cid, txHeader) in entry.txEntries {
                 guard let tx = txHeader.node else { continue }
-                if tx.body.node?.fee == 0 && tx.body.node?.nonce == entry.block.index { continue }
+                if tx.body.node?.fee == 0 && tx.body.node?.nonce == entry.block.height { continue }
                 if newChainTxCIDs.contains(cid) { continue }
                 let addResult = await admitToMempool(transaction: tx, directory: dir)
                 switch addResult {
-                case .added, .addedPending, .replacedExisting:
+                case .added, .replacedExisting:
                     recovered += 1
                 case .rejected:
                     continue
@@ -466,14 +455,6 @@ extension LatticeNode {
         }
 
         log.info("Reorg complete: \(recovered) tx(s) recovered, \(newChainTxCIDs.count) confirmed in new chain")
-
-        // Step 4.5: Demote any direct child mempool's valid withdrawals
-        // whose required receipt is no longer canonical at the new parent
-        // tip, and re-probe pending entries against the new state. A
-        // reorg can both add and remove receipts; admitToMempool only
-        // covers orphaned txs being re-admitted, not entries that were
-        // already in the child mempool as valid before the reorg fired.
-        await runChildReorgHook(parentDirectory: dir)
 
         // Step 5: Roll back child chain states from orphaned nexus blocks
         await rollbackChildChains(orphanedBlockHashes: orphanedBlockHashes, fetcher: fetcher)
@@ -496,7 +477,7 @@ extension LatticeNode {
         for blockHash in orphanedBlockHashes {
             let stub = VolumeImpl<Block>(rawCID: blockHash, node: nil, encryptionInfo: nil)
             guard let block = try? await stub.resolve(fetcher: fetcher).node,
-                  let childDict = try? await block.childBlocks.resolve(
+                  let childDict = try? await block.children.resolve(
                       paths: [[""]: .list], fetcher: fetcher
                   ).node,
                   let childDirs = try? childDict.allKeys() else { continue }
@@ -532,7 +513,7 @@ extension LatticeNode {
                     }
                 }
 
-                log.info("Child chain \(childDir): rolled back block at height \(childBlock.index)")
+                log.info("Child chain \(childDir): rolled back block at height \(childBlock.height)")
             }
         }
 
@@ -555,14 +536,14 @@ extension LatticeNode {
                 if let store = stateStores[childDir] {
                     await store.setChainTip(
                         hash: newTip,
-                        height: tipBlock.index,
-                        stateRoot: tipBlock.frontier.rawCID
+                        height: tipBlock.height,
+                        stateRoot: tipBlock.postState.rawCID
                     )
                 }
-                log.info("\(childDir): tipSnapshot updated to height \(tipBlock.index)")
+                log.info("\(childDir): tipSnapshot updated to height \(tipBlock.height)")
             }
             tipCaches[childDir]?.update(newTip)
-            await frontierCaches[childDir]?.invalidate()
+            await postStateCaches[childDir]?.invalidate()
         }
     }
 
@@ -576,7 +557,7 @@ extension LatticeNode {
         for _ in 0..<limit {
             hashes.insert(current)
             guard let meta = await chain.getConsensusBlock(hash: current),
-                  let prev = meta.previousBlockHash else { break }
+                  let prev = meta.parentBlockHash else { break }
             current = prev
         }
         return hashes
@@ -629,7 +610,7 @@ extension LatticeNode {
             return
         }
 
-        if block.index == 0 && block.previousBlock != nil {
+        if block.height == 0 && block.parent != nil {
             tally.recordFailure(peer: peer)
             return
         }
@@ -940,7 +921,7 @@ extension LatticeNode {
         )
 
         let log = NodeLogger("apply-child")
-        guard let childBlocksNode = try? await parentBlock.childBlocks.resolve(
+        guard let childBlocksNode = try? await parentBlock.children.resolve(
             paths: [[""]: .list], fetcher: fetcher
         ).node,
               let childDirs = try? childBlocksNode.allKeys() else {
@@ -993,7 +974,7 @@ extension LatticeNode {
                 try? await childNet.diskBroker.pin(root: nexusBlockCID, owner: "validates:\(childCID)")
                 if let store = stateStores[childDir] {
                     await store.persistValidatorPin(
-                        height: childBlock.index,
+                        height: childBlock.height,
                         childCID: childCID,
                         parentCID: nexusBlockCID
                     )
@@ -1069,7 +1050,7 @@ extension LatticeNode {
     ) async {
         let store = stateStores[directory]
         let network = networks[directory]
-        let blockHeight = block.index
+        let blockHeight = block.height
         let blockTimestamp = block.timestamp
 
         async let receiptTask = buildReceiptsParallel(
@@ -1191,11 +1172,11 @@ extension LatticeNode {
         }
 
         let changeset = StateChangeset(
-            height: block.index,
+            height: block.height,
             blockHash: blockHash,
             timestamp: block.timestamp,
             difficulty: block.difficulty.toHexString(),
-            stateRoot: block.frontier.rawCID
+            stateRoot: block.postState.rawCID
         )
         return (changeset, mempoolNonceUpdates)
     }
@@ -1294,9 +1275,9 @@ extension LatticeNode {
         let directory = await network.directory
         guard let chainState = await chain(for: directory) else { return }
         let tipCID = await chainState.getMainChainTip()
-        let tipIndex = await chainState.getHighestBlockIndex()
+        let tipHeight = await chainState.getHighestBlockHeight()
         let specCID = await genesisResult.block.spec.rawCID
-        await network.sendChainAnnounce(to: peer, tipCID: tipCID, tipIndex: tipIndex, specCID: specCID)
+        await network.sendChainAnnounce(to: peer, tipCID: tipCID, tipHeight: tipHeight, specCID: specCID)
     }
 
     func handleChildChainDiscovery(directory: String) async {
@@ -1345,13 +1326,13 @@ extension IvyFetcher {
     /// (and the 15s untargeted-walk timeout that follows when the pinner
     /// announcement hasn't yet reached us).
     func bindBlockRoots(_ block: Block, peer: PeerID) async {
-        if let prev = block.previousBlock?.rawCID { await bindPinner(rootCID: prev, peer: peer) }
+        if let prev = block.parent?.rawCID { await bindPinner(rootCID: prev, peer: peer) }
         await bindPinner(rootCID: block.spec.rawCID, peer: peer)
         await bindPinner(rootCID: block.transactions.rawCID, peer: peer)
-        await bindPinner(rootCID: block.frontier.rawCID, peer: peer)
-        await bindPinner(rootCID: block.homestead.rawCID, peer: peer)
-        await bindPinner(rootCID: block.parentHomestead.rawCID, peer: peer)
-        await bindPinner(rootCID: block.childBlocks.rawCID, peer: peer)
+        await bindPinner(rootCID: block.postState.rawCID, peer: peer)
+        await bindPinner(rootCID: block.prevState.rawCID, peer: peer)
+        await bindPinner(rootCID: block.parentState.rawCID, peer: peer)
+        await bindPinner(rootCID: block.children.rawCID, peer: peer)
     }
 }
 

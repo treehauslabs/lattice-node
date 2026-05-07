@@ -1,6 +1,6 @@
 import Lattice
 import Foundation
-import P256K
+import Crypto
 import cashew
 
 public struct Wallet: Sendable {
@@ -11,7 +11,7 @@ public struct Wallet: Sendable {
     public init(privateKeyHex: String, publicKeyHex: String) {
         self.privateKeyHex = privateKeyHex
         self.publicKeyHex = publicKeyHex
-        self.address = HeaderImpl<PublicKey>(node: PublicKey(key: publicKeyHex)).rawCID
+        self.address = CryptoUtils.createAddress(from: publicKeyHex)
     }
 
     public static func create() -> Wallet {
@@ -21,10 +21,10 @@ public struct Wallet: Sendable {
 
     public static func fromPrivateKey(_ hex: String) -> Wallet? {
         guard let data = Data(hex: hex),
-              let key = try? P256K.Signing.PrivateKey(dataRepresentation: data) else {
+              let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: data) else {
             return nil
         }
-        let pubHex = key.publicKey.dataRepresentation.map { String(format: "%02x", $0) }.joined()
+        let pubHex = key.publicKey.rawRepresentation.map { String(format: "%02x", $0) }.joined()
         return Wallet(privateKeyHex: hex, publicKeyHex: pubHex)
     }
 

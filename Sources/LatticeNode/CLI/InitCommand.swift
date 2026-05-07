@@ -147,7 +147,7 @@ struct InitCommand: ParsableCommand {
             prev = block
         }
 
-        let height = await chain.getHighestBlockIndex()
+        let height = await chain.getHighestBlockHeight()
         print("")
         print("  Chain height: \\(height)")
         """

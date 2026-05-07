@@ -255,7 +255,7 @@ public actor MultiNodeClient {
 
         let nexus = await node.lattice.nexus
         let chain = await nexus.chain
-        let height = await chain.getHighestBlockIndex()
+        let height = await chain.getHighestBlockHeight()
         let tip = await chain.getMainChainTip()
 
         let mining = Array(miningDirectories[id] ?? [])

@@ -84,7 +84,7 @@ public actor ChainSyncer {
     // MARK: - Shared Chain Walk
 
     private struct WalkResult {
-        var collected: [(hash: String, index: UInt64, prevHash: String?)]
+        var collected: [(hash: String, height: UInt64, prevHash: String?)]
         var cumulativeWork: UInt256
         var tipBlock: Block?
     }
@@ -98,7 +98,7 @@ public actor ChainSyncer {
         progressInterval: Int,
         progress: (@Sendable (UInt64, UInt64) async -> Void)?
     ) async throws -> WalkResult {
-        var collected: [(hash: String, index: UInt64, prevHash: String?)] = []
+        var collected: [(hash: String, height: UInt64, prevHash: String?)] = []
         var currentCID = startCID
         var targetHeight: UInt64 = 0
         var tipBlock: Block?
@@ -118,27 +118,27 @@ public actor ChainSyncer {
             }
 
             if collected.isEmpty {
-                targetHeight = block.index
+                targetHeight = block.height
                 tipBlock = block
             }
 
             let diffHash = block.getDifficultyHash()
             guard block.validateBlockDifficulty(nexusHash: diffHash) else {
-                throw SyncError.invalidPoW(block.index)
+                throw SyncError.invalidPoW(block.height)
             }
 
             // State chain continuity: the next block's homestead must match this block's frontier
             if let expectedFrontier = lastHomesteadCID {
-                guard block.frontier.rawCID == expectedFrontier else {
-                    throw SyncError.invalidStateRoot(block.index)
+                guard block.postState.rawCID == expectedFrontier else {
+                    throw SyncError.invalidStateRoot(block.height)
                 }
             }
-            lastHomesteadCID = block.homestead.rawCID
+            lastHomesteadCID = block.prevState.rawCID
 
             cumulativeWork = cumulativeWork &+ Self.workForDifficulty(block.difficulty)
 
             await storeFn(currentCID, data)
-            collected.append((hash: currentCID, index: block.index, prevHash: block.previousBlock?.rawCID))
+            collected.append((hash: currentCID, height: block.height, prevHash: block.parent?.rawCID))
 
             if collected.count % progressInterval == 0 {
                 let target = maxBlocks.map { min($0, targetHeight + 1) } ?? (targetHeight + 1)
@@ -149,7 +149,7 @@ public actor ChainSyncer {
                 break
             }
 
-            guard let prevCID = block.previousBlock?.rawCID else {
+            guard let prevCID = block.parent?.rawCID else {
                 if maxBlocks == nil {
                     guard currentCID == genesisBlockHash else {
                         throw SyncError.genesisMismatch
@@ -180,16 +180,16 @@ public actor ChainSyncer {
         if walk.cumulativeWork < localCumulativeWork { throw SyncError.insufficientWork }
 
         if let tip = walk.tipBlock {
-            let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher))?.0 ?? false
+            let valid = (try? await tip.validatePostState(transactionBodies: [], fetcher: fetcher))?.0 ?? false
             if !valid {
                 let fullValid = try await verifyTipFrontier(tip)
-                if !fullValid { throw SyncError.invalidStateRoot(tip.index) }
+                if !fullValid { throw SyncError.invalidStateRoot(tip.height) }
             }
         }
 
         var collected = walk.collected
         collected.reverse()
-        let targetHeight = collected.last?.index ?? 0
+        let targetHeight = collected.last?.height ?? 0
         await progress?(targetHeight + 1, targetHeight + 1)
 
         return buildResult(from: collected, cumulativeWork: walk.cumulativeWork)
@@ -214,10 +214,10 @@ public actor ChainSyncer {
         if walk.cumulativeWork < localCumulativeWork { throw SyncError.insufficientWork }
 
         if let tip = walk.tipBlock {
-            let valid = (try? await tip.validateFrontierState(transactionBodies: [], fetcher: fetcher))?.0 ?? false
+            let valid = (try? await tip.validatePostState(transactionBodies: [], fetcher: fetcher))?.0 ?? false
             if !valid {
                 let fullValid = try await verifyTipFrontier(tip)
-                if !fullValid { throw SyncError.invalidStateRoot(tip.index) }
+                if !fullValid { throw SyncError.invalidStateRoot(tip.height) }
             }
         }
 
@@ -234,49 +234,49 @@ public actor ChainSyncer {
             return false
         }
         let bodies = txKeysAndValues.values.compactMap { $0.node?.body.node }
-        return try await block.validateFrontierState(transactionBodies: bodies, fetcher: fetcher).0
+        return try await block.validatePostState(transactionBodies: bodies, fetcher: fetcher).0
     }
 
     // MARK: - Build Result
 
     private func buildResult(
-        from blocks: [(hash: String, index: UInt64, prevHash: String?)],
+        from blocks: [(hash: String, height: UInt64, prevHash: String?)],
         cumulativeWork: UInt256 = UInt256.zero
     ) -> SyncResult {
-        let tipIndex = blocks.last!.index
-        let cutoff: UInt64 = tipIndex > retentionDepth
-            ? tipIndex - retentionDepth
+        let tipHeight = blocks.last!.height
+        let cutoff: UInt64 = tipHeight > retentionDepth
+            ? tipHeight - retentionDepth
             : 0
 
         var persistedBlocks: [PersistedBlockMeta] = []
         var mainChainHashes: [String] = []
 
         var childMap: [String: [String]] = [:]
-        for entry in blocks where entry.index >= cutoff {
+        for entry in blocks where entry.height >= cutoff {
             if let prevHash = entry.prevHash {
                 childMap[prevHash, default: []].append(entry.hash)
             }
         }
 
-        for entry in blocks where entry.index >= cutoff {
+        for entry in blocks where entry.height >= cutoff {
             persistedBlocks.append(PersistedBlockMeta(
                 blockHash: entry.hash,
-                previousBlockHash: entry.prevHash,
-                blockIndex: entry.index,
+                parentBlockHash: entry.prevHash,
+                blockHeight: entry.height,
                 parentChainBlocks: [:],
-                childBlockHashes: childMap[entry.hash] ?? []
+                childHashes: childMap[entry.hash] ?? []
             ))
             mainChainHashes.append(entry.hash)
         }
 
         let persisted = PersistedChainState(
             chainTip: blocks.last!.hash,
-            tipFrontierCID: nil,
-            tipHomesteadCID: nil,
+            tipPostStateCID: nil,
+            tipPrevStateCID: nil,
             tipSpecCID: nil,
             tipDifficulty: nil,
             tipNextDifficulty: nil,
-            tipIndex: nil,
+            tipHeight: nil,
             tipTimestamp: nil,
             mainChainHashes: mainChainHashes,
             blocks: persistedBlocks,
@@ -287,7 +287,7 @@ public actor ChainSyncer {
         return SyncResult(
             persisted: persisted,
             tipBlockHash: blocks.last!.hash,
-            tipBlockIndex: tipIndex,
+            tipBlockIndex: tipHeight,
             cumulativeWork: cumulativeWork
         )
     }

@@ -235,7 +235,7 @@ enum RPCRoutes {
         let tip = await chain.getMainChainTip()
         let s = await chain.tipSnapshot
         struct R: Encodable { let hash: String; let index: UInt64?; let timestamp: Int64?; let difficulty: String?; let chain: String }
-        return json(R(hash: tip, index: s?.index, timestamp: s?.timestamp, difficulty: s?.difficulty.toHexString(), chain: dir))
+        return json(R(hash: tip, index: s?.tipHeight, timestamp: s?.timestamp, difficulty: s?.difficulty.toHexString(), chain: dir))
     }
 
     static func getBlock(node: LatticeNode, id: String, request: Request) async throws -> Response {
@@ -256,7 +256,7 @@ enum RPCRoutes {
         let header = VolumeImpl<Block>(rawCID: h)
         guard let b = try? await header.resolve(fetcher: network.ivyFetcher).node else { return jsonError("Block not found", status: .notFound) }
         let txCount = (try? await b.transactions.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
-        let childCount = (try? await b.childBlocks.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
+        let childCount = (try? await b.children.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
         struct R: Encodable {
             let hash: String; let index: UInt64; let timestamp: Int64
             let previousBlock: String?; let difficulty: String; let nextDifficulty: String
@@ -267,13 +267,13 @@ enum RPCRoutes {
             let chain: String
         }
         return json(R(
-            hash: h, index: b.index, timestamp: b.timestamp,
-            previousBlock: b.previousBlock?.rawCID,
+            hash: h, index: b.height, timestamp: b.timestamp,
+            previousBlock: b.parent?.rawCID,
             difficulty: b.difficulty.toHexString(), nextDifficulty: b.nextDifficulty.toHexString(),
             nonce: b.nonce, version: b.version,
-            transactionsCID: b.transactions.rawCID, homesteadCID: b.homestead.rawCID,
-            frontierCID: b.frontier.rawCID, parentHomesteadCID: b.parentHomestead.rawCID,
-            specCID: b.spec.rawCID, childBlocksCID: b.childBlocks.rawCID,
+            transactionsCID: b.transactions.rawCID, homesteadCID: b.prevState.rawCID,
+            frontierCID: b.postState.rawCID, parentHomesteadCID: b.parentState.rawCID,
+            specCID: b.spec.rawCID, childBlocksCID: b.children.rawCID,
             transactionCount: txCount, childBlockCount: childCount,
             chain: dir
         ))
@@ -320,7 +320,7 @@ enum RPCRoutes {
         guard let network = await node.network(for: dir) else { return jsonError("Unknown chain: \(dir)", status: .notFound) }
         let block = try await resolveBlock(id: id, dir: dir, node: node, fetcher: network.ivyFetcher)
         guard let b = block else { return jsonError("Block not found", status: .notFound) }
-        guard let cbNode = try? await b.childBlocks.resolve(paths: [[""]: .list], fetcher: network.ivyFetcher).node else {
+        guard let cbNode = try? await b.children.resolve(paths: [[""]: .list], fetcher: network.ivyFetcher).node else {
             struct R: Encodable { let children: [String]; let count: Int }
             return json(R(children: [], count: 0))
         }
@@ -338,7 +338,7 @@ enum RPCRoutes {
             let txCount = (try? await childBlock.transactions.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
             children.append(ChildEntry(
                 directory: key, blockHash: blockHeader.rawCID,
-                index: childBlock.index, timestamp: childBlock.timestamp,
+                index: childBlock.height, timestamp: childBlock.timestamp,
                 difficulty: childBlock.difficulty.toHexString(),
                 transactionCount: txCount
             ))
@@ -713,9 +713,9 @@ enum RPCRoutes {
         guard let chain = await node.chain(for: dir) else {
             return jsonError("Chain not found: \(dir)", status: .notFound)
         }
-        let height = await chain.getHighestBlockIndex()
+        let height = await chain.getHighestBlockHeight()
         let tip = await chain.getMainChainTip()
-        let stateRoot = (await chain.tipSnapshot)?.frontierCID ?? ""
+        let stateRoot = (await chain.tipSnapshot)?.postStateCID ?? ""
         let (balance, nonce) = try await node.getAccount(address: address, directory: dir)
 
         let proof = await LightClientProtocol.buildAccountProof(
@@ -763,7 +763,7 @@ enum RPCRoutes {
                 return jsonError("Block not found", status: .notFound)
             }
             blockHash = explicitHash
-            blockHeight = b.index
+            blockHeight = b.height
             blockTimestamp = b.timestamp
         } else {
             guard let store = await node.stateStore(for: dir) else {
@@ -864,7 +864,7 @@ enum RPCRoutes {
         guard let chainState = await node.chain(for: dir) else {
             return jsonError("Chain not found: \(dir)", status: .notFound)
         }
-        let currentHeight = await chainState.getHighestBlockIndex()
+        let currentHeight = await chainState.getHighestBlockHeight()
         let finality = await node.config.finality
         let isFinal = finality.isFinal(chain: dir, blockHeight: blockHeight, currentHeight: currentHeight)
         let confirmations = currentHeight >= blockHeight ? currentHeight - blockHeight : 0
@@ -928,7 +928,7 @@ enum RPCRoutes {
         guard let chainState = await node.chain(for: dir) else {
             return jsonError("Chain not found", status: .notFound)
         }
-        let height = await chainState.getHighestBlockIndex()
+        let height = await chainState.getHighestBlockHeight()
         let tip = await chainState.getMainChainTip()
         let stateRoot = store.getChainTip() ?? ""
         struct R: Encodable {
@@ -947,7 +947,7 @@ enum RPCRoutes {
         }
 
         // Resolve the frontier (post-block state) to get sub-tree CIDs
-        let state = try? await block.frontier.resolve(fetcher: network.ivyFetcher).node
+        let state = try? await block.postState.resolve(fetcher: network.ivyFetcher).node
 
         struct StateSection: Encodable { let name: String; let cid: String }
         var sections: [StateSection] = []
@@ -968,9 +968,9 @@ enum RPCRoutes {
         }
         return json(R(
             blockHash: VolumeImpl<Block>(node: block).rawCID,
-            blockHeight: block.index,
-            homesteadCID: block.homestead.rawCID,
-            frontierCID: block.frontier.rawCID,
+            blockHeight: block.height,
+            homesteadCID: block.prevState.rawCID,
+            frontierCID: block.postState.rawCID,
             sections: sections,
             chain: dir
         ))
@@ -984,7 +984,7 @@ enum RPCRoutes {
         }
 
         // Resolve the frontier's account state with targeted path for this address
-        guard let state = try? await block.frontier.resolve(fetcher: network.ivyFetcher).node else {
+        guard let state = try? await block.postState.resolve(fetcher: network.ivyFetcher).node else {
             return jsonError("Failed to resolve block state", status: .internalServerError)
         }
         let resolved = try? await state.accountState.resolve(paths: [[address]: .targeted], fetcher: network.ivyFetcher)
@@ -996,7 +996,7 @@ enum RPCRoutes {
         }
         return json(R(
             address: address, balance: balance, exists: balance > 0,
-            blockHeight: block.index, chain: dir
+            blockHeight: block.height, chain: dir
         ))
     }
 

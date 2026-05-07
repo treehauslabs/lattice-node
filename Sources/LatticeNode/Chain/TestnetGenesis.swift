@@ -3,29 +3,31 @@ import Foundation
 import cashew
 import UInt256
 
-public enum NexusGenesis {
+public enum TestnetGenesis {
 
     // MARK: - Premine Owner
+    //
+    // Faucet keypair — generated with `lattice-node keys generate`.
+    // Store the private key offline; it is needed to sign faucet disbursements.
+    // Private key: 19cda640794d333f4b254a9536b4608f35e10480deb216a69ead5831c95727e8
 
     public static let ownerPublicKeyHex =
-        "c01c054a190f8dbd88474fbeb2b08b3b86ecb930f458a8fd7e0ecbedca245b15" +
-        "32ae64647f29f0279bde50cb7e5c709f46536f746fc8c3a5f40a5b5315fa4efd"
+        "9d961895fbbc94b3db1742d4c8d8f04939540245c67ed9728aa832de96152dff"
 
     public static let ownerAddress = CryptoUtils.createAddress(from: ownerPublicKeyHex)
 
     // MARK: - Chain Specification
     //
-    // Economics:
-    //   initialReward        = 2^20 = 1,048,576 tokens/block
-    //   halvingInterval      = 315,576,000 blocks (~100 years at 10s blocks)
-    //   totalSupply          ≈ 2 × halvingInterval × initialReward = 661,608,843,264,000
-    //   premine              = halvingInterval / 5 = 63,115,200 blocks worth
-    //   premineAmount        = premine × initialReward = 66,160,884,326,400 (~10%)
+    // Mirrors mainnet economics at a 315× compressed timescale so halvings
+    // and supply dynamics are observable within months, not decades.
     //
-    //   targetBlockTime      = 10,000 ms (10 seconds)
-    //   maxTransactions/block = 5,000
-    //   maxStateGrowth       = 3 MB per block
-    //   maxBlockSize         = 10 MB
+    //   initialReward        = 2^20 = 1,048,576 tokens/block
+    //   halvingInterval      = 1,000,000 blocks (~115 days at 10s blocks)
+    //   totalSupply          ≈ 2 × halvingInterval × initialReward = 2,097,152,000,000
+    //   premine              = halvingInterval / 5 = 200,000 blocks worth
+    //   premineAmount        = premine × initialReward = 209,715,200,000 (~10%)
+    //
+    //   targetBlockTime      = 10,000 ms — identical to mainnet
     //   difficultyWindow     = 120 blocks (~20 minutes)
 
     public static let spec = ChainSpec(
@@ -33,24 +35,24 @@ public enum NexusGenesis {
         maxNumberOfTransactionsPerBlock: 5000,
         maxStateGrowth: 3_000_000,
         maxBlockSize: 10_000_000,
-        premine: 63_115_200,
+        premine: 200_000,
         targetBlockTime: 10_000,
         initialReward: 1_048_576,
-        halvingInterval: 315_576_000,
+        halvingInterval: 1_000_000,
         difficultyAdjustmentWindow: 120
     )
 
     // MARK: - Genesis Identity
     //
-    // The expected block hash is computed from the genesis block with the
-    // new 100-year halving economics. Set to nil to auto-compute on first run,
-    // then hardcode the result for deterministic verification.
+    // expectedBlockHash is nil until the testnet launches. Run once with nil,
+    // capture the printed genesis CID, then hardcode it so every node verifies
+    // they share the same chain.
 
     public static let expectedBlockHash: String? = nil
 
     // MARK: - Genesis Configuration
 
-    public static let genesisTimestamp: Int64 = 1_742_601_600_000
+    public static let genesisTimestamp: Int64 = 1_778_130_000_000   // 2026-05-07 00:00:00 UTC
 
     public static let config = GenesisConfig(
         spec: spec,
@@ -65,7 +67,7 @@ public enum NexusGenesis {
         return true
     }
 
-    // MARK: - Genesis Builder (for LatticeNode.init)
+    // MARK: - Genesis Builder
 
     public static func buildGenesisBlock(config: GenesisConfig, fetcher: Fetcher) async throws -> Block {
         let premineAmount = spec.premineAmount()

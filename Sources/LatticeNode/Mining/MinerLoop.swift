@@ -152,14 +152,14 @@ public actor MinerLoop {
         let nonceKey = AccountStateHeader.nonceTrackingKey(identity.address)
         // Happy path: freshly-mined block has its frontier fully resolved
         // already (BlockBuilder ran proveAndUpdateState on both paths).
-        if let frontier = tip.frontier.node,
+        if let frontier = tip.postState.node,
            let trie = frontier.accountState.node,
            (try? trie.get(key: nonceKey)) != nil || (try? trie.get(key: identity.address)) != nil {
             cachedMinerAccountTrie = trie
             return trie
         }
         // Gossip-advance or cold start: resolve both paths in one shot.
-        guard let frontierNode = try? await tip.frontier.resolve(fetcher: fetcher).node else { return nil }
+        guard let frontierNode = try? await tip.postState.resolve(fetcher: fetcher).node else { return nil }
         guard let resolved = try? await frontierNode.accountState.resolve(
             paths: [[nonceKey]: .targeted, [identity.address]: .targeted],
             fetcher: fetcher
@@ -260,7 +260,7 @@ public actor MinerLoop {
 
                 let previousBlockHash = VolumeImpl<Block>(node: previousBlock).rawCID
                 let blockTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
-                log.info("\(spec.directory): mining on tip \(String(previousBlockHash.prefix(16)))… at index \(previousBlock.index), building block \(previousBlock.index + 1)")
+                log.info("\(spec.directory): mining on tip \(String(previousBlockHash.prefix(16)))… at index \(previousBlock.height), building block \(previousBlock.height + 1)")
 
                 let maxTxCount = Int(spec.maxNumberOfTransactionsPerBlock) - 1 // reserve slot for coinbase
                 async let txAsync = mempool.selectTransactions(maxCount: max(0, maxTxCount))
@@ -288,9 +288,9 @@ public actor MinerLoop {
                 }
                 let childResult = await childResultAsync
                 let blockDifficulty = max(previousBlock.nextDifficulty, ChainSpec.minimumDifficulty)
-                let nextBlockIndex = previousBlock.index + 1
+                let nextBlockIndex = previousBlock.height + 1
                 let computedNextDifficulty: UInt256
-                if spec.isEpochBoundary(blockIndex: nextBlockIndex) {
+                if spec.isEpochBoundary(blockHeight: nextBlockIndex) {
                     let ancestorTimestamps = await Self.collectAncestorTimestamps(
                         from: previousBlock, count: spec.difficultyAdjustmentWindow, fetcher: fetcher
                     )
@@ -319,7 +319,7 @@ public actor MinerLoop {
                     template = try await BlockBuilder.buildBlock(
                         previous: previousBlock,
                         transactions: transactions,
-                        childBlocks: childResult.blocks,
+                        children: childResult.blocks,
                         timestamp: blockTimestamp,
                         difficulty: blockDifficulty,
                         nextDifficulty: computedNextDifficulty,
@@ -334,7 +334,7 @@ public actor MinerLoop {
                     template = try await BlockBuilder.buildBlock(
                         previous: previousBlock,
                         transactions: [],
-                        childBlocks: childResult.blocks,
+                        children: childResult.blocks,
                         timestamp: blockTimestamp,
                         difficulty: blockDifficulty,
                         nextDifficulty: computedNextDifficulty,
@@ -362,7 +362,7 @@ public actor MinerLoop {
                 )
                 let batchSize = self.batchSize
                 let workerCount = max(ProcessInfo.processInfo.activeProcessorCount - 1, 1)
-                log.info("\(spec.directory): nonce search started for block \(previousBlock.index + 1) (difficulty=\(String(targetDifficulty.toHexString().prefix(16)))… workers=\(workerCount) batch=\(batchSize))")
+                log.info("\(spec.directory): nonce search started for block \(previousBlock.height + 1) (difficulty=\(String(targetDifficulty.toHexString().prefix(16)))… workers=\(workerCount) batch=\(batchSize))")
 
                 while mining && !Task.isCancelled {
                     // Lock-free tip check avoids actor hop into ChainState per batch
@@ -394,7 +394,7 @@ public actor MinerLoop {
                         )
 
                         let hash = VolumeImpl<Block>(node: mined).rawCID
-                        log.info("\(spec.directory): found valid nonce \(foundNonce) for block \(mined.index), submitting \(String(hash.prefix(16)))…")
+                        log.info("\(spec.directory): found valid nonce \(foundNonce) for block \(mined.height), submitting \(String(hash.prefix(16)))…")
                         beginSubmit()
                         await submitWithTimeout(mined: mined, hash: hash, pendingRemovals: pendingRemovals, timeout: Self.submitTimeout)
                         endSubmit()
@@ -407,11 +407,11 @@ public actor MinerLoop {
                         cachedTipBlock = mined
                         cachedTipCID = hash
                         // BlockBuilder's proveAndUpdateState already resolved
-                        // the miner's account paths inside `mined.frontier`;
+                        // the miner's account paths inside `mined.postState`;
                         // extract the trie directly so the next iteration's
                         // coinbase (and any dashboard balance read) skips
                         // the fetch + resolve entirely.
-                        cachedMinerAccountTrie = mined.frontier.node?.accountState.node
+                        cachedMinerAccountTrie = mined.postState.node?.accountState.node
                         for (dir, childBlock) in childResult.allBlocksByDirectory {
                             let childCID = VolumeImpl<Block>(node: childBlock).rawCID
                             cachedChildTips[dir] = (cid: childCID, block: childBlock)
@@ -435,7 +435,7 @@ public actor MinerLoop {
         let sep: UInt8 = 0x00
         var bytes = ContiguousArray<UInt8>()
         bytes.reserveCapacity(512)
-        if let previousBlockCID = block.previousBlock?.rawCID {
+        if let previousBlockCID = block.parent?.rawCID {
             bytes.append(contentsOf: previousBlockCID.utf8)
         }
         bytes.append(sep)
@@ -447,15 +447,15 @@ public actor MinerLoop {
         bytes.append(sep)
         bytes.append(contentsOf: block.spec.rawCID.utf8)
         bytes.append(sep)
-        bytes.append(contentsOf: block.parentHomestead.rawCID.utf8)
+        bytes.append(contentsOf: block.parentState.rawCID.utf8)
         bytes.append(sep)
-        bytes.append(contentsOf: block.homestead.rawCID.utf8)
+        bytes.append(contentsOf: block.prevState.rawCID.utf8)
         bytes.append(sep)
-        bytes.append(contentsOf: block.frontier.rawCID.utf8)
+        bytes.append(contentsOf: block.postState.rawCID.utf8)
         bytes.append(sep)
-        bytes.append(contentsOf: block.childBlocks.rawCID.utf8)
+        bytes.append(contentsOf: block.children.rawCID.utf8)
         bytes.append(sep)
-        bytes.append(contentsOf: String(block.index).utf8)
+        bytes.append(contentsOf: String(block.height).utf8)
         bytes.append(sep)
         bytes.append(contentsOf: String(block.timestamp).utf8)
         bytes.append(sep)
@@ -509,7 +509,7 @@ public actor MinerLoop {
         identity: MinerIdentity,
         fetcher: Fetcher
     ) async -> UInt64? {
-        guard let frontierNode = try? await previousBlock.frontier.resolve(fetcher: fetcher).node else { return nil }
+        guard let frontierNode = try? await previousBlock.postState.resolve(fetcher: fetcher).node else { return nil }
         let nonceKey = AccountStateHeader.nonceTrackingKey(identity.address)
         guard let resolvedAccounts = try? await frontierNode.accountState.resolve(
             paths: [[nonceKey]: .targeted],
@@ -521,7 +521,7 @@ public actor MinerLoop {
     }
 
     /// Build a coinbase transaction that credits `identity.address` by
-    /// `reward + fees` for `previousBlock.index + 1` on `spec`. Callers append
+    /// `reward + fees` for `previousBlock.height + 1` on `spec`. Callers append
     /// this to the block's transaction list so the miner collects the block
     /// reward; child chains use the same helper with their own spec/fetcher.
     /// `chainPath` must equal the full nexus-to-chain path expected by
@@ -535,7 +535,7 @@ public actor MinerLoop {
         fetcher: Fetcher,
         cachedLatestNonce: UInt64? = nil
     ) async throws -> Transaction? {
-        let reward = spec.rewardAtBlock(previousBlock.index + 1)
+        let reward = spec.rewardAtBlock(previousBlock.height + 1)
         var totalFees: UInt64 = 0
         for tx in mempoolTransactions {
             guard let fee = tx.body.node?.fee else { continue }
@@ -675,12 +675,12 @@ public actor MinerLoop {
         let minerIdentity = identity
 
         // Top-level: convert the nexus tip into the "new nexus block" representation
-        // so its homestead (= tip.frontier) matches what validation will see for the
+        // so its homestead (= tip.postState) matches what validation will see for the
         // block currently being built. Grandchildren+ recurse with the already-built
         // provisional child block, which is already the "new block" — no further
         // transformation needed there.
         let nexusAsNewBlock = nexusBlock.set(properties: [
-            "homestead": nexusBlock.frontier
+            "homestead": nexusBlock.postState
         ])
 
         let subtrees = await withTaskGroup(of: BuiltSubtree?.self, returning: [BuiltSubtree].self) { group in
@@ -743,7 +743,7 @@ public actor MinerLoop {
                 guard let childTipRaw = try? await childStub.resolve(fetcher: ctx.fetcher).node else { return nil }
                 childTip = childTipRaw.set(properties: [
                     "spec": try await childTipRaw.spec.resolve(fetcher: ctx.fetcher),
-                    "frontier": try await childTipRaw.frontier.resolve(fetcher: ctx.fetcher),
+                    "frontier": try await childTipRaw.postState.resolve(fetcher: ctx.fetcher),
                 ])
             }
 
@@ -770,9 +770,9 @@ public actor MinerLoop {
             }
 
             let childDifficulty = max(childTip.nextDifficulty, ChainSpec.minimumDifficulty)
-            let childNextBlockIndex = childTip.index + 1
+            let childNextBlockIndex = childTip.height + 1
             let childNextDifficulty: UInt256
-            if ctx.spec.isEpochBoundary(blockIndex: childNextBlockIndex) {
+            if ctx.spec.isEpochBoundary(blockHeight: childNextBlockIndex) {
                 let ancestorTs = await collectAncestorTimestamps(
                     from: childTip, count: ctx.spec.difficultyAdjustmentWindow, fetcher: ctx.fetcher
                 )
@@ -796,7 +796,7 @@ public actor MinerLoop {
             // determine its frontier, then rebuild with grandchildren
             // embedded (grandchildren's `parentHomestead` comes from this
             // child's homestead, which BlockBuilder derives from its own
-            // `parentChainBlock.homestead`).
+            // `parentChainBlock.prevState`).
             var grandchildBlocks: [String: Block] = [:]
             var descendantRemovals: [(mempool: NodeMempool, txCIDs: Set<String>)] = []
             var maxDescendantDifficulty: UInt256 = .zero
@@ -880,7 +880,7 @@ public actor MinerLoop {
                 childBlock = try await BlockBuilder.buildBlock(
                     previous: childTip,
                     transactions: childTxs,
-                    childBlocks: grandchildBlocks,
+                    children: grandchildBlocks,
                     parentChainBlock: parentForChild,
                     timestamp: timestamp,
                     difficulty: childDifficulty,
@@ -927,7 +927,7 @@ public actor MinerLoop {
         var timestamps: [Int64] = [block.timestamp]
         var current = block
         for _ in 1..<count {
-            guard let prev = try? await current.previousBlock?.resolve(fetcher: fetcher).node else { break }
+            guard let prev = try? await current.parent?.resolve(fetcher: fetcher).node else { break }
             timestamps.append(prev.timestamp)
             current = prev
         }
@@ -951,16 +951,16 @@ public actor MinerLoop {
     private func withNonce(_ block: Block, startNonce: UInt64) -> Block {
         Block(
             version: block.version,
-            previousBlock: block.previousBlock,
+            parent: block.parent,
             transactions: block.transactions,
             difficulty: block.difficulty,
             nextDifficulty: block.nextDifficulty,
             spec: block.spec,
-            parentHomestead: block.parentHomestead,
-            homestead: block.homestead,
-            frontier: block.frontier,
-            childBlocks: block.childBlocks,
-            index: block.index,
+            parentState: block.parentState,
+            prevState: block.prevState,
+            postState: block.postState,
+            children: block.children,
+            height: block.height,
             timestamp: block.timestamp,
             nonce: startNonce
         )

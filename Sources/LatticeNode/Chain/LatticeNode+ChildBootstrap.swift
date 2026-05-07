@@ -21,7 +21,7 @@ extension LatticeNode {
         parentChainPath: [String],
         fetcher: Fetcher
     ) async {
-        guard let cbn = try? await parentBlock.childBlocks.resolve(
+        guard let cbn = try? await parentBlock.children.resolve(
             paths: [[""]: .list], fetcher: fetcher
         ).node,
               let dirs = try? cbn.allKeys() else { return }
@@ -69,17 +69,17 @@ extension LatticeNode {
         var parentCursorCID: String? = currentParentCID
         var parentCursorHash = currentParentBlock.getDifficultyHash()
         while let p = parentCursor, let pCID = parentCursorCID {
-            let cbn = try? await p.childBlocks.resolve(
+            let cbn = try? await p.children.resolve(
                 paths: [[""]: .list], fetcher: fetcher
             ).node
             if let cbn,
                let header: VolumeImpl<Block> = try? cbn.get(key: directory),
                let childBlock = try? await header.resolve(fetcher: fetcher).node {
-                anchorByChildHeight[childBlock.index] = AnchorEntry(
+                anchorByChildHeight[childBlock.height] = AnchorEntry(
                     parent: p, parentCID: pCID, parentHash: parentCursorHash
                 )
             }
-            guard let prevHeader = p.previousBlock,
+            guard let prevHeader = p.parent,
                   let prev = try? await prevHeader.resolve(fetcher: fetcher).node else { break }
             parentCursor = prev
             parentCursorCID = prevHeader.rawCID
@@ -87,7 +87,7 @@ extension LatticeNode {
         }
 
         // 2. Fetch the latest child header from the current parent block.
-        guard let cbn = try? await currentParentBlock.childBlocks.resolve(
+        guard let cbn = try? await currentParentBlock.children.resolve(
             paths: [[""]: .list], fetcher: fetcher
         ).node,
               let currentChildHeader: VolumeImpl<Block> = try? cbn.get(key: directory),
@@ -95,18 +95,18 @@ extension LatticeNode {
             return
         }
 
-        // 3. Walk child.previousBlock to genesis.
+        // 3. Walk child.parent to genesis.
         var history: [(header: BlockHeader, block: Block)] = [(currentChildHeader, currentChild)]
         var cursor = currentChild
-        while cursor.index > 0, let prevH = cursor.previousBlock {
+        while cursor.height > 0, let prevH = cursor.parent {
             guard let prev = try? await prevH.resolve(fetcher: fetcher).node else {
-                log.warn("\(directory): bootstrap aborted — cannot resolve child block previousBlock at height \(cursor.index)")
+                log.warn("\(directory): bootstrap aborted — cannot resolve child block previousBlock at height \(cursor.height)")
                 return
             }
             history.insert((prevH, prev), at: 0)
             cursor = prev
         }
-        guard cursor.index == 0, cursor.previousBlock == nil else {
+        guard cursor.height == 0, cursor.parent == nil else {
             log.warn("\(directory): bootstrap aborted — child chain does not terminate at genesis")
             return
         }
@@ -130,12 +130,12 @@ extension LatticeNode {
             return
         }
         for entry in history.dropFirst() {
-            guard let anchor = anchorByChildHeight[entry.block.index] else {
-                log.warn("\(directory): bootstrap deferred — missing anchor for child height \(entry.block.index) (parent history exhausted)")
+            guard let anchor = anchorByChildHeight[entry.block.height] else {
+                log.warn("\(directory): bootstrap deferred — missing anchor for child height \(entry.block.height) (parent history exhausted)")
                 return
             }
             if !entry.block.validateBlockDifficulty(nexusHash: anchor.parentHash) {
-                log.warn("\(directory): bootstrap aborted — PoW invalid at child height \(entry.block.index)")
+                log.warn("\(directory): bootstrap aborted — PoW invalid at child height \(entry.block.height)")
                 return
             }
             // ancestorSpecs for full validation: the parent's spec at the
@@ -153,7 +153,7 @@ extension LatticeNode {
                 fetcher: fetcher
             )
             if !isValid {
-                log.warn("\(directory): bootstrap aborted — structural validation failed at child height \(entry.block.index)")
+                log.warn("\(directory): bootstrap aborted — structural validation failed at child height \(entry.block.height)")
                 return
             }
         }
@@ -197,7 +197,7 @@ extension LatticeNode {
         //    is now installed, so the per-child gate falls through.
         let backfill = history.dropFirst().dropLast()
         for entry in backfill {
-            guard let anchor = anchorByChildHeight[entry.block.index] else { continue }
+            guard let anchor = anchorByChildHeight[entry.block.height] else { continue }
             await applyHistoricalChildBlockState(
                 directory: directory,
                 childBlock: entry.block,
@@ -207,7 +207,7 @@ extension LatticeNode {
             )
         }
 
-        log.info("\(directory): bootstrap complete — subscribed at height \(currentChild.index)")
+        log.info("\(directory): bootstrap complete — subscribed at height \(currentChild.height)")
     }
 
     /// Per-block state apply for historical bootstrap. Mirrors the per-child
@@ -230,7 +230,7 @@ extension LatticeNode {
         try? await childNet.diskBroker.pin(root: nexusBlockCID, owner: "validates:\(childCID)")
         if let store = stateStores[directory] {
             await store.persistValidatorPin(
-                height: childBlock.index,
+                height: childBlock.height,
                 childCID: childCID,
                 parentCID: nexusBlockCID
             )

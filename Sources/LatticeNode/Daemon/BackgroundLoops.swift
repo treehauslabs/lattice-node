@@ -23,6 +23,9 @@ func startChildDiscoveryLoop(node: LatticeNode, config: LatticeNodeConfig, baseP
                         enableLocalDiscovery: config.enableLocalDiscovery
                     )
                     try? await node.registerChainNetwork(directory: dir, config: childConfig)
+                    // Advertise the child chain's port in the nexus identify message
+                    // so peers can discover it without deterministic port calculation.
+                    await node.registerChildChainPort(directory: dir, port: port)
                     let log = NodeLogger("discovery")
                     log.info("Registered child chain: \(dir) on port \(port)")
                 }

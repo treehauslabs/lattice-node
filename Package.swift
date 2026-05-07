@@ -7,15 +7,14 @@ let package = Package(
         .macOS(.v15)
     ],
     dependencies: [
-        .package(url: "https://github.com/treehauslabs/Lattice.git", exact: "8.2.0"),
-        .package(url: "https://github.com/treehauslabs/Tally.git", from: "1.3.0"),
-        .package(url: "https://github.com/treehauslabs/Ivy.git", exact: "5.10.0"),
-        .package(url: "https://github.com/treehauslabs/VolumeBroker.git", exact: "2.3.0"),
+        .package(path: "../lattice"),
+        .package(path: "../Tally"),
+        .package(path: "../Ivy"),
+        .package(path: "../VolumeBroker"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
-        .package(url: "https://github.com/21-DOT-DEV/swift-secp256k1.git", exact: "0.23.0"),
     ],
     targets: [
         .target(
@@ -26,7 +25,7 @@ let package = Package(
             name: "LatticeNode",
             dependencies: [
                 "CSQLite",
-                .product(name: "Lattice", package: "Lattice"),
+                .product(name: "Lattice", package: "lattice"),
                 .product(name: "Tally", package: "Tally"),
                 .product(name: "Ivy", package: "Ivy"),
                 .product(name: "VolumeBroker", package: "VolumeBroker"),
@@ -34,7 +33,6 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Collections", package: "swift-collections"),
-                .product(name: "P256K", package: "swift-secp256k1"),
             ]),
         .testTarget(
             name: "LatticeNodeTests",

@@ -5,15 +5,15 @@ import Tally
 public struct ChainAnnounceData: Sendable, Equatable {
     public let protocolVersion: UInt16
     public let chainDirectory: String
-    public let tipIndex: UInt64
+    public let tipHeight: UInt64
     public let tipCID: String
     public let specCID: String
     public let capabilities: ChainCapabilities
 
-    public init(chainDirectory: String, tipIndex: UInt64, tipCID: String, specCID: String, capabilities: ChainCapabilities = .default, protocolVersion: UInt16 = LatticeProtocol.version) {
+    public init(chainDirectory: String, tipHeight: UInt64, tipCID: String, specCID: String, capabilities: ChainCapabilities = .default, protocolVersion: UInt16 = LatticeProtocol.version) {
         self.protocolVersion = protocolVersion
         self.chainDirectory = chainDirectory
-        self.tipIndex = tipIndex
+        self.tipHeight = tipHeight
         self.tipCID = tipCID
         self.specCID = specCID
         self.capabilities = capabilities
@@ -26,7 +26,7 @@ public struct ChainAnnounceData: Sendable, Equatable {
         var v1 = UInt16(chainDirectory.utf8.count).bigEndian
         buf.append(contentsOf: Swift.withUnsafeBytes(of: &v1) { Array($0) })
         buf.append(contentsOf: chainDirectory.utf8)
-        var v2 = tipIndex.bigEndian
+        var v2 = tipHeight.bigEndian
         buf.append(contentsOf: Swift.withUnsafeBytes(of: &v2) { Array($0) })
         var v3 = UInt16(tipCID.utf8.count).bigEndian
         buf.append(contentsOf: Swift.withUnsafeBytes(of: &v3) { Array($0) })
@@ -74,7 +74,7 @@ public struct ChainAnnounceData: Sendable, Equatable {
         let capRaw = data[data.startIndex + offset]
         return ChainAnnounceData(
             chainDirectory: dir,
-            tipIndex: tipIdx,
+            tipHeight: tipIdx,
             tipCID: tipCID,
             specCID: specCID,
             capabilities: ChainCapabilities(rawValue: capRaw),

@@ -9,7 +9,7 @@ public struct MinerIdentity: Sendable {
     public init(publicKeyHex: String, privateKeyHex: String) {
         self.publicKeyHex = publicKeyHex
         self.privateKeyHex = privateKeyHex
-        self.address = HeaderImpl<PublicKey>(node: PublicKey(key: publicKeyHex)).rawCID
+        self.address = CryptoUtils.createAddress(from: publicKeyHex)
     }
 }
 

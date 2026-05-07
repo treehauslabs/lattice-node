@@ -6,7 +6,7 @@ import cashew
 /// trie resolution during bursts of transaction validation against the
 /// same chain tip. Keyed by frontier CID — automatically invalidated
 /// when the chain advances to a new block.
-public actor FrontierCache {
+public actor PostStateCache {
     private var cachedCID: String?
     private var cachedState: LatticeState?
 

@@ -54,11 +54,11 @@ struct DiagCommand: AsyncParsableCommand {
         print("4. Block field CIDs:")
         print("   transactions:    \(block.transactions.rawCID)")
         print("   spec:            \(block.spec.rawCID)")
-        print("   parentHomestead: \(block.parentHomestead.rawCID)")
-        print("   homestead:       \(block.homestead.rawCID)")
-        print("   frontier:        \(block.frontier.rawCID)")
-        print("   childBlocks:     \(block.childBlocks.rawCID)")
-        print("   previousBlock:   \(block.previousBlock?.rawCID ?? "nil")\n")
+        print("   parentHomestead: \(block.parentState.rawCID)")
+        print("   homestead:       \(block.prevState.rawCID)")
+        print("   frontier:        \(block.postState.rawCID)")
+        print("   childBlocks:     \(block.children.rawCID)")
+        print("   previousBlock:   \(block.parent?.rawCID ?? "nil")\n")
 
         // 6. Full block JSON and CID
         let blockJSON = block.toData().flatMap { String(data: $0, encoding: .utf8) } ?? "ERROR"

@@ -42,8 +42,8 @@ struct QueryCommand: AsyncParsableCommand {
 
         switch command {
         case "height":
-            if let highest = state.blocks.max(by: { $0.blockIndex < $1.blockIndex }) {
-                print("\(highest.blockIndex)")
+            if let highest = state.blocks.max(by: { $0.blockHeight < $1.blockHeight }) {
+                print("\(highest.blockHeight)")
             } else {
                 print("0")
             }
@@ -52,14 +52,14 @@ struct QueryCommand: AsyncParsableCommand {
             print(state.chainTip)
 
         case "blocks":
-            let sorted = state.blocks.sorted(by: { $0.blockIndex < $1.blockIndex })
+            let sorted = state.blocks.sorted(by: { $0.blockHeight < $1.blockHeight })
             let limit = expression.count > 1 ? (Int(expression[1]) ?? 20) : 20
             let blocks = sorted.suffix(limit)
             printHeader("Blocks (last \(blocks.count))")
             for block in blocks {
                 let hash = String(block.blockHash.prefix(24)) + "..."
-                let prev = block.previousBlockHash.map { String($0.prefix(12)) + "..." } ?? "genesis"
-                print("  #\(block.blockIndex)  \(hash)  prev=\(prev)")
+                let prev = block.parentBlockHash.map { String($0.prefix(12)) + "..." } ?? "genesis"
+                print("  #\(block.blockHeight)  \(hash)  prev=\(prev)")
             }
 
         case "balance":

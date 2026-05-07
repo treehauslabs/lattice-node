@@ -40,19 +40,19 @@ struct StatusCommand: AsyncParsableCommand {
             printKeyValue("Missing Blocks", "\(state.missingBlockHashes.count)")
         }
 
-        if let highest = state.blocks.max(by: { $0.blockIndex < $1.blockIndex }) {
-            printKeyValue("Height", "\(highest.blockIndex)")
+        if let highest = state.blocks.max(by: { $0.blockHeight < $1.blockHeight }) {
+            printKeyValue("Height", "\(highest.blockHeight)")
         }
 
         print("")
 
         if state.blocks.count > 0 {
-            let recent = state.blocks.sorted(by: { $0.blockIndex > $1.blockIndex }).prefix(5)
+            let recent = state.blocks.sorted(by: { $0.blockHeight > $1.blockHeight }).prefix(5)
             print("  \(Style.bold)Recent blocks:\(Style.reset)")
             for block in recent {
                 let hash = String(block.blockHash.prefix(20)) + "..."
-                let children = block.childBlockHashes.isEmpty ? "" : " children=\(block.childBlockHashes.count)"
-                print("    #\(block.blockIndex) \(Style.dim)\(hash)\(children)\(Style.reset)")
+                let children = block.childHashes.isEmpty ? "" : " children=\(block.childHashes.count)"
+                print("    #\(block.blockHeight) \(Style.dim)\(hash)\(children)\(Style.reset)")
             }
         }
     }

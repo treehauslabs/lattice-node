@@ -238,11 +238,11 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
         let fee = await ivy.config.relayFee * 3
         let expiry = UInt64(Date().timeIntervalSince1970) + 86400
 
-        let frontierCID = block.frontier.rawCID
+        let frontierCID = block.postState.rawCID
         if !frontierCID.isEmpty {
             await announce(cid: frontierCID, expiry: expiry, fee: fee)
         }
-        let homesteadCID = block.homestead.rawCID
+        let homesteadCID = block.prevState.rawCID
         if !homesteadCID.isEmpty {
             await announce(cid: homesteadCID, expiry: expiry, fee: fee)
         }
@@ -252,7 +252,7 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
             await announce(cid: txCID, expiry: expiry, fee: fee)
         }
 
-        let childCID = block.childBlocks.rawCID
+        let childCID = block.children.rawCID
         if !childCID.isEmpty {
             await announce(cid: childCID, expiry: expiry, fee: fee)
         }
@@ -280,7 +280,7 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
 
         // Announce Volume boundaries so state/tx subtrees are discoverable
         if let block = Block(data: data) {
-            let frontierCID = block.frontier.rawCID
+            let frontierCID = block.postState.rawCID
             if !frontierCID.isEmpty {
                 await announce(cid: frontierCID, expiry: expiry, fee: fee)
             }
@@ -344,10 +344,10 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
     // MARK: - Chain Announce (Tip Exchange)
 
     /// Send our chain tip to a specific peer so they can discover they're behind.
-    public func sendChainAnnounce(to peer: PeerID, tipCID: String, tipIndex: UInt64, specCID: String) async {
+    public func sendChainAnnounce(to peer: PeerID, tipCID: String, tipHeight: UInt64, specCID: String) async {
         let announce = ChainAnnounceData(
             chainDirectory: directory,
-            tipIndex: tipIndex,
+            tipHeight: tipHeight,
             tipCID: tipCID,
             specCID: specCID
         )
@@ -355,10 +355,10 @@ public actor ChainNetwork: IvyDelegate, IvyDataSource {
     }
 
     /// Broadcast our chain tip to all connected peers.
-    public func broadcastChainAnnounce(tipCID: String, tipIndex: UInt64, specCID: String) async {
+    public func broadcastChainAnnounce(tipCID: String, tipHeight: UInt64, specCID: String) async {
         let announce = ChainAnnounceData(
             chainDirectory: directory,
-            tipIndex: tipIndex,
+            tipHeight: tipHeight,
             tipCID: tipCID,
             specCID: specCID
         )

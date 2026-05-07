@@ -90,6 +90,9 @@ struct NodeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Password for encrypting/decrypting the node private key")
     var keyPassword: String?
 
+    @Flag(name: .long, help: "Connect to the Lattice testnet instead of mainnet")
+    var testnet: Bool = false
+
     func run() async throws {
         #if canImport(Darwin)
         setbuf(Darwin.stdout, nil)
@@ -120,6 +123,7 @@ struct NodeCommand: AsyncParsableCommand {
         var effectiveFinalityConfirmations = finalityConfirmations
         var effectiveFinalityPolicy = finalityPolicy
         var effectiveKeyPassword = keyPassword
+        var effectiveTestnet = testnet
 
         if let configPath = config {
             let configURL = URL(fileURLWithPath: configPath)
@@ -144,6 +148,7 @@ struct NodeCommand: AsyncParsableCommand {
                 if let v = json["autosize"] as? Bool { effectiveAutosize = v }
                 if let v = json["finalityConfirmations"] as? Int { effectiveFinalityConfirmations = UInt64(v) }
                 if let v = json["keyPassword"] as? String { effectiveKeyPassword = v }
+                if let v = json["testnet"] as? Bool { effectiveTestnet = v }
                 if let peers = json["peers"] as? [String] { effectivePeer = peers }
                 if let chains = json["mine"] as? [String] { effectiveMine = chains }
                 if let subs = json["subscribe"] as? [String] { effectiveSubscribe = subs }
@@ -151,6 +156,11 @@ struct NodeCommand: AsyncParsableCommand {
             } else {
                 print("  WARNING: Could not load config file: \(configPath)")
             }
+        }
+
+        let defaultDataDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lattice").path
+        if effectiveTestnet && effectiveDataDir == defaultDataDir {
+            effectiveDataDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lattice-testnet").path
         }
 
         let dataDirURL = URL(fileURLWithPath: effectiveDataDir)
@@ -216,6 +226,7 @@ struct NodeCommand: AsyncParsableCommand {
             print("  Lattice Node v\(LatticeNodeVersion) (protocol \(ProtocolVersion))")
             print("  ============")
         }
+        print("  Network:     \(effectiveTestnet ? "TESTNET" : "mainnet")")
         print("  Public key:  \(String(identity.publicKey.prefix(32)))...")
         print("  Data dir:    \(dataDirURL.path)")
         print("  Listen port: \(effectivePort)")
@@ -245,9 +256,10 @@ struct NodeCommand: AsyncParsableCommand {
             print("  Mine batch:  \(resources.miningBatchSize)")
         }
 
-        var allPeers = await loadPeers(dataDirURL: dataDirURL, bootstrapPeers: bootstrapPeers)
+        let fallbackPeers = effectiveTestnet ? BootstrapPeers.testnet : BootstrapPeers.nexus
+        var allPeers = await loadPeers(dataDirURL: dataDirURL, bootstrapPeers: bootstrapPeers, fallbackPeers: fallbackPeers)
         if !effectiveNoDnsSeeds {
-            let dnsResolved = await DNSSeeds.resolve()
+            let dnsResolved = effectiveTestnet ? await DNSSeeds.resolveTestnet() : await DNSSeeds.resolve()
             if !dnsResolved.isEmpty {
                 let existingKeys = Set(allPeers.map { $0.publicKey })
                 for peer in dnsResolved where !existingKeys.contains(peer.publicKey) {
@@ -292,15 +304,19 @@ struct NodeCommand: AsyncParsableCommand {
             evictionInterval: .seconds(evictionSeconds)
         )
 
+        let genesisConfig = effectiveTestnet ? TestnetGenesis.config : NexusGenesis.config
+
         let node = try await LatticeNode(
             config: nodeConfig,
-            genesisConfig: NexusGenesis.config,
-            genesisBuilder: NexusGenesis.buildGenesisBlock
+            genesisConfig: genesisConfig,
+            genesisBuilder: effectiveTestnet ? TestnetGenesis.buildGenesisBlock : NexusGenesis.buildGenesisBlock
         )
 
-        guard NexusGenesis.verifyGenesis(node.genesisResult) else {
+        let expectedHash = effectiveTestnet ? TestnetGenesis.expectedBlockHash : NexusGenesis.expectedBlockHash
+        let genesisOk = effectiveTestnet ? TestnetGenesis.verifyGenesis(node.genesisResult) : NexusGenesis.verifyGenesis(node.genesisResult)
+        guard genesisOk else {
             print("  FATAL: Genesis block hash mismatch!")
-            print("  Expected: \(NexusGenesis.expectedBlockHash ?? "nil")")
+            print("  Expected: \(expectedHash ?? "nil")")
             print("  Got:      \(node.genesisResult.blockHash)")
             print("  This binary may be incompatible with the network.")
             throw ExitCode.failure
@@ -324,7 +340,7 @@ struct NodeCommand: AsyncParsableCommand {
                         guard let _ = try? await bodyHeader.resolve(fetcher: network.fetcher).node else { continue }
                         let tx = Transaction(signatures: serialized.signatures, body: bodyHeader)
                         switch await node.admitToMempool(transaction: tx, directory: nexusDir) {
-                        case .added, .addedPending, .replacedExisting: restored += 1
+                        case .added, .replacedExisting: restored += 1
                         case .rejected: break
                         }
                     }
@@ -333,7 +349,7 @@ struct NodeCommand: AsyncParsableCommand {
                 mempoolLoader.delete()
             }
 
-            let genesisHeight = await node.lattice.nexus.chain.getHighestBlockIndex()
+            let genesisHeight = await node.lattice.nexus.chain.getHighestBlockHeight()
             print("  Chain height: \(genesisHeight)")
         }
         print()
@@ -450,10 +466,10 @@ private func configureResources(_ args: NodeArgs) -> NodeResourceConfig {
     )
 }
 
-private func loadPeers(dataDirURL: URL, bootstrapPeers: [PeerEndpoint]) async -> [PeerEndpoint] {
+private func loadPeers(dataDirURL: URL, bootstrapPeers: [PeerEndpoint], fallbackPeers: [PeerEndpoint] = BootstrapPeers.nexus) async -> [PeerEndpoint] {
     var allPeers = bootstrapPeers
     if allPeers.isEmpty {
-        allPeers = BootstrapPeers.nexus
+        allPeers = fallbackPeers
     }
     let peerStore = PeerStore(dataDir: dataDirURL)
     let savedPeers = await peerStore.load()

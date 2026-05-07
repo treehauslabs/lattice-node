@@ -5,7 +5,7 @@ import UInt256
 
 public struct SyncBlockHeader: Sendable {
     public let cid: String
-    public let index: UInt64
+    public let height: UInt64
     public let previousBlockCID: String?
     public let difficulty: UInt256
     public let timestamp: Int64
@@ -54,7 +54,7 @@ public actor HeaderChain {
             }
 
             if targetHeight == nil {
-                targetHeight = block.index
+                targetHeight = block.height
             }
 
             let diffHash = block.getDifficultyHash()
@@ -67,18 +67,18 @@ public actor HeaderChain {
 
             let header = SyncBlockHeader(
                 cid: currentCID,
-                index: block.index,
-                previousBlockCID: block.previousBlock?.rawCID,
+                height: block.height,
+                previousBlockCID: block.parent?.rawCID,
                 difficulty: block.difficulty,
                 timestamp: block.timestamp
             )
             headers.append(header)
 
             if let th = targetHeight {
-                await progress?(th - block.index, th)
+                await progress?(th - block.height, th)
             }
 
-            guard let prevCID = block.previousBlock?.rawCID else {
+            guard let prevCID = block.parent?.rawCID else {
                 break
             }
 
