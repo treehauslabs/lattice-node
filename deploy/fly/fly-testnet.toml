@@ -1,0 +1,45 @@
+# Fly.io config for a Lattice testnet mining node.
+#
+# Uses the pre-built image from CI — local path deps in Package.swift
+# mean Dockerfile builds don't work on Fly.io directly.
+
+app = "lattice-testnet-REPLACE"
+primary_region = "REPLACE"
+
+[build]
+  image = "ghcr.io/treehauslabs/lattice-node:main"
+
+[mounts]
+  source = "lattice_data"
+  destination = "/data"
+
+[processes]
+  app = "--testnet --mine Nexus --port 4001 --rpc-port 8080 --rpc-bind 0.0.0.0 --rpc-allowed-origin * --data-dir /data --memory 0.128 --disk 1.0 --mempool 32 --mining-batch 10000"
+
+[[services]]
+  internal_port = 4001
+  protocol = "tcp"
+  processes = ["app"]
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 4001
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  processes = ["app"]
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "1gb"
