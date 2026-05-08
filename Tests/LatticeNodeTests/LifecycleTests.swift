@@ -18,8 +18,16 @@ import FoundationNetworking
 ///   - Node restart preserves chain state and CAS data
 ///   - Graceful shutdown persists all stores
 ///   - Block state endpoint resolves account balances at a block
+/// Skipped in CI — boots real nodes with mining, takes 60+ min on hosted runners.
 
 final class LifecycleTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(
+            ProcessInfo.processInfo.environment["CI"] == "true",
+            "Lifecycle tests skipped in CI (real nodes + mining, 60+ min)"
+        )
+    }
 
     // MARK: - Helpers
 
