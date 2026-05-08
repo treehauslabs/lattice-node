@@ -12,10 +12,18 @@ import FoundationNetworking
 
 /// Real-network integration tests: two LatticeNode instances with real Ivy TCP connections.
 /// These test the actual deployment flow: node boot, peer discovery, block propagation, and sync.
+/// Skipped in CI — real TCP peer discovery takes 40+ minutes on hosted runners.
 
 // Helpers in TestHelpers.swift: nextTestPort(), testSpec(), testGenesis()
 
 final class NetworkIntegrationTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(
+            ProcessInfo.processInfo.environment["CI"] == "true",
+            "Network integration tests skipped in CI (require real TCP, take 40+ min)"
+        )
+    }
 
     /// Two nodes boot from the same genesis, connect over real TCP, verify peer discovery
     func testTwoNodesBootAndConnect() async throws {
