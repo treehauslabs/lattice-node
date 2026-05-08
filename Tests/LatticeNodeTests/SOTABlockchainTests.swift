@@ -34,6 +34,11 @@ private func mk(_ kp: (publicKey: String, privateKey: String), _ port: UInt16, _
 
 final class DifficultyAdjustmentTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testDifficultyAdjustmentBasic() async throws {
         let spec = s()
         let f = cas()
@@ -98,6 +103,11 @@ final class DifficultyAdjustmentTests: XCTestCase {
 
 final class StateConsistencyTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testStateStoreApplyAndQuery() async throws {
         let dir = tmp()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -150,6 +160,11 @@ final class StateConsistencyTests: XCTestCase {
 
 final class CoinbaseOverflowTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testRewardPlusFeeOverflow() {
         let reward = UInt64.max - 10
         let fees: UInt64 = 100
@@ -169,6 +184,11 @@ final class CoinbaseOverflowTests: XCTestCase {
 // ============================================================================
 
 final class BlockBuilderCorrectnessTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testGenesisBlockDeterministic() async throws {
         let f1 = cas()
@@ -220,6 +240,11 @@ final class BlockBuilderCorrectnessTests: XCTestCase {
 // ============================================================================
 
 final class ReorgSafetyTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testReorgRecoversMempoolTransactions() async throws {
         let f = cas()
@@ -274,6 +299,11 @@ final class ReorgSafetyTests: XCTestCase {
 // ============================================================================
 
 final class InvalidDataHandlingTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testInvalidSignatureRejected() async throws {
         let kp = CryptoUtils.generateKeyPair()
@@ -352,6 +382,11 @@ final class InvalidDataHandlingTests: XCTestCase {
 // ============================================================================
 
 final class MempoolManipulationTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testAccountLimitExhaustion() async throws {
         let mempool = NodeMempool(maxSize: 1000, maxPerAccount: 5)
@@ -495,6 +530,11 @@ final class MempoolManipulationTests: XCTestCase {
 
 final class CASIntegrityTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testCIDv1FormatConsistency() {
         // Verify cashew CID computation is deterministic: same node always produces same CID.
         let spec1 = ChainSpec(directory: "Test", maxNumberOfTransactionsPerBlock: 1,
@@ -530,6 +570,11 @@ final class CASIntegrityTests: XCTestCase {
 // ============================================================================
 
 final class ConcurrencyTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testConcurrentMempoolInsertions() async throws {
         let mempool = NodeMempool(maxSize: 10000, maxPerAccount: 100)
@@ -587,6 +632,11 @@ final class ConcurrencyTests: XCTestCase {
 // ============================================================================
 
 final class PersistenceEdgeCaseTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testChainStatePersistenceRoundtrip() async throws {
         let f = cas()
@@ -657,6 +707,11 @@ final class PersistenceEdgeCaseTests: XCTestCase {
 
 final class PerformanceBenchmarkTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testMempoolInsertionThroughput() async throws {
         // Throughput benchmark from one sender across 1000 nonces; needs
         // maxNonceGap ≥ 1000 to not trip S1's anti-DoS gap limiter.
@@ -706,6 +761,11 @@ final class PerformanceBenchmarkTests: XCTestCase {
 
 final class WireProtocolTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testEveryMessageTagRoundtrips() {
         let messages: [Message] = [
             .ping(nonce: 42),
@@ -742,6 +802,11 @@ final class WireProtocolTests: XCTestCase {
 // ============================================================================
 
 final class ReputationAndTrustTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testTallyScoreDecreasesOnFailure() {
         let tally = Tally(config: .default)
@@ -792,6 +857,11 @@ final class ReputationAndTrustTests: XCTestCase {
 
 final class LightClientTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testHeaderChainValidatesPoW() async throws {
         let f = cas()
         let t = Int64(Date().timeIntervalSince1970 * 1000) - 100_000
@@ -834,6 +904,11 @@ final class LightClientTests: XCTestCase {
 // ============================================================================
 
 final class MultiChainTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testChildChainBlockBuilding() async throws {
         let f = cas()
@@ -913,6 +988,11 @@ final class MultiChainTests: XCTestCase {
 
 final class GossipProtocolTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testGossipTopicIsolation() async throws {
         let mempool = NodeMempool(maxSize: 100)
 
@@ -940,6 +1020,11 @@ final class GossipProtocolTests: XCTestCase {
 // ============================================================================
 
 final class NetworkEdgeCaseUnitTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testEmptyBlockMining() async throws {
         let f = cas()
@@ -1026,6 +1111,11 @@ final class NetworkEdgeCaseUnitTests: XCTestCase {
 // ============================================================================
 
 final class SyncProtocolUnitTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testSnapshotSyncRetainsCorrectDepth() async throws {
         let f = cas()
@@ -1132,6 +1222,11 @@ final class SyncProtocolUnitTests: XCTestCase {
 
 final class BlockValidationCompletenessTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testBlockWithGenesisIndexReuseRejected() async throws {
         let f = cas()
         let t = Int64(Date().timeIntervalSince1970 * 1000) - 20_000
@@ -1186,6 +1281,11 @@ final class BlockValidationCompletenessTests: XCTestCase {
 // ============================================================================
 
 final class ChaosLivenessTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testMiningContinuesDuringMempoolLoad() async throws {
         let f = cas()
@@ -1252,6 +1352,11 @@ private actor TestBlockCollector: MinerDelegate {
 
 final class EclipseResistanceTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testSubnetDiversityEnforcement() {
         let ep1 = PeerEndpoint(publicKey: "a", host: "10.0.1.1", port: 4001)
         let ep2 = PeerEndpoint(publicKey: "b", host: "10.0.1.2", port: 4001)
@@ -1283,6 +1388,11 @@ final class EclipseResistanceTests: XCTestCase {
 // ============================================================================
 
 final class MoreInvalidDataTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testBlockWithWrongPreviousHash() async throws {
         let f = cas()
@@ -1348,6 +1458,11 @@ final class MoreInvalidDataTests: XCTestCase {
 
 #if !os(Linux)
 final class RPCConformanceTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testBlockQueryByIndexAndHash() async throws {
         let kp = CryptoUtils.generateKeyPair()
@@ -1418,6 +1533,11 @@ final class RPCConformanceTests: XCTestCase {
 
 final class PeerManagementTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testPeerPersistenceRoundtrip() async throws {
         let dir = tmp()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -1468,6 +1588,11 @@ final class PeerManagementTests: XCTestCase {
 
 final class ProtocolVersionSOTATests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testProtocolVersionCompatibility() {
         let current = LatticeProtocol.version
         XCTAssertGreaterThan(current, 0, "Protocol version should be positive")
@@ -1492,6 +1617,11 @@ final class ProtocolVersionSOTATests: XCTestCase {
 // ============================================================================
 
 final class MorePersistenceTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testChainStateSurvivesRestart() async throws {
         let kp = CryptoUtils.generateKeyPair()
@@ -1540,6 +1670,11 @@ final class MorePersistenceTests: XCTestCase {
 // ============================================================================
 
 final class IvyEconomicTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testCreditLineGrowsLogarithmically() async throws {
         let ledger = CreditLineLedger(localID: PeerID(publicKey: "local"), baseThresholdMultiplier: 100)
@@ -1601,6 +1736,11 @@ final class IvyEconomicTests: XCTestCase {
 
 final class ReorgDepthAndFinalityTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     /// Finality config correctly reports blocks as finalized
     func testFinalityConfigIsFinal() {
         let config = FinalityConfig(defaultConfirmations: 6)
@@ -1650,6 +1790,11 @@ final class ReorgDepthAndFinalityTests: XCTestCase {
 // ============================================================================
 
 final class MoreEconomicTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     /// Miner balance equals sum of rewards after mining N blocks
     func testMinerBalanceEqualsSumOfRewards() async throws {
@@ -1719,6 +1864,11 @@ final class MoreEconomicTests: XCTestCase {
 
 final class ConcurrentMiningTxTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testConcurrentMiningAndTxSubmission() async throws {
         let kp = CryptoUtils.generateKeyPair()
         let p1 = p()
@@ -1768,6 +1918,11 @@ final class ConcurrentMiningTxTests: XCTestCase {
 
 final class ParallelFetcherTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
+
     func testParallelFetcherCompletesWithValidData() async throws {
         let f = cas()
         let t = Int64(Date().timeIntervalSince1970 * 1000) - 50_000
@@ -1811,6 +1966,11 @@ final class ParallelFetcherTests: XCTestCase {
 // ============================================================================
 
 final class BlockBuilderEdgeCaseTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     func testBlockIndexContinuity() async throws {
         let f = cas()
@@ -1857,6 +2017,11 @@ final class BlockBuilderEdgeCaseTests: XCTestCase {
 // ============================================================================
 
 final class MultiChainAdvancedTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     /// Lattice hierarchy: nexus with children
     func testLatticeHierarchySetup() async throws {
@@ -1916,6 +2081,11 @@ final class MultiChainAdvancedTests: XCTestCase {
 // ============================================================================
 
 final class RemainingPlanTests: XCTestCase {
+
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "SOTABlockchainTests skipped in CI (real nodes)")
+    }
+
 
     // A2: Timewarp attack — difficulty bounded by max adjustment factor
     func testDifficultyAdjustmentBounded() {

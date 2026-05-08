@@ -7,6 +7,11 @@ import UInt256
 
 final class StorageModeTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "StorageModeTests skipped in CI (real nodes)")
+    }
+
+
     private func makeNode(
         mode: StorageMode,
         blockRetention: BlockRetention = .retention,

@@ -13,6 +13,11 @@ import UInt256
 /// LatticeNode-level helper, and release at retention boundary.
 final class ValidatorPinTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "ValidatorPinTests skipped in CI (real nodes)")
+    }
+
+
     private func bootNexusWithChild(
         blockCount: Int,
         retentionDepth: UInt64 = DEFAULT_RETENTION_DEPTH

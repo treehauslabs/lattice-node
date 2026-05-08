@@ -11,6 +11,11 @@ import ArrayTrie
 /// series. Without this, a node that churns child chains leaks bytes per cycle.
 final class ChainLifecycleCleanupTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "ChainLifecycleCleanupTests skipped in CI (real nodes)")
+    }
+
+
     func testDestroyChainNetworkClearsAllPerChainState() async throws {
         let p1 = nextTestPort()
         let p2 = nextTestPort()

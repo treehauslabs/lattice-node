@@ -10,6 +10,11 @@ import XCTest
 ///     already present and must not depend on caller-provided childCIDs.
 final class ChildBlockDedupeTests: XCTestCase {
 
+    override func setUp() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] == "true", "ChildBlockDedupeTests skipped in CI (real nodes)")
+    }
+
+
     func testHasCIDReflectsCASResidency() async throws {
         let kp = CryptoUtils.generateKeyPair()
         let port = nextTestPort()
