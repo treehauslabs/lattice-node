@@ -10,7 +10,7 @@ let package = Package(
         .package(url: "https://github.com/treehauslabs/lattice.git", from: "9.0.0"),
         .package(url: "https://github.com/treehauslabs/Tally.git", from: "1.3.0"),
         .package(url: "https://github.com/treehauslabs/Ivy.git", from: "5.14.0"),
-        .package(url: "https://github.com/treehauslabs/VolumeBroker.git", from: "2.5.0"),
+        .package(url: "https://github.com/treehauslabs/VolumeBroker.git", from: "2.5.1"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
