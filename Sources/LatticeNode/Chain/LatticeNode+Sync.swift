@@ -164,7 +164,7 @@ extension LatticeNode {
                 peerTipCID: peerTipCID
             )
 
-            log.info("Sync complete: height \(result.tipBlockIndex), applying to chain...")
+            log.info("Sync complete: height \(result.tipBlockHeight), applying to chain...")
 
             await finalizeSyncResult(result, network: network, fetcher: fetcher)
 
@@ -336,7 +336,7 @@ extension LatticeNode {
         await resetChildChainsToGenesis()
         await reprocessSyncedBlocksForChildChains(persisted: result.persisted, fetcher: fetcher, network: network)
         await reconcileChildChainStatesAfterSync(persisted: result.persisted, fetcher: fetcher)
-        await verifySyncWithPeers(tipCID: result.tipBlockHash, tipHeight: result.tipBlockIndex, network: network)
+        await verifySyncWithPeers(tipCID: result.tipBlockHash, tipHeight: result.tipBlockHeight, network: network)
     }
 
     func verifySyncWithPeers(tipCID: String, tipHeight: UInt64, network: ChainNetwork) async {

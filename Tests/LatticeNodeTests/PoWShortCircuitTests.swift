@@ -51,16 +51,16 @@ final class PoWShortCircuitTests: XCTestCase {
         )
         let forged = Block(
             version: mined.version,
-            previousBlock: mined.previousBlock,
+            parent: mined.parent,
             transactions: mined.transactions,
             difficulty: UInt256(1),
             nextDifficulty: mined.nextDifficulty,
             spec: mined.spec,
-            parentHomestead: mined.parentHomestead,
-            homestead: mined.homestead,
-            frontier: mined.frontier,
-            childBlocks: mined.childBlocks,
-            index: mined.index,
+            parentState: mined.parentState,
+            prevState: mined.prevState,
+            postState: mined.postState,
+            children: mined.children,
+            height: mined.height,
             timestamp: mined.timestamp,
             nonce: mined.nonce
         )

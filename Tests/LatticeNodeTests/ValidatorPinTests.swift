@@ -57,8 +57,9 @@ final class ValidatorPinTests: XCTestCase {
         }
         let childDisk = await childNet.diskBroker
         let storer = BrokerStorer(broker: childDisk)
-        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: storer)
-        try await storer.flush()
+        let childGenesisHeader = VolumeImpl<Block>(node: childGenesis)
+        try childGenesisHeader.storeRecursively(storer: storer)
+        try await storer.flush(root: childGenesisHeader.rawCID)
         await node.applyGenesisBlock(directory: "Child", block: childGenesis)
 
         if blockCount > 0 { try await mineBlocks(blockCount, on: node) }
@@ -79,7 +80,7 @@ final class ValidatorPinTests: XCTestCase {
             XCTFail("child resources missing"); return
         }
 
-        let childHeight = await childChain.getHighestBlockIndex()
+        let childHeight = await childChain.getHighestBlockHeight()
         XCTAssertGreaterThan(childHeight, 0, "merged mining should have produced child blocks")
 
         var anyPinFound = false
@@ -122,7 +123,7 @@ final class ValidatorPinTests: XCTestCase {
             XCTFail("child resources missing"); return
         }
 
-        let childHeight = await childChain.getHighestBlockIndex()
+        let childHeight = await childChain.getHighestBlockHeight()
         XCTAssertGreaterThan(childHeight, retention,
             "need to mine past retention to exercise prune; got height \(childHeight)")
 
@@ -225,8 +226,9 @@ final class ValidatorPinTests: XCTestCase {
                 XCTFail("child net missing"); return
             }
             let storer = BrokerStorer(broker: await net.diskBroker)
-            try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: storer)
-            try await storer.flush()
+            let childGenesisHeader = VolumeImpl<Block>(node: childGenesis)
+            try childGenesisHeader.storeRecursively(storer: storer)
+            try await storer.flush(root: childGenesisHeader.rawCID)
             await n.applyGenesisBlock(directory: "Child", block: childGenesis)
         }
 
@@ -245,14 +247,14 @@ final class ValidatorPinTests: XCTestCase {
 
         try await mineBlocks(3, on: node1)
 
-        let nexusHeight1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let nexusHeight1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(nexusHeight1, 0, "node1 should have mined nexus blocks")
 
         guard let childChain1 = await node1.chain(for: "Child"),
               let childChain2 = await node2.chain(for: "Child") else {
             XCTFail("child chains missing"); return
         }
-        let childHeight1 = await childChain1.getHighestBlockIndex()
+        let childHeight1 = await childChain1.getHighestBlockHeight()
         XCTAssertGreaterThan(childHeight1, 0, "merged mining should produce child blocks on miner")
 
         // Wait for nexus AND child sync. Child sync is gated on nexus block
@@ -260,19 +262,19 @@ final class ValidatorPinTests: XCTestCase {
         // both validation walks pull state via DHT, so allow a longer window.
         let deadline = ContinuousClock.Instant.now + .seconds(15)
         while ContinuousClock.Instant.now < deadline {
-            let n2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
-            let c2 = await childChain2.getHighestBlockIndex()
+            let n2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
+            let c2 = await childChain2.getHighestBlockHeight()
             if n2 >= nexusHeight1 && c2 >= childHeight1 { break }
             try await Task.sleep(for: .milliseconds(100))
         }
-        let nexusHeight2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let nexusHeight2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight2, nexusHeight1,
             "node2 should sync the Nexus chain to node1's tip (got \(nexusHeight2)/\(nexusHeight1))")
 
         let childPeers2 = await (node2.network(for: "Child")?.ivy.connectedPeers.count) ?? 0
         XCTAssertGreaterThan(childPeers2, 0, "node2 Child network should have peered with node1")
 
-        let childHeight2 = await childChain2.getHighestBlockIndex()
+        let childHeight2 = await childChain2.getHighestBlockHeight()
         XCTAssertEqual(childHeight2, childHeight1,
             "node2 should sync the Child chain to node1's tip (got \(childHeight2)/\(childHeight1))")
 

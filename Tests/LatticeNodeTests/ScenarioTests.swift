@@ -186,7 +186,7 @@ final class ProtocolVersionTests: XCTestCase {
     func testChainAnnounceDataRoundtrip() {
         let original = ChainAnnounceData(
             chainDirectory: "Nexus",
-            tipIndex: 42,
+            tipHeight: 42,
             tipCID: "baguqeera123",
             specCID: "baguqeera456",
             capabilities: [.fullNode, .miner],
@@ -198,7 +198,7 @@ final class ProtocolVersionTests: XCTestCase {
 
         XCTAssertNotNil(deserialized)
         XCTAssertEqual(deserialized?.chainDirectory, "Nexus")
-        XCTAssertEqual(deserialized?.tipIndex, 42)
+        XCTAssertEqual(deserialized?.tipHeight, 42)
         XCTAssertEqual(deserialized?.tipCID, "baguqeera123")
         XCTAssertEqual(deserialized?.specCID, "baguqeera456")
         XCTAssertEqual(deserialized?.protocolVersion, LatticeProtocol.version)

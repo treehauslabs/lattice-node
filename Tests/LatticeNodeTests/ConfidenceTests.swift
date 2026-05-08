@@ -52,7 +52,7 @@ final class StateRootVerificationTests: XCTestCase {
         await storer2.flush(to: f)
 
         // Verify: frontier state should contain miner's balance
-        let frontier = try await block.frontier.resolve(fetcher: f)
+        let frontier = try await block.postState.resolve(fetcher: f)
         XCTAssertNotNil(frontier.node, "Frontier should be resolvable")
 
         let accounts = try await frontier.node!.accountState.resolve(fetcher: f)
@@ -63,14 +63,14 @@ final class StateRootVerificationTests: XCTestCase {
         XCTAssertEqual(UInt64(minerBalance!), reward, "Miner balance should equal block reward")
 
         // Verify: homestead should NOT contain miner's balance (pre-state)
-        let homestead = try await block.homestead.resolve(fetcher: f)
+        let homestead = try await block.prevState.resolve(fetcher: f)
         XCTAssertNotNil(homestead.node)
         let oldAccounts = try await homestead.node!.accountState.resolve(fetcher: f)
         let oldMinerBalance = try? oldAccounts.node?.get(key: minerAddr)
         XCTAssertNil(oldMinerBalance, "Homestead should not have miner balance")
 
         // Verify: block validates its own frontier
-        let (valid, _) = try await block.validateFrontierState(
+        let (valid, _) = try await block.validatePostState(
             transactionBodies: [coinbaseBody], fetcher: f
         )
         XCTAssertTrue(valid, "Block should validate its own frontier state root")
@@ -123,7 +123,7 @@ final class StateRootVerificationTests: XCTestCase {
         await bs.flush(to: f)
 
         // Verify state
-        let frontier = try await block.frontier.resolve(fetcher: f)
+        let frontier = try await block.postState.resolve(fetcher: f)
         let accts = try await frontier.node!.accountState.resolveRecursive(fetcher: f)
         let entries = try accts.node!.allKeysAndValues()
 
@@ -168,9 +168,7 @@ final class MessageFuzzTests: XCTestCase {
             .findNode(target: Data(repeating: 0xAB, count: 32), fee: 100),
             .announceBlock(cid: "blockcid"),
             .peerMessage(topic: "test", payload: Data("payload".utf8)),
-            .feeExhausted(consumed: 50),
             .pinAnnounce(rootCID: "root", publicKey: "pk", expiry: 1000, signature: Data(), fee: 5),
-            .balanceCheck(sequence: 1, balance: -50),
         ]
 
         for msg in validMessages {
@@ -192,9 +190,7 @@ final class MessageFuzzTests: XCTestCase {
             .block(cid: "bafyrei123", data: Data("blockdata".utf8)),
             .dontHave(cid: "missing"),
             .announceBlock(cid: "newblock"),
-            .feeExhausted(consumed: 42),
             .peerMessage(topic: "gossip", payload: Data("hello".utf8)),
-            .balanceCheck(sequence: 7, balance: -100),
         ]
 
         for original in messages {
@@ -379,7 +375,7 @@ final class LongChainSyncTests: XCTestCase {
         let result = try await syncer.syncSnapshot(peerTipCID: tipCID, depth: 20)
 
         XCTAssertEqual(result.tipBlockHash, tipCID)
-        XCTAssertEqual(result.tipBlockIndex, 50)
+        XCTAssertEqual(result.tipBlockHeight, 50)
         XCTAssertEqual(result.persisted.blocks.count, 20, "Snapshot should retain 20 blocks")
         XCTAssertEqual(result.persisted.mainChainHashes.count, 20)
 
@@ -388,7 +384,7 @@ final class LongChainSyncTests: XCTestCase {
         for i in 1..<hashes.count {
             let block = result.persisted.blocks[i]
             let prev = result.persisted.blocks[i - 1]
-            XCTAssertEqual(block.previousBlockHash, prev.blockHash,
+            XCTAssertEqual(block.parentBlockHash, prev.blockHash,
                 "Block \(i) should point to previous block")
         }
     }
@@ -433,13 +429,13 @@ final class LongChainSyncTests: XCTestCase {
 
         let result = try await syncer.syncFull(peerTipCID: tipCID)
 
-        XCTAssertEqual(result.tipBlockIndex, 100)
+        XCTAssertEqual(result.tipBlockHeight, 100)
         XCTAssertEqual(result.persisted.blocks.count, 101, "Should include genesis + 100 blocks")
         XCTAssertTrue(result.cumulativeWork > UInt256.zero)
 
         // Restore chain from sync result and verify it accepts new blocks
         let chain = ChainState.restore(from: result.persisted)
-        let height = await chain.getHighestBlockIndex()
+        let height = await chain.getHighestBlockHeight()
         XCTAssertEqual(height, 100)
 
         let block101 = try await BlockBuilder.buildBlock(
@@ -484,7 +480,7 @@ final class RestartResilienceTests: XCTestCase {
             )
             prev = block
         }
-        let height50 = await chain.getHighestBlockIndex()
+        let height50 = await chain.getHighestBlockHeight()
         XCTAssertEqual(height50, 50)
 
         // Persist (simulate shutdown)
@@ -494,7 +490,7 @@ final class RestartResilienceTests: XCTestCase {
         // Restore (simulate startup)
         let decoded = try JSONDecoder().decode(PersistedChainState.self, from: data)
         let restored = ChainState.restore(from: decoded)
-        let restoredHeight = await restored.getHighestBlockIndex()
+        let restoredHeight = await restored.getHighestBlockHeight()
         XCTAssertEqual(restoredHeight, 50)
         let restoredTip = await restored.getMainChainTip()
         let originalTip = await chain.getMainChainTip()
@@ -513,7 +509,7 @@ final class RestartResilienceTests: XCTestCase {
             XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend restored chain")
             prev = block
         }
-        let finalHeight = await restored.getHighestBlockIndex()
+        let finalHeight = await restored.getHighestBlockHeight()
         XCTAssertEqual(finalHeight, 60)
     }
 

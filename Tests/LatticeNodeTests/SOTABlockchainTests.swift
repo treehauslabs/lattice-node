@@ -138,8 +138,8 @@ final class StateConsistencyTests: XCTestCase {
         let b2b = try await BlockBuilder.buildBlock(previous: b1b, timestamp: t + 2000, difficulty: UInt256.max, nonce: 2, fetcher: f2)
 
         // State roots must be identical
-        XCTAssertEqual(b1a.frontier.rawCID, b1b.frontier.rawCID, "State root must be deterministic at height 1")
-        XCTAssertEqual(b2a.frontier.rawCID, b2b.frontier.rawCID, "State root must be deterministic at height 2")
+        XCTAssertEqual(b1a.postState.rawCID, b1b.postState.rawCID, "State root must be deterministic at height 1")
+        XCTAssertEqual(b2a.postState.rawCID, b2b.postState.rawCID, "State root must be deterministic at height 2")
         XCTAssertEqual(VolumeImpl<Block>(node: b2a).rawCID, VolumeImpl<Block>(node: b2b).rawCID, "Block CIDs must match")
     }
 }
@@ -194,7 +194,7 @@ final class BlockBuilderCorrectnessTests: XCTestCase {
             previous: genesis, timestamp: t - 1000, // BEFORE parent
             difficulty: UInt256.max, nonce: 1, fetcher: f
         )
-        let valid = block.validateTimestamp(previousBlock: genesis)
+        let valid = block.validateTimestamp(parent: genesis)
         XCTAssertFalse(valid, "Block with timestamp before parent should be invalid")
     }
 
@@ -245,7 +245,7 @@ final class ReorgSafetyTests: XCTestCase {
             let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header, block: block)
             prevA = block
         }
-        let heightA = await chain.getHighestBlockIndex()
+        let heightA = await chain.getHighestBlockHeight()
         XCTAssertEqual(heightA, 3)
 
         // Build chain B from genesis, longer (4 blocks) — should trigger reorg
@@ -264,7 +264,7 @@ final class ReorgSafetyTests: XCTestCase {
             prevB = block
         }
 
-        let heightB = await chain.getHighestBlockIndex()
+        let heightB = await chain.getHighestBlockHeight()
         XCTAssertEqual(heightB, 4, "Chain should have reorged to the longer fork")
     }
 }
@@ -322,11 +322,11 @@ final class InvalidDataHandlingTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: 1_000_000, difficulty: UInt256.max, fetcher: f)
         let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
 
-        let cache = FrontierCache()
-        guard let state0 = genesis.frontier.node else {
+        let cache = PostStateCache()
+        guard let state0 = genesis.postState.node else {
             XCTFail("Genesis frontier should be resolved"); return
         }
-        await cache.set(frontierCID: genesis.frontier.rawCID, state: state0)
+        await cache.set(frontierCID: genesis.postState.rawCID, state: state0)
 
         let kp = CryptoUtils.generateKeyPair()
         let address = addr(kp.publicKey)
@@ -615,8 +615,8 @@ final class PersistenceEdgeCaseTests: XCTestCase {
         let resTip = await restored.getMainChainTip()
         XCTAssertEqual(origTip, resTip)
 
-        let origH = await chain.getHighestBlockIndex()
-        let resH = await restored.getHighestBlockIndex()
+        let origH = await chain.getHighestBlockHeight()
+        let resH = await restored.getHighestBlockHeight()
         XCTAssertEqual(origH, resH)
     }
 
@@ -715,12 +715,9 @@ final class WireProtocolTests: XCTestCase {
             .findNode(target: Data(repeating: 0, count: 32), fee: 10),
             .neighbors([PeerEndpoint(publicKey: "pk", host: "1.2.3.4", port: 4001)]),
             .announceBlock(cid: "block"),
-            .feeExhausted(consumed: 50),
             .peerMessage(topic: "test", payload: Data("msg".utf8)),
-            .balanceCheck(sequence: 1, balance: -50),
             .pinAnnounce(rootCID: "root", publicKey: "pk", expiry: 1000, signature: Data(), fee: 5),
             .pinStored(rootCID: "stored"),
-            .settlementProof(txHash: "tx", amount: 100, chainId: "Nexus"),
         ]
 
         for msg in messages {
@@ -828,7 +825,7 @@ final class LightClientTests: XCTestCase {
         )
 
         XCTAssertGreaterThanOrEqual(headers.count, 20, "Should download at least 20 blocks")
-        XCTAssertEqual(headers.last?.index, 20)
+        XCTAssertEqual(headers.last?.height, 20)
     }
 }
 
@@ -850,7 +847,7 @@ final class MultiChainTests: XCTestCase {
         // Build a nexus block embedding a child block
         let block = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Payments": childGenesis],
+            children: ["Payments": childGenesis],
             timestamp: t + 1000, difficulty: UInt256.max, nonce: 1, fetcher: f
         )
 
@@ -858,7 +855,7 @@ final class MultiChainTests: XCTestCase {
         XCTAssertFalse(header.rawCID.isEmpty)
 
         // Verify child blocks CID is not empty
-        XCTAssertFalse(block.childBlocks.rawCID.isEmpty, "Block should contain child blocks")
+        XCTAssertFalse(block.children.rawCID.isEmpty, "Block should contain child blocks")
     }
 
     func testChildChainIndependentState() async throws {
@@ -885,8 +882,8 @@ final class MultiChainTests: XCTestCase {
         )
         let _ = await nexusChain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: VolumeImpl<Block>(node: b1), block: b1)
 
-        let nexusH = await nexusChain.getHighestBlockIndex()
-        let childH = await childChain.getHighestBlockIndex()
+        let nexusH = await nexusChain.getHighestBlockHeight()
+        let childH = await childChain.getHighestBlockHeight()
         XCTAssertEqual(nexusH, 1)
         XCTAssertEqual(childH, 0, "Child chain should be unaffected by parent advancement")
     }
@@ -959,7 +956,7 @@ final class NetworkEdgeCaseUnitTests: XCTestCase {
 
         let header = VolumeImpl<Block>(node: block)
         XCTAssertFalse(header.rawCID.isEmpty, "Empty block should have valid CID")
-        XCTAssertEqual(block.index, 1)
+        XCTAssertEqual(block.height, 1)
 
         // Chain should accept empty blocks
         let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
@@ -983,7 +980,7 @@ final class NetworkEdgeCaseUnitTests: XCTestCase {
                 difficulty: UInt256.max, nonce: UInt64(i), fetcher: f
             )
             let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: VolumeImpl<Block>(node: block), block: block)
-            let height = await chain.getHighestBlockIndex()
+            let height = await chain.getHighestBlockHeight()
             XCTAssertGreaterThanOrEqual(height, prevHeight, "Height should never decrease (was \(prevHeight), now \(height))")
             prevHeight = height
             prev = block
@@ -1015,7 +1012,7 @@ final class NetworkEdgeCaseUnitTests: XCTestCase {
             previous: genesis, transactions: txs,
             timestamp: t + 1000, difficulty: UInt256.max, nonce: 1, fetcher: f
         )
-        XCTAssertEqual(block.index, 1, "Block with multiple txs should build successfully")
+        XCTAssertEqual(block.height, 1, "Block with multiple txs should build successfully")
 
         // Chain should accept it
         let chain = ChainState.fromGenesis(block: genesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
@@ -1065,7 +1062,7 @@ final class SyncProtocolUnitTests: XCTestCase {
 
         let result = try await syncer.syncSnapshot(peerTipCID: tipCID, depth: 20)
 
-        XCTAssertEqual(result.tipBlockIndex, 50)
+        XCTAssertEqual(result.tipBlockHeight, 50)
         XCTAssertEqual(result.persisted.blocks.count, 20, "Snapshot should retain exactly 20 blocks")
         XCTAssertEqual(result.persisted.mainChainHashes.count, 20)
 
@@ -1073,7 +1070,7 @@ final class SyncProtocolUnitTests: XCTestCase {
         for i in 1..<result.persisted.blocks.count {
             let block = result.persisted.blocks[i]
             let prev = result.persisted.blocks[i - 1]
-            XCTAssertEqual(block.previousBlockHash, prev.blockHash, "Block \(i) should point to previous")
+            XCTAssertEqual(block.parentBlockHash, prev.blockHash, "Block \(i) should point to previous")
         }
     }
 
@@ -1112,12 +1109,12 @@ final class SyncProtocolUnitTests: XCTestCase {
 
         let result = try await syncer.syncFull(peerTipCID: tipCID)
 
-        XCTAssertEqual(result.tipBlockIndex, 30)
+        XCTAssertEqual(result.tipBlockHeight, 30)
         XCTAssertTrue(result.cumulativeWork > UInt256.zero)
 
         // Restored chain should accept new blocks
         let chain = ChainState.restore(from: result.persisted)
-        let height = await chain.getHighestBlockIndex()
+        let height = await chain.getHighestBlockHeight()
         XCTAssertEqual(height, 30)
 
         let b31 = try await BlockBuilder.buildBlock(
@@ -1143,26 +1140,26 @@ final class BlockValidationCompletenessTests: XCTestCase {
         let genesis = try await BlockBuilder.buildGenesis(spec: spec, timestamp: t, difficulty: UInt256.max, fetcher: f)
 
         // A block claiming index 0 but with a previousBlock → should be invalid
-        // The node's block reception checks this: block.index == 0 && block.previousBlock != nil
+        // The node's block reception checks this: block.height == 0 && block.parent != nil
         let fakeGenesis = Block(
             version: genesis.version,
-            previousBlock: VolumeImpl<Block>(node: genesis).rawCID.isEmpty ? nil : VolumeImpl<Block>(node: genesis),
+            parent: VolumeImpl<Block>(node: genesis).rawCID.isEmpty ? nil : VolumeImpl<Block>(node: genesis),
             transactions: genesis.transactions,
             difficulty: genesis.difficulty,
             nextDifficulty: genesis.nextDifficulty,
             spec: genesis.spec,
-            parentHomestead: genesis.parentHomestead,
-            homestead: genesis.homestead,
-            frontier: genesis.frontier,
-            childBlocks: genesis.childBlocks,
-            index: 0, // Claiming genesis index
+            parentState: genesis.parentState,
+            prevState: genesis.prevState,
+            postState: genesis.postState,
+            children: genesis.children,
+            height: 0,
             timestamp: t + 1000,
             nonce: 99
         )
 
         // This block has index=0 AND previousBlock != nil → should be rejected
-        let hasPrev = fakeGenesis.previousBlock != nil
-        let isGenesisIndex = fakeGenesis.index == 0
+        let hasPrev = fakeGenesis.parent != nil
+        let isGenesisIndex = fakeGenesis.height == 0
         XCTAssertTrue(hasPrev && isGenesisIndex, "Block should have both index=0 and previousBlock")
         // The node's reception handler rejects this pattern
     }
@@ -1506,7 +1503,7 @@ final class MorePersistenceTests: XCTestCase {
         let node1 = try await mk(kp, p1, dir.appendingPathComponent("n1"))
         try await node1.start()
         try await mineBlocks(1, on: node1)
-        let heightBefore = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let heightBefore = await node1.lattice.nexus.chain.getHighestBlockHeight()
         await node1.stop()
 
         XCTAssertGreaterThan(heightBefore, 0, "Should have mined blocks")
@@ -1515,7 +1512,7 @@ final class MorePersistenceTests: XCTestCase {
         let p2 = p()
         let node2 = try await mk(kp, p2, dir.appendingPathComponent("n1"))
         try await node2.start()
-        let heightAfter = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let heightAfter = await node2.lattice.nexus.chain.getHighestBlockHeight()
 
         XCTAssertGreaterThanOrEqual(heightAfter, heightBefore - 1, "Should resume near persisted height")
         XCTAssertGreaterThan(heightAfter, 0)
@@ -1667,7 +1664,7 @@ final class MoreEconomicTests: XCTestCase {
 
         try await mineBlocks(1, on: node)
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         let balance = try await node.getBalance(address: minerAddr)
 
         if balance > 0 && height > 0 {
@@ -1732,7 +1729,7 @@ final class ConcurrentMiningTxTests: XCTestCase {
         try await node.start()
 
         // Start mining and concurrently submit transactions
-        let startHeight = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let startHeight = await node.lattice.nexus.chain.getHighestBlockHeight()
         await node.startMining(directory: "Nexus")
 
         let submitTask = Task {
@@ -1751,14 +1748,14 @@ final class ConcurrentMiningTxTests: XCTestCase {
         }
 
         // Wait for at least 3 blocks to be mined
-        while await node.lattice.nexus.chain.getHighestBlockIndex() < startHeight + 1 {
+        while await node.lattice.nexus.chain.getHighestBlockHeight() < startHeight + 1 {
             try await Task.sleep(for: .milliseconds(10))
         }
         await submitTask.value
         await node.stopMining(directory: "Nexus")
         try await Task.sleep(for: .milliseconds(500))
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(height, 0, "Should mine blocks while processing tx submissions")
 
         await node.stop()
@@ -1821,21 +1818,21 @@ final class BlockBuilderEdgeCaseTests: XCTestCase {
         let spec = s()
 
         let genesis = try await BlockBuilder.buildGenesis(spec: spec, timestamp: t, difficulty: UInt256.max, fetcher: f)
-        XCTAssertEqual(genesis.index, 0)
+        XCTAssertEqual(genesis.height, 0)
 
         let b1 = try await BlockBuilder.buildBlock(
             previous: genesis, timestamp: t + 1000, difficulty: UInt256.max, nonce: 1, fetcher: f
         )
-        XCTAssertEqual(b1.index, 1)
+        XCTAssertEqual(b1.height, 1)
 
         let b2 = try await BlockBuilder.buildBlock(
             previous: b1, timestamp: t + 2000, difficulty: UInt256.max, nonce: 2, fetcher: f
         )
-        XCTAssertEqual(b2.index, 2)
+        XCTAssertEqual(b2.height, 2)
 
         // Verify homestead chains correctly
-        XCTAssertEqual(b1.homestead.rawCID, genesis.frontier.rawCID, "Block 1 homestead == genesis frontier")
-        XCTAssertEqual(b2.homestead.rawCID, b1.frontier.rawCID, "Block 2 homestead == block 1 frontier")
+        XCTAssertEqual(b1.prevState.rawCID, genesis.postState.rawCID, "Block 1 homestead == genesis frontier")
+        XCTAssertEqual(b2.prevState.rawCID, b1.postState.rawCID, "Block 2 homestead == block 1 frontier")
     }
 
     func testBlockPreviousBlockReference() async throws {
@@ -1844,13 +1841,13 @@ final class BlockBuilderEdgeCaseTests: XCTestCase {
         let spec = s()
 
         let genesis = try await BlockBuilder.buildGenesis(spec: spec, timestamp: t, difficulty: UInt256.max, fetcher: f)
-        XCTAssertNil(genesis.previousBlock, "Genesis should have no previous block")
+        XCTAssertNil(genesis.parent, "Genesis should have no previous block")
 
         let b1 = try await BlockBuilder.buildBlock(
             previous: genesis, timestamp: t + 1000, difficulty: UInt256.max, nonce: 1, fetcher: f
         )
-        XCTAssertNotNil(b1.previousBlock, "Non-genesis block should have previous block")
-        XCTAssertEqual(b1.previousBlock?.rawCID, VolumeImpl<Block>(node: genesis).rawCID,
+        XCTAssertNotNil(b1.parent, "Non-genesis block should have previous block")
+        XCTAssertEqual(b1.parent?.rawCID, VolumeImpl<Block>(node: genesis).rawCID,
             "Previous block CID should match genesis CID")
     }
 }
@@ -1878,10 +1875,10 @@ final class MultiChainAdvancedTests: XCTestCase {
         let dirs = await lattice.nexus.childDirectories()
         XCTAssertEqual(dirs, ["Child"])
 
-        let nexusHeight = await lattice.nexus.chain.getHighestBlockIndex()
+        let nexusHeight = await lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 0)
 
-        let childHeight = await lattice.nexus.children["Child"]?.chain.getHighestBlockIndex()
+        let childHeight = await lattice.nexus.children["Child"]?.chain.getHighestBlockHeight()
         XCTAssertEqual(childHeight, 0)
     }
 
@@ -1975,7 +1972,7 @@ final class RemainingPlanTests: XCTestCase {
         try await node.start()
         try await mineBlocks(1, on: node)
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         let balance = try await node.getBalance(address: minerAddr)
 
         // With no premine and no txs, only the miner has tokens
@@ -2005,7 +2002,7 @@ final class RemainingPlanTests: XCTestCase {
 
         let balanceAfterFirstMine = try await node.getBalance(address: minerAddr)
         guard balanceAfterFirstMine > 10 else {
-            let h = await node.lattice.nexus.chain.getHighestBlockIndex()
+            let h = await node.lattice.nexus.chain.getHighestBlockHeight()
             XCTAssertGreaterThan(h, 0)
             await node.stop()
             return

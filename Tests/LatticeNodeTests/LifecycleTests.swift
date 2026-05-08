@@ -262,7 +262,7 @@ final class LifecycleTests: XCTestCase {
         try await node1.start()
         try await mineBlocks(2, on: node1)
 
-        let heightBefore = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let heightBefore = await node1.lattice.nexus.chain.getHighestBlockHeight()
         let tipBefore = await node1.lattice.nexus.chain.getMainChainTip()
         XCTAssertGreaterThan(heightBefore, 0, "Should have mined blocks")
 
@@ -284,7 +284,7 @@ final class LifecycleTests: XCTestCase {
         let node2 = try await LatticeNode(config: config2, genesisConfig: genesis)
         try await node2.start()
 
-        let heightAfter = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let heightAfter = await node2.lattice.nexus.chain.getHighestBlockHeight()
         let tipAfter = await node2.lattice.nexus.chain.getMainChainTip()
 
         XCTAssertEqual(heightAfter, heightBefore, "Height should survive restart")
@@ -408,7 +408,7 @@ final class LifecycleTests: XCTestCase {
         let node1 = try await LatticeNode(config: config1, genesisConfig: genesis)
         try await node1.start()
         try await mineBlocks(2, on: node1)
-        let heightAfterFirstRun = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let heightAfterFirstRun = await node1.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(heightAfterFirstRun, 0)
         await node1.stop()
 
@@ -434,12 +434,12 @@ final class LifecycleTests: XCTestCase {
         let node2 = try await LatticeNode(config: config2, genesisConfig: genesis)
         try await node2.start()
 
-        let heightOnBoot = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let heightOnBoot = await node2.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertEqual(heightOnBoot, heightAfterFirstRun)
 
         // Mine 1 more block after restart — proves miner can resolve the tip and build on it
         try await mineBlocks(1, on: node2)
-        let heightAfterSecondRun = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let heightAfterSecondRun = await node2.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(heightAfterSecondRun, heightOnBoot, "Should mine on top of restored chain")
 
         await node2.stop()
@@ -468,11 +468,11 @@ final class LifecycleTests: XCTestCase {
         // Mine 1 block and force-persist so we have a baseline
         try await mineBlocks(1, on: node1)
         await node1.persistChainState(directory: "Nexus")
-        let persistedHeight = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let persistedHeight = await node1.lattice.nexus.chain.getHighestBlockHeight()
 
         // Mine 2 more blocks — these WON'T be in chain_state.json
         try await mineBlocks(2, on: node1)
-        let actualHeight = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let actualHeight = await node1.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThanOrEqual(actualHeight, persistedHeight + 2)
 
         // Simulate ungraceful shutdown: do NOT call stop().
@@ -490,12 +490,12 @@ final class LifecycleTests: XCTestCase {
         let node2 = try await LatticeNode(config: config2, genesisConfig: genesis)
         try await node2.start()
 
-        let recoveredHeight = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let recoveredHeight = await node2.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertEqual(recoveredHeight, actualHeight, "Should recover all blocks from CAS after ungraceful shutdown")
 
         // Verify can mine on top of recovered chain
         try await mineBlocks(1, on: node2)
-        let finalHeight = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let finalHeight = await node2.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(finalHeight, recoveredHeight, "Should mine on top of recovered chain")
 
         await node2.stop()
@@ -742,7 +742,7 @@ final class LifecycleTests: XCTestCase {
         // Mine a few blocks to build up miner balance
         try await mineBlocks(2, on: node)
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(height, 0, "Need mined blocks for balance")
 
         let server = RPCServer(node: node, port: rpcPort, bindAddress: "127.0.0.1", allowedOrigin: "*")
@@ -791,7 +791,7 @@ final class LifecycleTests: XCTestCase {
         // Now mine to include the tx.
         try await mineBlocks(1, on: node)
 
-        let heightAfterTx = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let heightAfterTx = await node.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(heightAfterTx, height, "Should have mined new blocks after tx submit")
 
         // Find the txCID by scanning new blocks for our bodyCID.
@@ -937,7 +937,7 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(nexus2?["mining"] as? Bool, true, "Should be mining after start")
 
         // Wait for at least one block to be mined
-        while await env.node.lattice.nexus.chain.getHighestBlockIndex() < 1 {
+        while await env.node.lattice.nexus.chain.getHighestBlockHeight() < 1 {
             try await Task.sleep(for: .milliseconds(10))
         }
 
@@ -1182,8 +1182,9 @@ final class LifecycleTests: XCTestCase {
         }
         let disk = await childNet.diskBroker
         let storer = BrokerStorer(broker: disk)
-        try VolumeImpl<Block>(node: childGenesis).storeRecursively(storer: storer)
-        try await storer.flush()
+        let childGenesisHeader = VolumeImpl<Block>(node: childGenesis)
+        try childGenesisHeader.storeRecursively(storer: storer)
+        try await storer.flush(root: childGenesisHeader.rawCID)
 
         // Apply child genesis block state (premine balances, receipts) to the child StateStore.
         // Genesis is never embedded in a nexus block, so applyChildBlockStates won't cover it.
@@ -1401,7 +1402,7 @@ final class LifecycleTests: XCTestCase {
         // implicitly debits the withdrawer and credits the demander by depositAmount.
         // After mining H blocks, the miner's TransactionState nonce is H-1
         // (coinbase nonces 0..H-1 for blocks 1..H). The next available nonce is H.
-        let nexusHeight = await env.node.lattice.nexus.chain.getHighestBlockIndex()
+        let nexusHeight = await env.node.lattice.nexus.chain.getHighestBlockHeight()
         let receiptTxNonce = Int(nexusHeight)
 
         let rcptPrep = try await rpcPost(base, "/transaction/prepare", body: [
@@ -1501,24 +1502,24 @@ final class LifecycleTests: XCTestCase {
         let storer = BrokerStorer(broker: disk1)
         let header = VolumeImpl<Block>(node: genesisBlock)
         try header.storeRecursively(storer: storer)
-        try await storer.flush()
+        try await storer.flush(root: header.rawCID)
 
         // Verify the block itself
         let hasBlock = await disk1.hasVolume(root: header.rawCID)
         XCTAssertTrue(hasBlock, "Block should be stored as volume root")
 
         // Verify frontier
-        let hasFrontier = await disk1.hasVolume(root: genesisBlock.frontier.rawCID)
+        let hasFrontier = await disk1.hasVolume(root: genesisBlock.postState.rawCID)
         XCTAssertTrue(hasFrontier, "Frontier should be stored as volume root")
 
         // Verify accountState
-        let acctCID = genesisBlock.frontier.node!.accountState.rawCID
+        let acctCID = genesisBlock.postState.node!.accountState.rawCID
         let hasAcct = await disk1.hasVolume(root: acctCID)
         XCTAssertTrue(hasAcct, "AccountState should be stored as volume root")
 
         // Open a NEW DiskBroker on the same file
         let disk2 = try DiskBroker(path: dbPath)
-        let hasFrontier2 = await disk2.hasVolume(root: genesisBlock.frontier.rawCID)
+        let hasFrontier2 = await disk2.hasVolume(root: genesisBlock.postState.rawCID)
         XCTAssertTrue(hasFrontier2, "Frontier should persist in new DiskBroker")
 
         // Try to resolve the frontier via IvyFetcher backed by disk2
@@ -1527,7 +1528,7 @@ final class LifecycleTests: XCTestCase {
         let testIvy = Ivy(config: IvyConfig(publicKey: kp.publicKey, listenPort: 0, bootstrapPeers: [], enableLocalDiscovery: false, stunServers: []))
         let ivyFetcher = IvyFetcher(ivy: testIvy, broker: memory)
 
-        let frontierStub = genesisBlock.frontier
+        let frontierStub = genesisBlock.postState
         let strippedFrontier = VolumeImpl<LatticeState>(rawCID: frontierStub.rawCID, node: nil, encryptionInfo: nil)
         let resolved = try? await strippedFrontier.resolve(fetcher: ivyFetcher)
         XCTAssertNotNil(resolved?.node, "Frontier should resolve from DiskBroker after restart")
@@ -1552,7 +1553,7 @@ final class LifecycleTests: XCTestCase {
         )
         let genesisStorer = BrokerStorer(broker: disk)
         try VolumeImpl<Block>(node: genesisBlock).storeRecursively(storer: genesisStorer)
-        try await genesisStorer.flush()
+        try await genesisStorer.flush(root: VolumeImpl<Block>(node: genesisBlock).rawCID)
 
         // Build and store block 1 (coinbase for miner)
         let coinbase = TransactionBody(
@@ -1567,7 +1568,7 @@ final class LifecycleTests: XCTestCase {
         )
         let block1Storer = BrokerStorer(broker: disk)
         try VolumeImpl<Block>(node: block1).storeRecursively(storer: block1Storer)
-        try await block1Storer.flush()
+        try await block1Storer.flush(root: VolumeImpl<Block>(node: block1).rawCID)
 
         // Now open a fresh DiskBroker and try to resolve block1's frontier accountState
         let disk2 = try DiskBroker(path: dbPath)
@@ -1582,7 +1583,7 @@ final class LifecycleTests: XCTestCase {
         XCTAssertNotNil(resolvedBlock.node, "Block 1 should resolve")
 
         // Resolve frontier
-        let frontierStub = VolumeImpl<LatticeState>(rawCID: block1.frontier.rawCID, node: nil, encryptionInfo: nil)
+        let frontierStub = VolumeImpl<LatticeState>(rawCID: block1.postState.rawCID, node: nil, encryptionInfo: nil)
         let resolvedFrontier = try await frontierStub.resolve(fetcher: ivyFetcher)
         XCTAssertNotNil(resolvedFrontier.node, "Block 1 frontier should resolve")
 

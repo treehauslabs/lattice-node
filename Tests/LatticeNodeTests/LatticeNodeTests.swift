@@ -115,7 +115,7 @@ final class LatticeNodeTests: XCTestCase {
         let level = ChainLevel(chain: genesis.chainState, children: [:])
         let lattice = Lattice(nexus: level)
 
-        let height = await lattice.nexus.chain.getHighestBlockIndex()
+        let height = await lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertEqual(height, 0)
     }
 
@@ -151,7 +151,7 @@ final class LatticeNodeTests: XCTestCase {
         let restoredTip = await restored.getMainChainTip()
         XCTAssertEqual(originalTip, restoredTip)
 
-        let restoredHeight = await restored.getHighestBlockIndex()
+        let restoredHeight = await restored.getHighestBlockHeight()
         XCTAssertEqual(restoredHeight, 1)
     }
 
@@ -187,7 +187,7 @@ final class LatticeNodeTests: XCTestCase {
             blockHeader: VolumeImpl<Block>(node: b2), block: b2
         )
         XCTAssertTrue(result.extendsMainChain)
-        let height = await restored.getHighestBlockIndex()
+        let height = await restored.getHighestBlockHeight()
         XCTAssertEqual(height, 2)
     }
 
@@ -242,7 +242,7 @@ final class LatticeNodeTests: XCTestCase {
 
         let block = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Child": childGenesis],
+            children: ["Child": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: fetcher
         )
 

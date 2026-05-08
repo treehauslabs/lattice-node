@@ -90,7 +90,7 @@ final class StorageModeTests: XCTestCase {
                 "replaced root from block 1 should be unpinned after retention (height >= 3)")
         }
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         let latestRoots = storedRootsAtHeight(store, height)
         for (root, _) in latestRoots {
             let owners = await broker.owners(root: root)
@@ -112,7 +112,7 @@ final class StorageModeTests: XCTestCase {
             return XCTFail("missing broker or store")
         }
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         let latestRoots = storedRootsAtHeight(store, height)
         for (root, _) in latestRoots {
             let owners = await broker.owners(root: root)
@@ -165,7 +165,7 @@ final class StorageModeTests: XCTestCase {
                 "historical mode should keep main chain block 1's pins even past retention")
         }
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         for h in UInt64(1)...min(height, 3) {
             let roots = storedRootsAtHeight(store, h)
             for (root, _) in roots {
@@ -211,7 +211,7 @@ final class StorageModeTests: XCTestCase {
             return XCTFail("missing store")
         }
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         var anyStored = false
         for h in UInt64(1)...height {
             let stored = storedRootsAtHeight(store, h)
@@ -235,7 +235,7 @@ final class StorageModeTests: XCTestCase {
 
         let evicted = try await broker.evictUnpinned()
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         let latestRoots = storedRootsAtHeight(store, height)
         for (root, _) in latestRoots {
             let has = await broker.hasVolume(root: root)
@@ -268,7 +268,7 @@ final class StorageModeTests: XCTestCase {
             return XCTFail("missing broker or store")
         }
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         let latestRoots = storedRootsAtHeight(store, height)
         for (root, _) in latestRoots {
             let owners = await broker.owners(root: root)
@@ -298,7 +298,7 @@ final class StorageModeTests: XCTestCase {
             return XCTFail("missing broker or store")
         }
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         let latestRoots = storedRootsAtHeight(store, height)
         for (root, _) in latestRoots {
             let owners = await broker.owners(root: root)
@@ -393,7 +393,7 @@ final class StorageModeTests: XCTestCase {
         try await mineBlocks(4, on: node)
         let evicted = try await broker.evictUnpinned()
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThanOrEqual(height, 4)
 
         var anyGone = false
@@ -444,7 +444,7 @@ final class StorageModeTests: XCTestCase {
             return XCTFail("missing broker or store")
         }
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThanOrEqual(height, 5)
 
         let latestRoots = storedRootsAtHeight(store, height)

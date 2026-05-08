@@ -51,8 +51,8 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
 
         // Both should be at genesis (height 0), same tip
-        let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
-        let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
+        let height2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         let tip1 = await node1.lattice.nexus.chain.getMainChainTip()
         let tip2 = await node2.lattice.nexus.chain.getMainChainTip()
 
@@ -108,14 +108,14 @@ final class NetworkIntegrationTests: XCTestCase {
         // Mine blocks on node 1
         try await mineBlocks(2, on: node1)
 
-        let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let height1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(height1, 0, "Node 1 should have mined blocks")
 
         // Wait for propagation — blocks are announced via gossip, node 2 fetches them
         try await Task.sleep(for: .seconds(1))
 
         // Node 2 may receive blocks via announcement+fetch or direct block push
-        let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         // With real TCP, propagation depends on announcement → fetch cycle
         // Even if height2 is 0, the test below verifies the connection worked
         if height2 > 0 {
@@ -168,8 +168,8 @@ final class NetworkIntegrationTests: XCTestCase {
         // Give final propagation
         try await Task.sleep(for: .seconds(1))
 
-        let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
-        let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
+        let height2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
 
         // Both should have advanced
         XCTAssertGreaterThan(height1, 0)
@@ -202,7 +202,7 @@ final class NetworkIntegrationTests: XCTestCase {
         let node1 = try await LatticeNode(config: config, genesisConfig: genesis)
         try await node1.start()
         try await mineBlocks(2, on: node1)
-        let heightBefore = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let heightBefore = await node1.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(heightBefore, 0, "Should have mined blocks")
         await node1.stop()
 
@@ -216,7 +216,7 @@ final class NetworkIntegrationTests: XCTestCase {
         let node2 = try await LatticeNode(config: config2, genesisConfig: genesis)
         try await node2.start()
 
-        let heightAfter = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let heightAfter = await node2.lattice.nexus.chain.getHighestBlockHeight()
         // Height may differ by 1 due to mining race between height check and stop
         XCTAssertGreaterThanOrEqual(heightAfter, heightBefore - 1, "Restarted node should resume near persisted height")
         XCTAssertGreaterThan(heightAfter, 0, "Restarted node should have blocks")
@@ -262,16 +262,16 @@ final class NetworkIntegrationTests: XCTestCase {
 
         // Mine while both are connected — gossip fires to node2
         try await mineBlocks(2, on: node1)
-        let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let height1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
 
         // Poll for propagation
         let deadline = ContinuousClock.Instant.now + .seconds(3)
-        while await node2.lattice.nexus.chain.getHighestBlockIndex() < height1 {
+        while await node2.lattice.nexus.chain.getHighestBlockHeight() < height1 {
             if ContinuousClock.Instant.now > deadline { break }
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         if height2 >= height1 {
             // Blocks propagated — verify chain consistency
             for i in 0...height2 {
@@ -355,7 +355,7 @@ final class NetworkIntegrationTests: XCTestCase {
         }
 
         // Even if balance wasn't ready, verify the basic flow didn't crash
-        let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let height1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(height1, 0, "Node 1 should have mined blocks")
 
         await node1.stop()
@@ -388,7 +388,7 @@ final class NetworkIntegrationTests: XCTestCase {
 
         // Mine 1 block and check status
         await node.startMining(directory: "Nexus")
-        while await node.lattice.nexus.chain.getHighestBlockIndex() < 1 {
+        while await node.lattice.nexus.chain.getHighestBlockHeight() < 1 {
             try await Task.sleep(for: .milliseconds(10))
         }
 
@@ -554,7 +554,7 @@ final class NetworkIntegrationTests: XCTestCase {
         // Mine some blocks
         try await mineBlocks(2, on: node)
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(height, 0)
 
         // Check balance after mining — should have earned rewards
@@ -617,12 +617,12 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(1))
 
         // Verify blocks were mined
-        let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let height1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(height1, 0, "Node 1 should have mined blocks")
 
         // Check balance on both nodes — may be 0 if StateStore hasn't processed yet
         let balance1 = try await node1.getBalance(address: minerAddr)
-        let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
 
         // Key assertion: blocks propagated (height > 0 on node 2)
         // Balance is a stronger check but depends on StateStore changeset timing
@@ -670,18 +670,18 @@ final class NetworkIntegrationTests: XCTestCase {
         // Both mine together for 3 blocks
         try await mineConcurrent(2, miners: [node1, node2], monitor: node1)
 
-        let heightAtStop = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let heightAtStop = await node1.lattice.nexus.chain.getHighestBlockHeight()
 
         // Node 2 continues mining alone for 3 more blocks
         try await mineBlocks(1, on: node2)
         // Propagation wait
         try await Task.sleep(for: .seconds(1))
 
-        let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThanOrEqual(height2, heightAtStop, "Node 2 should have advanced at least as far as where Node 1 stopped")
 
         // Node 1 should have caught up (received Node 2's blocks)
-        let height1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let height1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
         let drift = height2 > height1 ? height2 - height1 : height1 - height2
         XCTAssertLessThanOrEqual(drift, 15, "Node 1 should have caught up to within 15 blocks")
 
@@ -740,9 +740,9 @@ final class NetworkIntegrationTests: XCTestCase {
         // Wait for propagation to other nodes
         try await Task.sleep(for: .seconds(1))
 
-        let h1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
-        let h2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
-        let h3 = await node3.lattice.nexus.chain.getHighestBlockIndex()
+        let h1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
+        let h2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
+        let h3 = await node3.lattice.nexus.chain.getHighestBlockHeight()
 
         XCTAssertGreaterThan(h1, 0, "Miner should have blocks")
         // At least one non-mining node should have received blocks or be connected
@@ -782,7 +782,7 @@ final class NetworkIntegrationTests: XCTestCase {
         let rpcTask = Task { try await server.run() }
         try await Task.sleep(for: .seconds(1))
 
-        let height = await node.lattice.nexus.chain.getHighestBlockIndex()
+        let height = await node.lattice.nexus.chain.getHighestBlockHeight()
 
         // Query finality for genesis block
         let url = URL(string: "http://127.0.0.1:\(rpcPort)/api/finality/0")!
@@ -834,7 +834,7 @@ final class NetworkIntegrationTests: XCTestCase {
         let minerBalance = try await node.getBalance(address: minerAddr)
         guard minerBalance > 0 else {
             // If balance not in StateStore yet, just verify blocks were mined
-            let h = await node.lattice.nexus.chain.getHighestBlockIndex()
+            let h = await node.lattice.nexus.chain.getHighestBlockHeight()
             XCTAssertGreaterThan(h, 0, "Should have mined blocks")
             await node.stop()
             return
@@ -914,7 +914,7 @@ final class NetworkIntegrationTests: XCTestCase {
 
         let minerBalance = try await node1.getBalance(address: minerAddr)
         guard minerBalance > 0 else {
-            let h = await node1.lattice.nexus.chain.getHighestBlockIndex()
+            let h = await node1.lattice.nexus.chain.getHighestBlockHeight()
             XCTAssertGreaterThan(h, 0)
             await node1.stop(); await node2.stop()
             return
@@ -943,7 +943,7 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(1))
 
         // Check state on node 2
-        let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         if height2 > 0 {
             let receiverOn2 = try await node2.getBalance(address: receiverAddr)
             if receiverOn2 > 0 {
@@ -1133,8 +1133,8 @@ final class NetworkIntegrationTests: XCTestCase {
         try await mineBlocks(1, on: node1)
         try await mineBlocks(1, on: node2)
 
-        let height1Before = await node1.lattice.nexus.chain.getHighestBlockIndex()
-        let height2Before = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height1Before = await node1.lattice.nexus.chain.getHighestBlockHeight()
+        let height2Before = await node2.lattice.nexus.chain.getHighestBlockHeight()
         let tip1Before = await node1.lattice.nexus.chain.getMainChainTip()
         let tip2Before = await node2.lattice.nexus.chain.getMainChainTip()
 
@@ -1156,8 +1156,8 @@ final class NetworkIntegrationTests: XCTestCase {
         try await Task.sleep(for: .seconds(1))
 
         // After healing, both should converge (same tip or close heights)
-        let height1After = await node1.lattice.nexus.chain.getHighestBlockIndex()
-        let height2After = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height1After = await node1.lattice.nexus.chain.getHighestBlockHeight()
+        let height2After = await node2.lattice.nexus.chain.getHighestBlockHeight()
 
         XCTAssertGreaterThanOrEqual(height1After, height1Before, "Node 1 should have maintained or advanced after heal")
         // Node 2 should have received blocks (either via sync or block gossip)
@@ -1205,8 +1205,8 @@ final class NetworkIntegrationTests: XCTestCase {
         // Propagation wait
         try await Task.sleep(for: .seconds(1))
 
-        let h1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
-        let h2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let h1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
+        let h2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         let tip1 = await node1.lattice.nexus.chain.getMainChainTip()
         let tip2 = await node2.lattice.nexus.chain.getMainChainTip()
 
@@ -1269,8 +1269,8 @@ final class NetworkIntegrationTests: XCTestCase {
 
         // Check invariant: for each height both nodes know about, block hashes match
         let minHeight = min(
-            await node1.lattice.nexus.chain.getHighestBlockIndex(),
-            await node2.lattice.nexus.chain.getHighestBlockIndex()
+            await node1.lattice.nexus.chain.getHighestBlockHeight(),
+            await node2.lattice.nexus.chain.getHighestBlockHeight()
         )
 
         var matches = 0
@@ -1328,16 +1328,16 @@ final class NetworkIntegrationTests: XCTestCase {
 
         // Mine while both are connected — gossip carries blocks to node2
         try await mineBlocks(2, on: node1)
-        let targetHeight = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let targetHeight = await node1.lattice.nexus.chain.getHighestBlockHeight()
 
         // Poll for propagation
         let deadline = ContinuousClock.Instant.now + .seconds(3)
-        while await node2.lattice.nexus.chain.getHighestBlockIndex() < targetHeight {
+        while await node2.lattice.nexus.chain.getHighestBlockHeight() < targetHeight {
             if ContinuousClock.Instant.now > deadline { break }
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         if height2 >= targetHeight {
             // Blocks propagated — verify state consistency
             let balance1 = try await node1.getBalance(address: minerAddr)
@@ -1395,18 +1395,18 @@ final class NetworkIntegrationTests: XCTestCase {
         try await mineConcurrent(2, miners: [node1, node2], monitor: node1)
         try await Task.sleep(for: .milliseconds(500))
 
-        let h1 = await node1.lattice.nexus.chain.getHighestBlockIndex()
-        let h2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let h1 = await node1.lattice.nexus.chain.getHighestBlockHeight()
+        let h2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(h1, 0, "Node 1 should have mined blocks")
         XCTAssertGreaterThan(h2, 0, "Node 2 should have mined blocks")
 
         // After concurrent mining, each node should still be able to mine independently
         try await mineBlocks(1, on: node1)
-        let h1After = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let h1After = await node1.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(h1After, h1, "Node 1 should mine more after concurrent phase")
 
         try await mineBlocks(1, on: node2)
-        let h2After = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let h2After = await node2.lattice.nexus.chain.getHighestBlockHeight()
         XCTAssertGreaterThan(h2After, h2, "Node 2 should mine more after concurrent phase")
 
         await node1.stop()
@@ -1452,7 +1452,7 @@ final class NetworkIntegrationTests: XCTestCase {
         let minerBalance = try await node1.getBalance(address: minerAddr)
         guard minerBalance > 0 else {
             // StateStore not yet populated — skip tx test, just verify mining works
-            let h = await node1.lattice.nexus.chain.getHighestBlockIndex()
+            let h = await node1.lattice.nexus.chain.getHighestBlockHeight()
             XCTAssertGreaterThan(h, 0, "Should have mined blocks")
             await node1.stop()
             await node2.stop()
@@ -1480,14 +1480,14 @@ final class NetworkIntegrationTests: XCTestCase {
         XCTAssertEqual(receiverBal1, sendAmount, "Receiver should have the sent amount on node1")
 
         // Check if node2 received the blocks
-        let targetHeight = await node1.lattice.nexus.chain.getHighestBlockIndex()
+        let targetHeight = await node1.lattice.nexus.chain.getHighestBlockHeight()
         let deadline = ContinuousClock.Instant.now + .seconds(3)
-        while await node2.lattice.nexus.chain.getHighestBlockIndex() < targetHeight {
+        while await node2.lattice.nexus.chain.getHighestBlockHeight() < targetHeight {
             if ContinuousClock.Instant.now > deadline { break }
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        let height2 = await node2.lattice.nexus.chain.getHighestBlockIndex()
+        let height2 = await node2.lattice.nexus.chain.getHighestBlockHeight()
         if height2 >= targetHeight {
             // Blocks propagated — verify tx state consistency
             let receiverBal2 = try await node2.getBalance(address: receiverAddr)

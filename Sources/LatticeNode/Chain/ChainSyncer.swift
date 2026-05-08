@@ -22,7 +22,7 @@ public enum SyncError: Error, Sendable {
 public struct SyncResult: Sendable {
     public let persisted: PersistedChainState
     public let tipBlockHash: String
-    public let tipBlockIndex: UInt64
+    public let tipBlockHeight: UInt64
     public let cumulativeWork: UInt256
 }
 
@@ -31,7 +31,7 @@ public enum SyncFetchError: Error, Sendable {
 }
 
 public actor ChainSyncer {
-    private let fetcher: VolumeAwareFetcher
+    private let fetcher: Fetcher
     private let storeFn: @Sendable (String, Data) async -> Void
     private let genesisBlockHash: String
     private let retentionDepth: UInt64
@@ -39,7 +39,7 @@ public actor ChainSyncer {
     private var cancelled = false
 
     public init(
-        fetcher: VolumeAwareFetcher,
+        fetcher: Fetcher,
         store: @Sendable @escaping (String, Data) async -> Void,
         genesisBlockHash: String,
         retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE,
@@ -55,10 +55,7 @@ public actor ChainSyncer {
     private func fetchBlockVolume(rawCid: String) async throws -> Data {
         try await withThrowingTaskGroup(of: Data.self) { group in
             group.addTask {
-                try await self.fetcher.enterVolume(rootCID: rawCid, paths: .init())
-                let data = try await self.fetcher.fetch(rawCid: rawCid)
-                await self.fetcher.exitVolume(rootCID: rawCid)
-                return data
+                try await self.fetcher.fetch(rawCid: rawCid)
             }
             group.addTask {
                 try await Task.sleep(for: self.fetchTimeout)
@@ -287,7 +284,7 @@ public actor ChainSyncer {
         return SyncResult(
             persisted: persisted,
             tipBlockHash: blocks.last!.hash,
-            tipBlockIndex: tipHeight,
+            tipBlockHeight: tipHeight,
             cumulativeWork: cumulativeWork
         )
     }

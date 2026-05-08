@@ -16,15 +16,15 @@ private func deepCopyCID(_ cid: String, from source: TestBrokerFetcher, to dest:
     await dest.store(rawCid: cid, data: data)
 
     if let block = Block(data: data) {
-        if let prevCID = block.previousBlock?.rawCID {
+        if let prevCID = block.parent?.rawCID {
             await deepCopyCID(prevCID, from: source, to: dest, visited: &visited)
         }
         await deepCopyCID(block.transactions.rawCID, from: source, to: dest, visited: &visited)
         await deepCopyCID(block.spec.rawCID, from: source, to: dest, visited: &visited)
-        await deepCopyCID(block.homestead.rawCID, from: source, to: dest, visited: &visited)
-        await deepCopyCID(block.frontier.rawCID, from: source, to: dest, visited: &visited)
-        await deepCopyCID(block.parentHomestead.rawCID, from: source, to: dest, visited: &visited)
-        await deepCopyCID(block.childBlocks.rawCID, from: source, to: dest, visited: &visited)
+        await deepCopyCID(block.prevState.rawCID, from: source, to: dest, visited: &visited)
+        await deepCopyCID(block.postState.rawCID, from: source, to: dest, visited: &visited)
+        await deepCopyCID(block.parentState.rawCID, from: source, to: dest, visited: &visited)
+        await deepCopyCID(block.children.rawCID, from: source, to: dest, visited: &visited)
     }
 }
 
@@ -38,7 +38,7 @@ final class SmokeTests: XCTestCase {
         let f = fetcher()
         let result = try await NexusGenesis.create(fetcher: f)
         XCTAssertFalse(result.blockHash.isEmpty)
-        let height = await result.chainState.getHighestBlockIndex()
+        let height = await result.chainState.getHighestBlockHeight()
         XCTAssertEqual(height, 0)
         let tip = await result.chainState.getMainChainTip()
         XCTAssertEqual(tip, result.blockHash)
@@ -68,7 +68,7 @@ final class SmokeTests: XCTestCase {
             prev = block
         }
 
-        let height = await chain.getHighestBlockIndex()
+        let height = await chain.getHighestBlockHeight()
         XCTAssertEqual(height, 10)
     }
 
@@ -142,7 +142,7 @@ final class SmokeTests: XCTestCase {
             blockHeader: VolumeImpl<Block>(node: block6), block: block6
         )
         XCTAssertTrue(result.extendsMainChain)
-        let rh = await restored.getHighestBlockIndex()
+        let rh = await restored.getHighestBlockHeight()
         XCTAssertEqual(rh, 6)
     }
 
@@ -208,7 +208,7 @@ final class MultiChainEndToEndTests: XCTestCase {
 
         let nexusBlock1 = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Payments": childGenesis],
+            children: ["Payments": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let result = await nexusChain.submitBlock(
@@ -216,7 +216,7 @@ final class MultiChainEndToEndTests: XCTestCase {
             blockHeader: VolumeImpl<Block>(node: nexusBlock1), block: nexusBlock1
         )
         XCTAssertTrue(result.extendsMainChain)
-        let nh = await nexusChain.getHighestBlockIndex()
+        let nh = await nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nh, 1)
     }
 
@@ -570,9 +570,9 @@ final class TwoNodeEndToEndTests: XCTestCase {
         let tipA = await genesisA.chainState.getMainChainTip()
         let tipB = await genesisB.chainState.getMainChainTip()
         XCTAssertEqual(tipA, tipB)
-        let ah5 = await genesisA.chainState.getHighestBlockIndex()
+        let ah5 = await genesisA.chainState.getHighestBlockHeight()
         XCTAssertEqual(ah5, 5)
-        let bh5 = await genesisB.chainState.getHighestBlockIndex()
+        let bh5 = await genesisB.chainState.getHighestBlockHeight()
         XCTAssertEqual(bh5, 5)
     }
 
@@ -597,7 +597,7 @@ final class TwoNodeEndToEndTests: XCTestCase {
             )
             shortPrev = b
         }
-        let bh3 = await genesisB.chainState.getHighestBlockIndex()
+        let bh3 = await genesisB.chainState.getHighestBlockHeight()
         XCTAssertEqual(bh3, 3)
 
         var longPrev = genesisA.block
@@ -625,7 +625,7 @@ final class TwoNodeEndToEndTests: XCTestCase {
         let tipA = await genesisA.chainState.getMainChainTip()
         let tipB = await genesisB.chainState.getMainChainTip()
         XCTAssertEqual(tipA, tipB, "Node B should reorg to longer chain")
-        let bh5 = await genesisB.chainState.getHighestBlockIndex()
+        let bh5 = await genesisB.chainState.getHighestBlockHeight()
         XCTAssertEqual(bh5, 5)
     }
 }
@@ -654,7 +654,7 @@ final class MultiChainReceptionTests: XCTestCase {
 
         let nexusBlock1 = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Payments": childGenesis],
+            children: ["Payments": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let header1 = VolumeImpl<Block>(node: nexusBlock1)
@@ -664,7 +664,7 @@ final class MultiChainReceptionTests: XCTestCase {
         )
         XCTAssertTrue(result.extendsMainChain)
 
-        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        let nexusHeight = await nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 1)
 
         let _ = await nexusLevel.extractAndProcessChildBlocks(
@@ -694,7 +694,7 @@ final class MultiChainReceptionTests: XCTestCase {
 
         let nexusBlock1 = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Payments": childGenesis],
+            children: ["Payments": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let header1 = VolumeImpl<Block>(node: nexusBlock1)
@@ -755,7 +755,7 @@ final class MultiChainReceptionTests: XCTestCase {
         )
         let nexusBlock1 = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Payments": childBlock1],
+            children: ["Payments": childBlock1],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let bs1 = BufferedStorer()
@@ -775,10 +775,10 @@ final class MultiChainReceptionTests: XCTestCase {
             parentBlock: nexusBlock1, parentBlockHeader: header1, fetcher: f
         )
 
-        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        let nexusHeight = await nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 1)
 
-        let childHeight = await childChain.getHighestBlockIndex()
+        let childHeight = await childChain.getHighestBlockHeight()
         XCTAssertEqual(childHeight, 1)
     }
 
@@ -944,11 +944,11 @@ private struct MultiChainEnv {
     }
 
     func buildNexusBlock(
-        previous: Block, childBlocks: [String: Block] = [:],
+        previous: Block, children: [String: Block] = [:],
         offset: Int64 = 1000, nonce: UInt64 = 1
     ) async throws -> Block {
         try await BlockBuilder.buildBlock(
-            previous: previous, childBlocks: childBlocks,
+            previous: previous, children: children,
             timestamp: previous.timestamp + offset,
             difficulty: UInt256(1000), nonce: nonce, fetcher: f
         )
@@ -977,7 +977,7 @@ final class MultiChainReorgTests: XCTestCase {
 
         let nexusBlock1 = try await env.buildNexusBlock(
             previous: env.nexusGenesis,
-            childBlocks: ["Payments": env.childGenesis]
+            children: ["Payments": env.childGenesis]
         )
         let r1 = await env.submitNexus(nexusBlock1)
         XCTAssertTrue(r1.extendsMainChain)
@@ -986,7 +986,7 @@ final class MultiChainReorgTests: XCTestCase {
         let childDirs = await env.nexusLevel.childDirectories()
         XCTAssertTrue(childDirs.contains("Payments"))
 
-        let nexusHeight = await env.nexusChain.getHighestBlockIndex()
+        let nexusHeight = await env.nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 1)
     }
 
@@ -995,7 +995,7 @@ final class MultiChainReorgTests: XCTestCase {
 
         let nexusBlock1 = try await env.buildNexusBlock(
             previous: env.nexusGenesis,
-            childBlocks: ["Payments": env.childGenesis]
+            children: ["Payments": env.childGenesis]
         )
         let r1 = await env.submitNexus(nexusBlock1)
         XCTAssertTrue(r1.extendsMainChain)
@@ -1013,7 +1013,7 @@ final class MultiChainReorgTests: XCTestCase {
         let r3 = await env.submitNexus(nexusBlock3)
         XCTAssertTrue(r3.extendsMainChain)
 
-        let nexusHeight = await env.nexusChain.getHighestBlockIndex()
+        let nexusHeight = await env.nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 3)
 
         let childDirs = await env.nexusLevel.childDirectories()
@@ -1028,9 +1028,9 @@ final class MultiChainReorgTests: XCTestCase {
         XCTAssertTrue(r1.extendsMainChain)
         let _ = await env.extractChildren(from: nexusBlock1)
 
-        let nexusHeight = await env.nexusChain.getHighestBlockIndex()
+        let nexusHeight = await env.nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 1)
-        let childHeight = await env.childChain.getHighestBlockIndex()
+        let childHeight = await env.childChain.getHighestBlockHeight()
         XCTAssertEqual(childHeight, 0)
     }
 }
@@ -1046,7 +1046,7 @@ final class MultiChainPersistenceTests: XCTestCase {
         )
         let nexusBlock1 = try await env.buildNexusBlock(
             previous: env.nexusGenesis,
-            childBlocks: ["Payments": childBlock1]
+            children: ["Payments": childBlock1]
         )
         let _ = await env.submitNexus(nexusBlock1)
         let _ = await env.extractChildren(from: nexusBlock1)
@@ -1060,7 +1060,7 @@ final class MultiChainPersistenceTests: XCTestCase {
         let resTip = await restored.getMainChainTip()
         XCTAssertEqual(origTip, resTip)
 
-        let resHeight = await restored.getHighestBlockIndex()
+        let resHeight = await restored.getHighestBlockHeight()
         XCTAssertEqual(resHeight, 1)
     }
 
@@ -1107,8 +1107,8 @@ final class MultiChainBalanceAndStateTests: XCTestCase {
         let env = try await MultiChainEnv.create()
         let snapshot = await env.childChain.tipSnapshot
         XCTAssertNotNil(snapshot)
-        XCTAssertEqual(snapshot?.index, 0)
-        XCTAssertFalse(snapshot!.frontierCID.isEmpty)
+        XCTAssertEqual(snapshot?.tipHeight, 0)
+        XCTAssertFalse(snapshot!.postStateCID.isEmpty)
         XCTAssertFalse(snapshot!.specCID.isEmpty)
     }
 
@@ -1117,18 +1117,18 @@ final class MultiChainBalanceAndStateTests: XCTestCase {
 
         let nexusBlock1 = try await env.buildNexusBlock(
             previous: env.nexusGenesis,
-            childBlocks: ["Payments": env.childGenesis]
+            children: ["Payments": env.childGenesis]
         )
         let _ = await env.submitNexus(nexusBlock1)
         let _ = await env.extractChildren(from: nexusBlock1)
 
-        let nexusHeight = await env.nexusChain.getHighestBlockIndex()
+        let nexusHeight = await env.nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 1)
 
         let childDirs = await env.nexusLevel.childDirectories()
         XCTAssertEqual(childDirs, ["Payments"])
 
-        let childHeight = await env.childChain.getHighestBlockIndex()
+        let childHeight = await env.childChain.getHighestBlockHeight()
         XCTAssertEqual(childHeight, 0)
     }
 
@@ -1158,12 +1158,12 @@ final class MultiChainBalanceAndStateTests: XCTestCase {
         )
         XCTAssertTrue(childResult.extendsMainChain)
 
-        let childHeight = await env.childChain.getHighestBlockIndex()
+        let childHeight = await env.childChain.getHighestBlockHeight()
         XCTAssertEqual(childHeight, 1)
 
         let snapshot = await env.childChain.tipSnapshot
         XCTAssertNotNil(snapshot)
-        XCTAssertEqual(snapshot?.index, 1)
+        XCTAssertEqual(snapshot?.tipHeight, 1)
     }
 }
 
@@ -1279,7 +1279,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
 
         let nexusBlock1 = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["NewChain": childGenesis],
+            children: ["NewChain": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let _ = await nexusChain.submitBlock(
@@ -1307,17 +1307,17 @@ final class MultiChainDiscoveryTests: XCTestCase {
         let nexusChain = ChainState.fromGenesis(block: nexusGenesis, retentionDepth: DEFAULT_RETENTION_DEPTH)
         let nexusLevel = ChainLevel(chain: nexusChain, children: [:])
 
-        var childBlocks: [String: Block] = [:]
+        var children: [String: Block] = [:]
         for dir in ["Alpha", "Beta", "Gamma"] {
             let spec = testSpec(dir)
             let genesis = try await BlockBuilder.buildGenesis(
                 spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
             )
-            childBlocks[dir] = genesis
+            children[dir] = genesis
         }
 
         let nexusBlock1 = try await BlockBuilder.buildBlock(
-            previous: nexusGenesis, childBlocks: childBlocks,
+            previous: nexusGenesis, children: children,
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let _ = await nexusChain.submitBlock(
@@ -1360,7 +1360,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
         // Block 1: introduce child chain genesis
         let nexusBlock1 = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Payments": childGenesis],
+            children: ["Payments": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let header1 = VolumeImpl<Block>(node: nexusBlock1)
@@ -1384,7 +1384,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
         )
         let nexusBlock2 = try await BlockBuilder.buildBlock(
             previous: nexusBlock1,
-            childBlocks: ["Payments": childBlock1],
+            children: ["Payments": childBlock1],
             timestamp: sharedTimestamp, difficulty: UInt256(1000), nonce: 2, fetcher: f
         )
         let header2 = VolumeImpl<Block>(node: nexusBlock2)
@@ -1400,12 +1400,12 @@ final class MultiChainDiscoveryTests: XCTestCase {
         )
 
         // Verify both chains advanced
-        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        let nexusHeight = await nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 2)
 
         let childLevel = await nexusLevel.children["Payments"]
         XCTAssertNotNil(childLevel)
-        let childHeight = await childLevel!.chain.getHighestBlockIndex()
+        let childHeight = await childLevel!.chain.getHighestBlockHeight()
         XCTAssertEqual(childHeight, 1, "Child chain should advance to height 1 after validated child block")
     }
 
@@ -1441,7 +1441,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
         )
         let nexusBlock1 = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Payments": childBlock1],
+            children: ["Payments": childBlock1],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let header1 = VolumeImpl<Block>(node: nexusBlock1)
@@ -1457,7 +1457,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
         )
 
         // Child block should NOT advance due to timestamp mismatch
-        let childHeight = await childChain.getHighestBlockIndex()
+        let childHeight = await childChain.getHighestBlockHeight()
         XCTAssertEqual(childHeight, 0, "Child block with mismatched timestamp should be rejected")
     }
 
@@ -1494,7 +1494,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
         )
         let nexusBlock1 = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Payments": childBlock1],
+            children: ["Payments": childBlock1],
             timestamp: sharedTimestamp, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let header1 = VolumeImpl<Block>(node: nexusBlock1)
@@ -1510,7 +1510,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
         )
 
         // Child block SHOULD advance
-        let childHeight = await childChain.getHighestBlockIndex()
+        let childHeight = await childChain.getHighestBlockHeight()
         XCTAssertEqual(childHeight, 1, "Child block with matching timestamp should be accepted")
     }
 
@@ -1552,7 +1552,7 @@ final class MultiChainDiscoveryTests: XCTestCase {
             )
             let nexusBlock = try await BlockBuilder.buildBlock(
                 previous: prevNexus,
-                childBlocks: ["Payments": childBlock],
+                children: ["Payments": childBlock],
                 timestamp: ts, difficulty: UInt256(1000), nonce: UInt64(i), fetcher: f
             )
             let header = VolumeImpl<Block>(node: nexusBlock)
@@ -1570,9 +1570,9 @@ final class MultiChainDiscoveryTests: XCTestCase {
             prevChild = childBlock
         }
 
-        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        let nexusHeight = await nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 5)
-        let childHeight = await childChain.getHighestBlockIndex()
+        let childHeight = await childChain.getHighestBlockHeight()
         XCTAssertEqual(childHeight, 5, "Child chain should advance in lockstep with nexus")
     }
 
@@ -1639,7 +1639,7 @@ final class FullMiningIntegrationTests: XCTestCase {
             )
         }
 
-        let height = await chain.getHighestBlockIndex()
+        let height = await chain.getHighestBlockHeight()
         XCTAssertGreaterThan(height, 0, "Chain should advance after submitting mined blocks")
     }
 
@@ -1696,7 +1696,7 @@ final class FullMiningIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(minedBlocks.count, 0, "Miner should produce blocks")
 
         let firstBlock = minedBlocks[0].0
-        let childBlocksDict = try? await firstBlock.childBlocks.resolve(fetcher: f).node
+        let childBlocksDict = try? await firstBlock.children.resolve(fetcher: f).node
         let childKeys = try? childBlocksDict?.allKeys()
         XCTAssertNotNil(childKeys, "Mined block should contain child blocks dict")
         XCTAssertTrue(childKeys?.contains("Payments") ?? false, "Mined block should include Payments child block")
@@ -1714,10 +1714,10 @@ final class FullMiningIntegrationTests: XCTestCase {
             parentBlock: firstBlock, parentBlockHeader: header, fetcher: f
         )
 
-        let nexusHeight = await nexusChain.getHighestBlockIndex()
+        let nexusHeight = await nexusChain.getHighestBlockHeight()
         XCTAssertGreaterThan(nexusHeight, 0)
 
-        let childHeight = await childChain.getHighestBlockIndex()
+        let childHeight = await childChain.getHighestBlockHeight()
         XCTAssertGreaterThan(childHeight, 0, "Child chain should advance after processing mined block with child")
     }
 
@@ -1804,8 +1804,8 @@ final class FullMiningIntegrationTests: XCTestCase {
         let tipB = await chainB.getMainChainTip()
         XCTAssertEqual(tipA, tipB, "Both nodes should agree on nexus tip")
 
-        let childHeightA = await childChainA.getHighestBlockIndex()
-        let childHeightB = await childChainB.getHighestBlockIndex()
+        let childHeightA = await childChainA.getHighestBlockHeight()
+        let childHeightB = await childChainB.getHighestBlockHeight()
         XCTAssertEqual(childHeightA, childHeightB, "Both nodes should agree on child chain height")
         XCTAssertGreaterThan(childHeightA, 0, "Child chain should advance on both nodes")
     }
@@ -1858,7 +1858,7 @@ final class CASIsolationTests: XCTestCase {
         let specData = try await childCAS.fetch(rawCid: childGenesis.spec.rawCID)
         XCTAssertNotNil(ChainSpec(data: specData))
 
-        let frontierData = try await childCAS.fetch(rawCid: childGenesis.frontier.rawCID)
+        let frontierData = try await childCAS.fetch(rawCid: childGenesis.postState.rawCID)
         XCTAssertNotNil(frontierData)
     }
 
@@ -1884,15 +1884,15 @@ final class CASIsolationTests: XCTestCase {
         let tipData = try await childCAS.fetch(rawCid: genesisHeader.rawCID)
         let tipBlock = Block(data: tipData)
         XCTAssertNotNil(tipBlock, "Should deserialize child genesis from child CAS")
-        XCTAssertEqual(tipBlock!.index, 0)
+        XCTAssertEqual(tipBlock!.height, 0)
 
         // This is the critical call — BlockBuilder needs frontier data from child CAS
         let childBlock1 = try await BlockBuilder.buildBlock(
             previous: tipBlock!, timestamp: t + 1000,
             difficulty: UInt256(1000), nonce: 1, fetcher: childCAS
         )
-        XCTAssertEqual(childBlock1.index, 1)
-        XCTAssertEqual(childBlock1.homestead.rawCID, tipBlock!.frontier.rawCID)
+        XCTAssertEqual(childBlock1.height, 1)
+        XCTAssertEqual(childBlock1.prevState.rawCID, tipBlock!.postState.rawCID)
     }
 }
 
@@ -1922,7 +1922,7 @@ final class MultiChainDiscoveryRemainingTests: XCTestCase {
 
         let nexusBlock1 = try await BlockBuilder.buildBlock(
             previous: nexusGenesis,
-            childBlocks: ["Payments": childGenesis],
+            children: ["Payments": childGenesis],
             timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
         )
         let _ = await nexusChain.submitBlock(

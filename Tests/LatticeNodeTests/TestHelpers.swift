@@ -83,9 +83,9 @@ func mineBlocks(
 ) async throws {
     let getHeight: () async -> UInt64 = {
         if directory == "Nexus" {
-            return await node.lattice.nexus.chain.getHighestBlockIndex()
+            return await node.lattice.nexus.chain.getHighestBlockHeight()
         } else {
-            return await node.lattice.nexus.children[directory]?.chain.getHighestBlockIndex() ?? 0
+            return await node.lattice.nexus.children[directory]?.chain.getHighestBlockHeight() ?? 0
         }
     }
     let startHeight = await getHeight()
@@ -107,10 +107,10 @@ func mineConcurrent(
     monitor: LatticeNode? = nil
 ) async throws {
     let target = monitor ?? miners[0]
-    let startHeight = await target.lattice.nexus.chain.getHighestBlockIndex()
+    let startHeight = await target.lattice.nexus.chain.getHighestBlockHeight()
     let targetHeight = startHeight + UInt64(count)
     for miner in miners { await miner.startMining(directory: "Nexus") }
-    while await target.lattice.nexus.chain.getHighestBlockIndex() < targetHeight {
+    while await target.lattice.nexus.chain.getHighestBlockHeight() < targetHeight {
         try await Task.sleep(for: .milliseconds(10))
     }
     for miner in miners { await miner.stopMining(directory: "Nexus") }

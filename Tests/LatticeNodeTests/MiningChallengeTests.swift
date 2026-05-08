@@ -93,7 +93,7 @@ private func difficultyHashPrefix(_ block: Block) -> Data {
     let sep: [UInt8] = [0x00]
     var data = Data()
     data.reserveCapacity(512)
-    if let previousBlockCID = block.previousBlock?.rawCID {
+    if let previousBlockCID = block.parent?.rawCID {
         data.append(contentsOf: previousBlockCID.utf8)
     }
     data.append(contentsOf: sep)
@@ -105,15 +105,15 @@ private func difficultyHashPrefix(_ block: Block) -> Data {
     data.append(contentsOf: sep)
     data.append(contentsOf: block.spec.rawCID.utf8)
     data.append(contentsOf: sep)
-    data.append(contentsOf: block.parentHomestead.rawCID.utf8)
+    data.append(contentsOf: block.parentState.rawCID.utf8)
     data.append(contentsOf: sep)
-    data.append(contentsOf: block.homestead.rawCID.utf8)
+    data.append(contentsOf: block.prevState.rawCID.utf8)
     data.append(contentsOf: sep)
-    data.append(contentsOf: block.frontier.rawCID.utf8)
+    data.append(contentsOf: block.postState.rawCID.utf8)
     data.append(contentsOf: sep)
-    data.append(contentsOf: block.childBlocks.rawCID.utf8)
+    data.append(contentsOf: block.children.rawCID.utf8)
     data.append(contentsOf: sep)
-    data.append(contentsOf: String(block.index).utf8)
+    data.append(contentsOf: String(block.height).utf8)
     data.append(contentsOf: sep)
     data.append(contentsOf: String(block.timestamp).utf8)
     data.append(contentsOf: sep)
@@ -447,16 +447,16 @@ final class MiningChallengeIntegrationTests: XCTestCase {
 
         if let blockNonce = solution.blockNonce {
             let candidate = Block(
-                previousBlock: block.previousBlock,
+                parent: block.parent,
                 transactions: block.transactions,
                 difficulty: block.difficulty,
                 nextDifficulty: block.nextDifficulty,
                 spec: block.spec,
-                parentHomestead: block.parentHomestead,
-                homestead: block.homestead,
-                frontier: block.frontier,
-                childBlocks: block.childBlocks,
-                index: block.index,
+                parentState: block.parentState,
+                prevState: block.prevState,
+                postState: block.postState,
+                children: block.children,
+                height: block.height,
                 timestamp: block.timestamp,
                 nonce: blockNonce
             )
