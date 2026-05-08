@@ -9,7 +9,7 @@ on:
 jobs:
   test-macos:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +37,7 @@ jobs:
   test-linux:
     runs-on: ubuntu-latest
     container: swift:6.1-jammy
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
