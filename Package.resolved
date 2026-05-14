@@ -1,5 +1,5 @@
 {
-  "originHash" : "468e6659d83c9116ced0f4c3bbafd21bbbc66e0d24a8f621672d78fd4a7e0c77",
+  "originHash" : "e6337726880b422924898a73e69a0dd9e167c20502400f4e47438c861790dd16",
   "pins" : [
     {
       "identity" : "acorn",
@@ -375,8 +375,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/treehauslabs/VolumeBroker.git",
       "state" : {
-        "revision" : "ec6f53e25d6fe772bd5499ce34f00a66f9e1cb99",
-        "version" : "2.5.1"
+        "revision" : "932e0c2700bfbc25bd322b3e0808d0dbbbf72ed9",
+        "version" : "2.5.3"
       }
     }
   ],
