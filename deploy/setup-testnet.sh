@@ -156,7 +156,7 @@ EOF
     # Update BootstrapPeers.swift
     BOOTSTRAP_FILE="$PROJECT_DIR/Sources/LatticeNode/Network/BootstrapPeers.swift"
     # Read existing nexus peers from the file so we don't clobber mainnet entries.
-    EXISTING_NEXUS=$(awk '/nexus:/,/\]/' "$BOOTSTRAP_FILE" | grep PeerEndpoint || true)
+    EXISTING_NEXUS=$(awk '/nexus:/,/\]/' "$BOOTSTRAP_FILE" | grep -E '^\s+PeerEndpoint' || true)
     cat > "$BOOTSTRAP_FILE" << EOF
 import Lattice
 import Ivy

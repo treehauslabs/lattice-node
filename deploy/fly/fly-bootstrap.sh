@@ -180,7 +180,7 @@ cmd_codegen() {
     done
 
     if [ "$apply" = "--apply" ]; then
-        EXISTING_NEXUS=$(awk '/nexus:/,/\]/' "$BOOTSTRAP_FILE" | grep PeerEndpoint || true)
+        EXISTING_NEXUS=$(awk '/nexus:/,/\]/' "$BOOTSTRAP_FILE" | grep -E '^\s+PeerEndpoint' || true)
         cat > "$BOOTSTRAP_FILE" << SWIFT
 import Lattice
 import Ivy

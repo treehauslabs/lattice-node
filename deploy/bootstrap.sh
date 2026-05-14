@@ -185,7 +185,7 @@ cmd_codegen() {
         done
 
         # Preserve existing nexus peers; only overwrite testnet.
-        EXISTING_NEXUS=$(awk '/nexus:/,/\]/' "$SOURCE_FILE" | grep PeerEndpoint || true)
+        EXISTING_NEXUS=$(awk '/nexus:/,/\]/' "$SOURCE_FILE" | grep -E '^\s+PeerEndpoint' || true)
 
         cat > "$SOURCE_FILE" << SWIFT
 import Lattice

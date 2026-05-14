@@ -162,6 +162,17 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
             for root in storer.storedCIDs {
                 try await nexusNetwork.diskBroker.pin(root: root, owner: owner)
             }
+            // IvyFetcher.enterVolume looks up volumes by root CID. storeRecursively
+            // bundles all genesis data under one root, so sub-CIDs (postState,
+            // prevState, transactions, etc.) can't be found by enterVolume.
+            // Re-store each entry as its own single-entry volume so IvyFetcher
+            // can locate them without a network round-trip.
+            if let genesisPayload = await nexusNetwork.diskBroker.fetchVolumeLocal(root: genesisHeader.rawCID) {
+                for (cid, data) in genesisPayload.entries where cid != genesisHeader.rawCID {
+                    let child = VolumePayload(root: cid, entries: [cid: data])
+                    try? await nexusNetwork.diskBroker.storeVolumeLocal(child)
+                }
+            }
         } catch {
             let log = NodeLogger("genesis")
             log.error("Failed to store genesis block recursively: \(error)")
