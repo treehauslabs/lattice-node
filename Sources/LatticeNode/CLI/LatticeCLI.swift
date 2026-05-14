@@ -17,6 +17,7 @@ struct LatticeCLI: AsyncParsableCommand {
             InitCommand.self,
             DiagCommand.self,
             IdentityCommand.self,
+            FaucetCommand.self,
         ],
         defaultSubcommand: NodeCommand.self
     )
