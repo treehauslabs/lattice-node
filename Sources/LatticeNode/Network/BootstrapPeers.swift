@@ -4,6 +4,7 @@ import Ivy
 public enum BootstrapPeers {
     public static let nexus: [PeerEndpoint] = [
     public static let nexus: [PeerEndpoint] = [
+    public static let nexus: [PeerEndpoint] = [
     ]
 
     public static let testnet: [PeerEndpoint] = [
