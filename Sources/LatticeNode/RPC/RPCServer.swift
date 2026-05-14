@@ -234,8 +234,8 @@ enum RPCRoutes {
         }
         let tip = await chain.getMainChainTip()
         let s = await chain.tipSnapshot
-        struct R: Encodable { let hash: String; let index: UInt64?; let timestamp: Int64?; let difficulty: String?; let chain: String }
-        return json(R(hash: tip, index: s?.tipHeight, timestamp: s?.timestamp, difficulty: s?.difficulty.toHexString(), chain: dir))
+        struct R: Encodable { let hash: String; let height: UInt64?; let timestamp: Int64?; let difficulty: String?; let chain: String }
+        return json(R(hash: tip, height: s?.tipHeight, timestamp: s?.timestamp, difficulty: s?.difficulty.toHexString(), chain: dir))
     }
 
     static func getBlock(node: LatticeNode, id: String, request: Request) async throws -> Response {
@@ -258,22 +258,22 @@ enum RPCRoutes {
         let txCount = (try? await b.transactions.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
         let childCount = (try? await b.children.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
         struct R: Encodable {
-            let hash: String; let index: UInt64; let timestamp: Int64
-            let previousBlock: String?; let difficulty: String; let nextDifficulty: String
+            let hash: String; let height: UInt64; let timestamp: Int64
+            let parent: String?; let difficulty: String; let nextDifficulty: String
             let nonce: UInt64; let version: UInt16
-            let transactionsCID: String; let homesteadCID: String; let frontierCID: String
-            let parentHomesteadCID: String; let specCID: String; let childBlocksCID: String
+            let transactionsCID: String; let prevStateCID: String; let postStateCID: String
+            let parentStateCID: String; let specCID: String; let childrenCID: String
             let transactionCount: Int; let childBlockCount: Int
             let chain: String
         }
         return json(R(
-            hash: h, index: b.height, timestamp: b.timestamp,
-            previousBlock: b.parent?.rawCID,
+            hash: h, height: b.height, timestamp: b.timestamp,
+            parent: b.parent?.rawCID,
             difficulty: b.difficulty.toHexString(), nextDifficulty: b.nextDifficulty.toHexString(),
             nonce: b.nonce, version: b.version,
-            transactionsCID: b.transactions.rawCID, homesteadCID: b.prevState.rawCID,
-            frontierCID: b.postState.rawCID, parentHomesteadCID: b.parentState.rawCID,
-            specCID: b.spec.rawCID, childBlocksCID: b.children.rawCID,
+            transactionsCID: b.transactions.rawCID, prevStateCID: b.prevState.rawCID,
+            postStateCID: b.postState.rawCID, parentStateCID: b.parentState.rawCID,
+            specCID: b.spec.rawCID, childrenCID: b.children.rawCID,
             transactionCount: txCount, childBlockCount: childCount,
             chain: dir
         ))
@@ -329,7 +329,7 @@ enum RPCRoutes {
             return json(R(children: [], count: 0))
         }
         struct ChildEntry: Encodable {
-            let directory: String; let blockHash: String; let index: UInt64; let timestamp: Int64
+            let directory: String; let blockHash: String; let height: UInt64; let timestamp: Int64
             let difficulty: String; let transactionCount: Int
         }
         var children: [ChildEntry] = []
@@ -338,7 +338,7 @@ enum RPCRoutes {
             let txCount = (try? await childBlock.transactions.resolve(fetcher: network.ivyFetcher).node?.count) ?? 0
             children.append(ChildEntry(
                 directory: key, blockHash: blockHeader.rawCID,
-                index: childBlock.height, timestamp: childBlock.timestamp,
+                height: childBlock.height, timestamp: childBlock.timestamp,
                 difficulty: childBlock.difficulty.toHexString(),
                 transactionCount: txCount
             ))
@@ -963,14 +963,14 @@ enum RPCRoutes {
 
         struct R: Encodable {
             let blockHash: String; let blockHeight: UInt64
-            let homesteadCID: String; let frontierCID: String
+            let prevStateCID: String; let postStateCID: String
             let sections: [StateSection]; let chain: String
         }
         return json(R(
             blockHash: VolumeImpl<Block>(node: block).rawCID,
             blockHeight: block.height,
-            homesteadCID: block.prevState.rawCID,
-            frontierCID: block.postState.rawCID,
+            prevStateCID: block.prevState.rawCID,
+            postStateCID: block.postState.rawCID,
             sections: sections,
             chain: dir
         ))

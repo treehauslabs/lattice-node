@@ -48,7 +48,7 @@ public enum TestnetGenesis {
     // capture the printed genesis CID, then hardcode it so every node verifies
     // they share the same chain.
 
-    public static let expectedBlockHash: String? = nil
+    public static let expectedBlockHash: String? = "baguqeeraxodjzhzgip6j5w6ucjfhnj23l3qjc6mlv5rirywrulpufvjurodq"
 
     // MARK: - Genesis Configuration
 
