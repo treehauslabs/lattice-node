@@ -42,6 +42,9 @@ public actor LatticeNode: ChainNetworkDelegate, MinerDelegate, LatticeDelegate {
     /// instead of burning ~1.5s re-validating a block that will be rejected as a
     /// duplicate anyway.
     var inFlightBlockCIDs: Set<String> = []
+    // Max concurrent gossip blocks being validated. Beyond this the block is
+    // dropped — it will be re-announced shortly and processed when the queue drains.
+    static let maxConcurrentGossipValidations = 4
     // The rate limiter exists to bound validation cost from a misbehaving
     // peer; it is not meant to throttle legitimate gossip. `validateNexus`
     // costs ~25ms/block, so even 30/s is bounded (<=75% of one core). Setting

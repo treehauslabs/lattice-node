@@ -625,6 +625,10 @@ extension LatticeNode {
             return
         }
 
+        // Cap concurrent gossip validations to keep IvyFetcher actor responsive.
+        // Dropped blocks will be re-announced and retried when the queue drains.
+        if await inFlightBlockCIDs.count >= LatticeNode.maxConcurrentGossipValidations { return }
+
         // Basic checks passed — store to CAS
         await storeReceivedBlockRecursively(cid: cid, data: data, network: network)
 
@@ -683,6 +687,8 @@ extension LatticeNode {
             tally.recordSuccess(peer: peer)
             return
         }
+
+        if await inFlightBlockCIDs.count >= LatticeNode.maxConcurrentGossipValidations { return }
 
         let resolveFetcher = await network.ivyFetcher
 
