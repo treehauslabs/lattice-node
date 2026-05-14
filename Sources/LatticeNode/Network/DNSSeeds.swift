@@ -9,13 +9,11 @@ import Glibc
 
 public enum DNSSeeds: Sendable {
     public static let hostnames: [String] = [
-        "seeds.lattice-node.net",
-        "dnsseed.lattice.treehauslabs.com",
+        "seeds.nexusonlattice.com",
     ]
 
     public static let testnetHostnames: [String] = [
-        "seeds.testnet.lattice-node.net",
-        "dnsseed.testnet.lattice.treehauslabs.com",
+        "seeds.testnet.nexusonlattice.com",
     ]
 
     private static let digTimeout: TimeInterval = 5
