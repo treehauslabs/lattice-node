@@ -80,18 +80,16 @@ func startStorageMaintenanceLoop(node: LatticeNode) -> Task<Void, Never> {
 @discardableResult
 func startPinReannounceLoop(node: LatticeNode, interval: Duration) -> Task<Void, Never> {
     Task {
-        // Announce immediately on start so peers learn our pinned volumes
-        // right away — otherwise they have to wait up to `interval` before
-        // routing can find us as a provider for any CID we store.
-        for directory in await node.allDirectories() {
-            await node.reannouncePinnedVolumes(directory: directory)
-        }
+        // Short initial delay so the node finishes connecting to peers before
+        // flooding them with announcements. 60s is enough for peer discovery
+        // to settle while keeping the routing warm-up fast after restart.
+        try? await Task.sleep(for: .seconds(60))
         while !Task.isCancelled {
-            try? await Task.sleep(for: interval)
             for directory in await node.allDirectories() {
                 await node.reannouncePinnedVolumes(directory: directory)
             }
             await node.demoteLowScoringAnchors()
+            try? await Task.sleep(for: interval)
         }
     }
 }
