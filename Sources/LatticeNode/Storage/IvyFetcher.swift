@@ -101,7 +101,12 @@ public actor IvyFetcher: VolumeAwareFetcher {
     public func enterFromNetwork(rootCID: String) async {
         let peerCount = await ivy.directPeerCount
         let connectedPeers = await ivy.connectedPeers.count
-        let entries = await ivy.fetchVolume(rootCID: rootCID)
+        var entries = await ivy.fetchVolume(rootCID: rootCID)
+        // Fallback: if routing found no candidates (e.g., provider records
+        // cleared after restart), try every connected peer directly.
+        if entries.isEmpty && connectedPeers > 0 {
+            entries = await ivy.fetchVolumeFromAllPeers(rootCID: rootCID)
+        }
         if entries.isEmpty {
             NodeLogger("fetcher").warn("enterFromNetwork empty rootCID=\(String(rootCID.prefix(20)))… directPeers=\(peerCount) connectedPeers=\(connectedPeers) stackDepth=\(cacheStack.count)")
         }
