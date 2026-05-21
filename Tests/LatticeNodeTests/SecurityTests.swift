@@ -346,4 +346,141 @@ final class SecurityTests: XCTestCase {
         let accepted = [s1, s2].filter { $0 }.count
         XCTAssertLessThanOrEqual(accepted, 1, "At most one of two same-nonce transactions can be accepted (SEC-007)")
     }
+
+    // MARK: - SEC-008: Empty chainPath accepted on all chains (cross-chain replay)
+
+    /// A transaction with chainPath: [] bypasses chain routing validation and is
+    /// accepted by any chain's mempool AND included in any chain's blocks.
+    /// This enables cross-chain replay: spend tokens on one chain and replay
+    /// the same transaction on another chain.
+    func testEmptyChainPathRejected() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let senderAddr = CryptoUtils.createAddress(from: kp.publicKey)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let spec = testSpec(premine: 1_000_000)
+        let genesisConfig = testGenesis(spec: spec)
+        let config = LatticeNodeConfig(
+            publicKey: kp.publicKey, privateKey: kp.privateKey,
+            listenPort: nextTestPort(), storagePath: tmp, enableLocalDiscovery: false
+        )
+        let node = try await LatticeNode(config: config, genesisConfig: genesisConfig) { gc, f in
+            let body = TransactionBody(
+                accountActions: [AccountAction(owner: senderAddr, delta: Int64(gc.spec.premineAmount()))],
+                actions: [], depositActions: [], genesisActions: [],
+                receiptActions: [], withdrawalActions: [],
+                signers: [senderAddr], fee: 0, nonce: 0
+            )
+            let bh = HeaderImpl<TransactionBody>(node: body)
+            let tx = Transaction(signatures: [kp.publicKey: "genesis"], body: bh)
+            return try await BlockBuilder.buildGenesis(
+                spec: gc.spec, transactions: [tx],
+                timestamp: gc.timestamp, difficulty: gc.difficulty, fetcher: f
+            )
+        }
+        try await node.start()
+        defer { Task { await node.stop() } }
+        try await mineBlocks(1, on: node)
+
+        let recipient = CryptoUtils.generateKeyPair()
+        let recipientAddr = CryptoUtils.createAddress(from: recipient.publicKey)
+
+        // Transaction with EMPTY chainPath — should be REJECTED, currently ACCEPTED
+        let body = TransactionBody(
+            accountActions: [
+                AccountAction(owner: senderAddr, delta: -11),
+                AccountAction(owner: recipientAddr, delta: 10)
+            ],
+            actions: [], depositActions: [], genesisActions: [],
+            receiptActions: [], withdrawalActions: [],
+            signers: [senderAddr], fee: 1, nonce: 1,
+            chainPath: []   // ← EMPTY — bypasses chain isolation
+        )
+        let bh = HeaderImpl<TransactionBody>(node: body)
+        guard let sig = CryptoUtils.sign(message: bh.rawCID, privateKeyHex: kp.privateKey) else {
+            XCTFail("sign failed"); return
+        }
+        let tx = Transaction(signatures: [kp.publicKey: sig], body: bh)
+
+        let result = await node.submitTransaction(directory: "Nexus", transaction: tx)
+        // SHOULD be rejected — empty chainPath must not be accepted (SEC-008)
+        XCTAssertFalse(result, "Transaction with empty chainPath must be rejected (SEC-008)")
+    }
+
+    // MARK: - SEC-009: Unauthenticated startMining (adversary can redirect rewards)
+
+    /// POST /api/mining/start accepts a foreign private key, redirecting all
+    /// block rewards to the attacker's address on internet-exposed nodes.
+    func testStartMiningRequiresAuth() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let config = LatticeNodeConfig(
+            publicKey: kp.publicKey, privateKey: kp.privateKey,
+            listenPort: nextTestPort(), storagePath: tmp, enableLocalDiscovery: false
+        )
+        let node = try await LatticeNode(config: config, genesisConfig: testGenesis())
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        let rpcPort = nextTestPort()
+        let server = RPCServer(node: node, port: rpcPort, bindAddress: "0.0.0.0", allowedOrigin: "*")
+        let serverTask = Task { try await server.run() }
+        defer { serverTask.cancel() }
+        try await Task.sleep(for: .milliseconds(500))
+
+        let attacker = CryptoUtils.generateKeyPair()
+        struct MineBody: Encodable {
+            let chain = "Nexus"
+            let publicKey: String
+            let privateKey: String
+        }
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(rpcPort)/api/mining/start")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(MineBody(publicKey: attacker.publicKey, privateKey: attacker.privateKey))
+        req.addValue("external-host.example.com", forHTTPHeaderField: "Host")
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        XCTAssertEqual(status, 401,
+            "mining/start must require auth on public bind (SEC-009): got \(status), body: \(String(data: data, encoding: .utf8) ?? "")")
+    }
+
+    // MARK: - SEC-010: Unauthenticated stopMining (griefing attack)
+
+    /// POST /api/mining/stop lets any caller halt block production on an
+    /// internet-exposed node.
+    func testStopMiningRequiresAuth() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let config = LatticeNodeConfig(
+            publicKey: kp.publicKey, privateKey: kp.privateKey,
+            listenPort: nextTestPort(), storagePath: tmp, enableLocalDiscovery: false
+        )
+        let node = try await LatticeNode(config: config, genesisConfig: testGenesis())
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        let rpcPort = nextTestPort()
+        let server = RPCServer(node: node, port: rpcPort, bindAddress: "0.0.0.0", allowedOrigin: "*")
+        let serverTask = Task { try await server.run() }
+        defer { serverTask.cancel() }
+        try await Task.sleep(for: .milliseconds(500))
+
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(rpcPort)/api/mining/stop")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(["chain": "Nexus"])
+        req.addValue("external-host.example.com", forHTTPHeaderField: "Host")
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        XCTAssertEqual(status, 401,
+            "mining/stop must require auth on public bind (SEC-010): got \(status), body: \(String(data: data, encoding: .utf8) ?? "")")
+    }
 }

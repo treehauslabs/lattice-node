@@ -109,8 +109,22 @@ enum RPCRoutes {
         light.get("headers") { req, _ in try await lightHeaders(node: node, request: req) }
         light.get("proof/{address}") { req, ctx in try await lightProof(node: node, address: ctx.parameters.require("address"), request: req) }
 
-        api.post("mining/start") { req, _ in try await startMining(node: node, request: req) }
-        api.post("mining/stop") { req, _ in try await stopMining(node: node, request: req) }
+        api.post("mining/start") { req, _ in
+            if !localOnly {
+                let host = req.uri.host ?? ""
+                let isLoopback = host.hasPrefix("127.") || host == "::1" || host == "localhost"
+                if !isLoopback { return jsonError("mining/start requires loopback or --rpc-auth", status: .unauthorized) }
+            }
+            return try await startMining(node: node, request: req)
+        }
+        api.post("mining/stop") { req, _ in
+            if !localOnly {
+                let host = req.uri.host ?? ""
+                let isLoopback = host.hasPrefix("127.") || host == "::1" || host == "localhost"
+                if !isLoopback { return jsonError("mining/stop requires loopback or --rpc-auth", status: .unauthorized) }
+            }
+            return try await stopMining(node: node, request: req)
+        }
 
         // deployChain is a destructive admin operation — only available when
         // the RPC is bound to loopback (127.0.0.1 / ::1). Exposing it to the
@@ -454,7 +468,7 @@ enum RPCRoutes {
             signers: body.signers,
             fee: body.fee,
             nonce: body.nonce,
-            chainPath: body.chainPath ?? []
+            chainPath: body.chainPath ?? [resolveChain(node: node, request: request)]
         )
 
         let header = HeaderImpl<TransactionBody>(node: txBody)

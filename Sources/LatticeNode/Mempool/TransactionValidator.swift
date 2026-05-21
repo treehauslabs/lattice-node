@@ -158,7 +158,10 @@ public struct TransactionValidator: Sendable {
     }
 
     private func validateChainPath(_ body: TransactionBody) -> TransactionValidationError? {
-        guard !body.chainPath.isEmpty, let dir = chainDirectory else { return nil }
+        guard let dir = chainDirectory else { return nil }
+        // Empty chainPath bypasses chain isolation — require explicit routing.
+        // Transactions must name at least the target chain directory.
+        if body.chainPath.isEmpty { return .chainPathMismatch }
         if !body.chainPath.contains(dir) { return .chainPathMismatch }
         return nil
     }

@@ -27,6 +27,9 @@ struct SendCommand: AsyncParsableCommand {
     @Option(help: "Transaction fee")
     var fee: UInt64 = 1
 
+    @Option(help: "Chain directory (default: Nexus)")
+    var chain: String = "Nexus"
+
     func run() async throws {
         let keyData = try Data(contentsOf: URL(fileURLWithPath: key))
         guard let keyJSON = try JSONSerialization.jsonObject(with: keyData) as? [String: String],
@@ -83,7 +86,8 @@ struct SendCommand: AsyncParsableCommand {
             withdrawalActions: [],
             signers: [senderAddress],
             fee: fee,
-            nonce: nonce
+            nonce: nonce,
+            chainPath: [chain]
         )
 
         let bodyHeader = HeaderImpl<TransactionBody>(node: body)
