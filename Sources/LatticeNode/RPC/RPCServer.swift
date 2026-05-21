@@ -542,8 +542,12 @@ enum RPCRoutes {
 
         let dir = body.directory.trimmingCharacters(in: .whitespacesAndNewlines)
         if dir.isEmpty { return jsonError("Directory cannot be empty") }
-        if dir.contains(where: { $0.isWhitespace || $0 == "/" }) {
-            return jsonError("Directory cannot contain whitespace or '/'")
+        if dir.contains(where: { $0.isWhitespace || $0 == "/" || $0 == "\\" }) {
+            return jsonError("Directory cannot contain whitespace or path separators")
+        }
+        // Block path traversal sequences and hidden-file names
+        if dir.hasPrefix(".") {
+            return jsonError("Directory cannot start with '.' (path traversal or hidden file)")
         }
         if dir == node.genesisConfig.spec.directory {
             return jsonError("Directory '\(dir)' conflicts with nexus")

@@ -483,4 +483,96 @@ final class SecurityTests: XCTestCase {
         XCTAssertEqual(status, 401,
             "mining/stop must require auth on public bind (SEC-010): got \(status), body: \(String(data: data, encoding: .utf8) ?? "")")
     }
+
+    // MARK: - SEC-011: Path traversal via ".." in deployChain directory
+
+    /// The directory name ".." passes whitespace and "/" checks but causes
+    /// appendingPathComponent to traverse to the parent of the storage path.
+    /// An attacker with local access could use this to create files outside
+    /// the node's intended data directory.
+    func testDeployChainRejectsDotDotDirectory() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let config = LatticeNodeConfig(
+            publicKey: kp.publicKey, privateKey: kp.privateKey,
+            listenPort: nextTestPort(), storagePath: tmp, enableLocalDiscovery: false
+        )
+        let node = try await LatticeNode(config: config, genesisConfig: testGenesis())
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        let rpcPort = nextTestPort()
+        // Local-bound RPC (loopback) to test directory validation
+        let server = RPCServer(node: node, port: rpcPort, bindAddress: "127.0.0.1", allowedOrigin: "*")
+        let serverTask = Task { try await server.run() }
+        defer { serverTask.cancel() }
+        try await Task.sleep(for: .milliseconds(500))
+
+        // Test ".." — should be REJECTED (path traversal)
+        for badDir in ["..", ".", ".hidden", "a/b", "a\\b"] {
+            struct DeployBody: Encodable {
+                let directory: String; let parentDirectory = "Nexus"
+                let targetBlockTime: UInt64 = 1000; let initialReward: UInt64 = 1000000
+                let halvingInterval: UInt64 = 210000; let premine: UInt64 = 0
+                let maxTransactionsPerBlock: UInt64 = 100; let maxStateGrowth: Int = 100000
+                let maxBlockSize: Int = 1000000; let difficultyAdjustmentWindow: UInt64 = 120
+            }
+            var req = URLRequest(url: URL(string: "http://127.0.0.1:\(rpcPort)/api/chain/deploy")!)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONEncoder().encode(DeployBody(directory: badDir))
+            let (_, response) = try await URLSession.shared.data(for: req)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            XCTAssertEqual(status, 400,
+                "deployChain must reject path-traversal directory '\(badDir)' (SEC-011): got \(status)")
+        }
+    }
+
+    // MARK: - SEC-012: validateBalanceChanges enforces coinbase <= reward + fees
+
+    /// validateBalanceChanges checks totalCredits <= totalDebits + reward + fees.
+    /// A block with an inflated coinbase (reward+1) must fail this check.
+    func testInflatedCoinbaseRejectedByBlockValidation() async throws {
+        let kp = CryptoUtils.generateKeyPair()
+        let minerAddr = CryptoUtils.createAddress(from: kp.publicKey)
+        let f = cas()
+        let t = now() - 50_000
+        let spec = testSpec()
+        let reward = spec.rewardAtBlock(1)
+
+        let genesis = try await BlockBuilder.buildGenesis(
+            spec: spec, timestamp: t, difficulty: UInt256(1000), fetcher: f
+        )
+        let storer = BufferedStorer()
+        try VolumeImpl<Block>(node: genesis).storeRecursively(storer: storer)
+        await storer.flush(to: f)
+
+        // Inflated coinbase: miner claims reward+1 tokens (1 extra)
+        let inflatedBody = TransactionBody(
+            accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward + 1))],
+            actions: [], depositActions: [], genesisActions: [],
+            receiptActions: [], withdrawalActions: [],
+            signers: [minerAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
+        )
+        let bh = HeaderImpl<TransactionBody>(node: inflatedBody)
+        guard let sig = CryptoUtils.sign(message: bh.rawCID, privateKeyHex: kp.privateKey) else {
+            XCTFail("sign failed"); return
+        }
+        let inflateTx = Transaction(signatures: [kp.publicKey: sig], body: bh)
+
+        let inflatedBlock = try await BlockBuilder.buildBlock(
+            previous: genesis, transactions: [inflateTx],
+            timestamp: t + 1000, difficulty: UInt256(1000), nonce: 1, fetcher: f
+        )
+        try VolumeImpl<Block>(node: inflatedBlock).storeRecursively(storer: storer)
+        await storer.flush(to: f)
+
+        // validateNexus runs validateBalanceChanges:
+        // totalCredits (reward+1) > available (reward+0) -> must return false (SEC-012)
+        let (valid, _) = (try? await inflatedBlock.validateNexus(fetcher: f)) ?? (false, .empty)
+        XCTAssertFalse(valid,
+            "Block with inflated coinbase must fail validateNexus (SEC-012)")
+    }
 }
