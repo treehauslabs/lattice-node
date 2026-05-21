@@ -181,7 +181,7 @@ actor FaucetManager {
         guard let tx = wallet.buildTransfer(
             to: address,
             amount: amount,
-            fee: 1,
+            fee: 2,
             nonce: txNonce,
             chainPath: [chain]
         ) else {
