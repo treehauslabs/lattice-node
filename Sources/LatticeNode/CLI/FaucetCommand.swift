@@ -178,51 +178,42 @@ actor FaucetManager {
         }
         let txNonce = nonce ?? 0
 
-        guard let tx = wallet.buildTransfer(
-            to: address,
-            amount: amount,
-            fee: 2,
-            nonce: txNonce,
-            chainPath: [chain]
-        ) else {
-            return .failed("failed to build transaction")
-        }
+        // Retry with escalating fee to handle RBF rejections
+        var fee: UInt64 = 2
+        for _ in 0..<5 {
+            guard let tx = wallet.buildTransfer(
+                to: address, amount: amount, fee: fee, nonce: txNonce, chainPath: [chain]
+            ) else { return .failed("failed to build transaction") }
 
-        guard let bodyData = tx.body.node?.toData() else {
-            return .failed("failed to serialize transaction body")
-        }
-        let bodyCID = tx.body.rawCID
-        let bodyHex = bodyData.map { String(format: "%02x", $0) }.joined()
+            guard let bodyData = tx.body.node?.toData() else { return .failed("failed to serialize transaction body") }
+            let bodyCID = tx.body.rawCID
+            let bodyHex = bodyData.map { String(format: "%02x", $0) }.joined()
 
-        struct Sub: Encodable {
-            let signatures: [String: String]
-            let bodyCID: String
-            let bodyData: String
-            let chain: String
-        }
-        let sub = Sub(signatures: tx.signatures, bodyCID: bodyCID, bodyData: bodyHex, chain: chain)
-        guard let payload = try? JSONEncoder().encode(sub),
-              let url = URL(string: "\(nodeURL)/api/transaction") else {
-            return .failed("failed to encode submission")
-        }
+            struct Sub: Encodable { let signatures: [String: String]; let bodyCID: String; let bodyData: String; let chain: String }
+            guard let payload = try? JSONEncoder().encode(Sub(signatures: tx.signatures, bodyCID: bodyCID, bodyData: bodyHex, chain: chain)),
+                  let url = URL(string: "\(nodeURL)/api/transaction") else { return .failed("failed to encode submission") }
 
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = payload
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type"); req.httpBody = payload
 
-        guard let (data, response) = try? await URLSession.shared.data(for: req) else {
-            return .failed("node unreachable")
+            guard let (data, response) = try? await URLSession.shared.data(for: req) else { return .failed("node unreachable") }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 200 {
+                nonce = txNonce + 1
+                lastDrip[address] = Date()
+                NodeLogger("faucet").info("Dripped \(amount) to \(address) nonce=\(txNonce) fee=\(fee) txCID=\(String(bodyCID.prefix(16)))…")
+                return .dripped(bodyCID)
+            }
+            let errMsg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String ?? "submission failed (\(status))"
+            // Parse "RBF fee too low: need at least N, got M" and retry with N
+            if errMsg.contains("RBF fee too low"),
+               let part = errMsg.components(separatedBy: "at least ").last,
+               let needed = UInt64(part.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? "") {
+                fee = needed
+                continue
+            }
+            return .failed(errMsg)
         }
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200 else {
-            let msg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
-            return .failed(msg ?? "submission failed (\(status))")
-        }
-
-        nonce = txNonce + 1
-        lastDrip[address] = Date()
-        NodeLogger("faucet").info("Dripped \(amount) to \(address) nonce=\(txNonce) txCID=\(String(bodyCID.prefix(16)))…")
-        return .dripped(bodyCID)
+        return .failed("RBF retry limit exceeded")
     }
 }
