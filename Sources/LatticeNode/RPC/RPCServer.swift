@@ -13,7 +13,8 @@ public final class RPCServer: Sendable {
     private let _serviceGroup: Mutex<ServiceGroup?>
 
     public init(node: LatticeNode, port: UInt16 = 8080, bindAddress: String = "127.0.0.1", allowedOrigin: String = "http://127.0.0.1", auth: CookieAuth? = nil) {
-        let router = RPCRoutes.build(node: node)
+        let isLocal = bindAddress == "127.0.0.1" || bindAddress == "::1" || bindAddress == "localhost"
+        let router = RPCRoutes.build(node: node, localOnly: isLocal)
         router.add(middleware: CORSMiddleware(allowedOrigin: allowedOrigin))
         if auth != nil {
             router.add(middleware: RPCAuthMiddleware<BasicRequestContext>(auth: auth))
@@ -75,7 +76,7 @@ struct CORSMiddleware<Context: RequestContext>: RouterMiddleware {
 enum RPCRoutes {
     private static let log = Logger(label: "lattice.rpc")
 
-    static func build(node: LatticeNode) -> Router<BasicRequestContext> {
+    static func build(node: LatticeNode, localOnly: Bool = true) -> Router<BasicRequestContext> {
         let router = Router()
         router.middlewares.add(RateLimitMiddleware(limiter: node.rateLimiter))
         let api = router.group("api")
@@ -111,7 +112,20 @@ enum RPCRoutes {
         api.post("mining/start") { req, _ in try await startMining(node: node, request: req) }
         api.post("mining/stop") { req, _ in try await stopMining(node: node, request: req) }
 
-        api.post("chain/deploy") { req, _ in try await deployChain(node: node, request: req) }
+        // deployChain is a destructive admin operation — only available when
+        // the RPC is bound to loopback (127.0.0.1 / ::1). Exposing it to the
+        // internet (--rpc-bind 0.0.0.0) without auth would let any caller
+        // spin up arbitrary child chains on the node.
+        api.post("chain/deploy") { req, _ in
+            if !localOnly {
+                let host = req.uri.host ?? ""
+                let isLoopback = host.hasPrefix("127.") || host == "::1" || host == "localhost"
+                if !isLoopback {
+                    return jsonError("chain/deploy is only available on loopback interfaces. Use --rpc-bind 127.0.0.1 or enable --rpc-auth.", status: .unauthorized)
+                }
+            }
+            return try await deployChain(node: node, request: req)
+        }
 
         // State explorer
         api.get("state/account/{address}") { req, ctx in try await getAccountState(node: node, address: ctx.parameters.require("address"), request: req) }

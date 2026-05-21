@@ -222,7 +222,7 @@ public struct TransactionValidator: Sendable {
         for action in body.accountActions {
             if action.delta == Int64.min { continue }
             let (sum, overflow) = netDebit[action.owner, default: 0].addingReportingOverflow(action.delta)
-            if overflow { continue }
+            if overflow { return .balanceNotConserved(totalDebits: 0, totalCredits: 0, fee: body.fee) }
             netDebit[action.owner] = sum
         }
         if isNexus {
